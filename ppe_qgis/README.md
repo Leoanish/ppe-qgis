@@ -60,7 +60,7 @@ On tab **5 Plots**, the chosen plot file is added as **PPE · Plots**: yellow ou
 Different crops can need different thresholds; on a corn field at tasselling, for example, a lower threshold keeps the tassels. On the **Review** tab, under *Crops in this image*:
 
 1. **+ Add crop** and type its name (any number of crops).
-2. **Draw area**: click the corners of a rough outline around that crop on the map, right-click to finish (Esc cancels, Backspace removes the last corner). A ✓ appears and the outline is shown as **PPE · Crop areas**. **Redraw** replaces it, ✕ removes the crop.
+2. **Draw area**: click the corners of a rough outline around that crop on the map, right-click to finish (Esc cancels, Backspace removes the last corner). While you draw, that crop's button turns grey and reads **✎ Drawing…**, the other crops cannot start drawing, the note above the crops and a message on the map say what to do, and choosing another map tool (Pan, Identify…) ends the drawing. A ✓ appears and the outline is shown as **PPE · Crop areas**. **Redraw** replaces it, ✕ removes the crop.
 3. Each drawn crop gets its own slider and canopy; the slider above sets the rest of the image (headlands, roads). *Use the slider above for every crop* moves them all together. The live preview shows every area at its own threshold.
 4. **Finalize** writes one mask, `ppe_plant_mask_by_crop.tif`, and reports the canopy of each crop.
 
@@ -117,15 +117,15 @@ PPE follows three steps: pick the layers with the widest spread, split each one 
    - *k-means*: ten clusters, each called plant or soil by the Otsu cut.
    - *multi-Otsu*: three classes, soil 0, mixed 0.5, plant 1.
 
-   The thresholds are fitted to the whole field. With **Follow local conditions** (the default, under Advanced settings) the field is then divided into tiles of about 512 pixels, Otsu is refitted in each tile that holds both soil and plants, and all four thresholds of a layer move up or down together by the difference, blended smoothly between tiles. This keeps pale or small plants in weak plots. The move is limited to the mixed band of multi-Otsu.
+   The thresholds are fitted to the whole field. The field is then divided into tiles of about 512 pixels, Otsu is refitted in each tile that holds both soil and plants, and all four thresholds of a layer move up or down together by the difference, blended smoothly between tiles. This keeps pale or small plants in weak plots. The move is limited to the mixed band of multi-Otsu.
 
-   **Half-mixture** (optional, off by default) adds a fifth threshold per layer: the index value of a pixel that is half typical plant and half typical soil. It does not depend on how much of the field each class covers, so it helps in dense crops, where Otsu and k-means cut too high.
-4. **Vote.** Three layers times four methods gives 12 equal votes (15 with half-mixture). The vote raster holds the share that said plant, from 0 to 1.
-5. **Guards** (each can be switched off).
+   **Half-mixture** (only for scripts calling the engine with `half_mixture=True`; the panel never uses it) adds a fifth threshold per layer: the index value of a pixel that is half typical plant and half typical soil. It does not depend on how much of the field each class covers, so it helps in dense crops, where Otsu and k-means cut too high.
+4. **Vote.** Three layers times four methods gives 12 equal votes. The vote raster holds the share that said plant, from 0 to 1.
+5. **Guards** (always on in the panel; there are no settings to change).
    - *Dark shadows*: rejects the darkest pixels unless they still reflect enough near-infrared light to be a lit leaf, or their NDVI (and NDRE, when there is a red-edge band) is at plant level, which is a leaf in shade.
    - *Algae in furrows*: algae are green but lack a leaf's rise from red edge to NIR. A pixel whose NDRE is less than a quarter of the way from bare soil to a typical plant is rejected. Needs red-edge and NIR bands; skipped otherwise.
    - *Grey and neutral objects* (camera RGB images with no NIR band): a pixel stays plant only if it is greener than the soil's own colour. Vehicles, tarps, grey residue and black plastic no longer pass a visible index on brightness alone. If plants are barely greener than soil anywhere in the image, the run warns you.
-   - *Bright soil and residue*: rejects very bright, colourless pixels with no vegetation signal. Off by default.
+   - *Bright soil and residue*: rejects very bright, colourless pixels with no vegetation signal. Only for scripts (`bright_guard=True`); the panel does not use it.
 6. **Warnings.** Thresholds always split an image in two. If even the greenest 1 % of pixels look like soil, or even the least green 1 % look like canopy, or (camera images) plants are barely greener than soil, a yellow bar on the map and a note on the Review tab tell you to check the mask. The mask itself is not changed.
 7. **Mask.** A pixel is plant when its vote is at least the threshold minus 0.05.
 
@@ -174,14 +174,25 @@ The Kritis field was also cut into sensor variants and compared with the full 5-
 - Real hyperspectral orthomosaics have not been run yet (only a cube made from real 5-band data). Thermal-only images cannot be segmented: they carry no plant–soil reflectance contrast.
 - The suggested threshold is a starting point, not a guarantee: on small clips it can be off by 0.2 or more. Use the curve and the preview.
 - The algae guard cannot work on images without a red-edge band, and at a quarter of the red-edge rise it lets the greenest algae through if the chosen layers also accept it.
-- Plants with very low chlorophyll have a weak red-edge rise and could still be rejected by the algae guard. Untick it and compare if you see gaps in yellow or stressed canopy.
+- Plants with very low chlorophyll have a weak red-edge rise and could still be rejected by the algae guard. If you see gaps in yellow or stressed canopy, open `biofilm_rejection.tif` in the run folder to see which pixels it removed.
 - On camera RGB images green weeds and grass are plants to PPE; it cannot tell crop from weed.
 - PPE does not find crop areas by itself: the user draws them. Telling crops apart automatically from one image without training data was not reliable enough.
 - An image of bare soil only, or of closed canopy only, is still split in two. PPE warns about it.
 
+## Settings, speed and memory
+
+There are no settings to tune. Thresholds always follow local conditions, the four original methods vote, the shadow and algae guards are always on (the grey-object guard switches itself on for camera RGB images), and the fitting sample is 100,000 pixels; the mask is always full resolution.
+
+PPE sets itself up for the computer it runs on:
+
+- It uses all but one of the CPU's threads (up to 16), leaving one for QGIS. Each band file is decompressed twice per run (once for the fitting sample, once for the votes and the display image together), and both passes run on several threads.
+- The number of image blocks processed at once is limited so they use at most a quarter of the computer's memory. A laptop with 8 GB uses up to five workers, a 4 GB machine two; a small machine is slower but does not run out of memory.
+
+On a 2-core test machine a 9371 × 10056 five-band field (Kritis) runs in about 20 s (3.9.0 before this change: 46 s), with exactly the same vote raster, display image and guard rasters. Computers with more cores gain more.
+
 ## Support and logs
 
-Each output folder contains `logs/ppe_YYYYMMDD_HHMMSS.log`. Include that file, the QGIS version, sensor and raster size in a bug report.
+When something fails, the message says what PPE was doing, the kind of error and where the log is; it is never blank. Each output folder contains `logs/ppe_YYYYMMDD_HHMMSS.log`. Include that file, the QGIS version, sensor and raster size in a bug report.
 
 ## License
 

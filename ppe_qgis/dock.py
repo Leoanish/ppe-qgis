@@ -33,7 +33,7 @@ from qgis.PyQt.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from qgis.core import QgsProject
+from qgis.core import Qgis, QgsProject
 from osgeo import gdal
 
 from .curve_widget import ThresholdCurveDialog
@@ -116,6 +116,7 @@ class PPEDockWidget(QDockWidget):
         self.crop_rows = []
         self.zone_info = None
         self._draw_tool = None
+        self._drawing_row = None
         self._previous_tool = None
         self.folder_bands = None
         self._folder_bands_for = None
@@ -382,15 +383,6 @@ class PPEDockWidget(QDockWidget):
         self._detected = {"kind": "none", "bands": [], "count": 0, "named": False}
         logical_cpus = max(1, os.cpu_count() or 1)
         self.thread_count = max(1, min(16, logical_cpus - 1 if logical_cpus > 2 else logical_cpus))
-        self.threads = QLabel("Automatic · {} of {} logical CPUs".format(self.thread_count, logical_cpus))
-        self.threads.setObjectName("autoValue")
-        self.threads.setToolTip("PPE detects the computer automatically, reserves capacity for QGIS, and caps concurrent GDAL work at 16 to avoid excessive memory and disk contention.")
-        self.sample_size = QSpinBox()
-        self.sample_size.setRange(1000, 2000000)
-        self.sample_size.setSingleStep(5000)
-        self.sample_size.setValue(100000)
-        self.sample_size.setGroupSeparatorShown(True)
-        self._plain_spin(self.sample_size)
         self.hsi_min_wavelength = QDoubleSpinBox(); self.hsi_min_wavelength.setRange(0, 2500); self.hsi_min_wavelength.setValue(0); self.hsi_min_wavelength.setSuffix(" nm")
         self.hsi_min_wavelength.setSpecialValueText("Read metadata")
         self.hsi_max_wavelength = QDoubleSpinBox(); self.hsi_max_wavelength.setRange(0, 2500); self.hsi_max_wavelength.setValue(0); self.hsi_max_wavelength.setSuffix(" nm")
@@ -399,20 +391,6 @@ class PPEDockWidget(QDockWidget):
         self.hsi_interval.setSpecialValueText("Read metadata")
         for spin in (self.hsi_min_wavelength, self.hsi_max_wavelength, self.hsi_interval):
             self._plain_spin(spin)
-        self.bright_guard = QCheckBox("Bright soil and residue")
-        self.bright_guard.setToolTip(
-            "Rejects pixels that are very bright, nearly colourless and show no vegetation signal. Off by default."
-        )
-        self.shadow_guard = QCheckBox("Dark shadows")
-        self.shadow_guard.setToolTip(
-            "Rejects dark pixels (the darkest 15 % of the image) unless they still reflect enough "
-            "near-infrared light to be a lit leaf. Untick it to keep shaded parts of the canopy."
-        )
-        self.biofilm_guard = QCheckBox("Algae on the soil (needs red edge)")
-        self.biofilm_guard.setToolTip(
-            "Algae, moss and biofilm on wet soil look green but lack a leaf's rise from red edge to NIR. "
-            "Rejects pixels whose NDRE is no higher than bare soil's. Used only when the image has red-edge and NIR bands."
-        )
         options_form.addRow("Image type", self.ortho_type)
         # Fields that only apply to some images sit in their own boxes, hidden whole, so they
         # leave no empty gap when they do not apply.
@@ -427,35 +405,6 @@ class PPEDockWidget(QDockWidget):
         self.hsi_field_labels = [None, None, None]
         self._update_imagery_options()
         layout.addWidget(options_box)
-
-        guard_box, guard_body = self._card("Reject pixels that are not plants")
-        guard_layout = QVBoxLayout(guard_body)
-        guard_layout.setContentsMargins(0, 0, 0, 0)
-        guard_layout.setSpacing(6)
-        for box in (self.shadow_guard, self.biofilm_guard, self.bright_guard):
-            guard_layout.addWidget(box)
-        layout.addWidget(guard_box)
-
-        advanced_body = QWidget()
-        advanced_form = self._form(advanced_body)
-        self.adaptation_mode = QComboBox()
-        self.adaptation_mode.addItem("Follow local conditions", "adaptive")
-        self.adaptation_mode.addItem("One set for the whole field", "global")
-        self.adaptation_mode.setToolTip(
-            "Thresholds are fitted to the whole field. With 'Follow local conditions' they are then moved up or down "
-            "in each part of the field to follow its own soil and plants, which keeps pale or small plants in weak plots."
-        )
-        self.half_mixture = QCheckBox("Add half-mixture as a fifth method")
-        self.half_mixture.setToolTip(
-            "Adds a threshold at the index value of a pixel that is half plant and half soil. "
-            "Not part of the original four-method design. It helps most in dense crops, where Otsu and k-means cut too high."
-        )
-        advanced_form.addRow("Thresholds", self.adaptation_mode)
-        advanced_form.addRow(self.half_mixture)
-        advanced_form.addRow("Fitting sample", self.sample_size)
-        advanced_form.addRow("Threads", self.threads)
-        self.sample_size.setToolTip("Pixels used to fit the thresholds. The mask is always full resolution.")
-        layout.addWidget(self._collapsible("Advanced settings", advanced_body))
 
         layout.addWidget(self._collapsible("About this field (optional)", self._field_info_box()))
 
@@ -1208,11 +1157,6 @@ class PPEDockWidget(QDockWidget):
         prefix = "ppe_qgis/"
         self.output_path.setText(self.settings.value(prefix + "output", self._default_output(), type=str))
         self.work_path.setText(self.settings.value(prefix + "work", self._default_work(), type=str))
-        self.bright_guard.setChecked(self.settings.value(prefix + "bright_guard", False, type=bool))
-        self.shadow_guard.setChecked(self.settings.value(prefix + "shadow_guard", True, type=bool))
-        self.biofilm_guard.setChecked(self.settings.value(prefix + "biofilm_guard", True, type=bool))
-        self.adaptation_mode.setCurrentIndex(max(0, self.adaptation_mode.findData(self.settings.value(prefix + "adaptation_mode_v371", "adaptive", type=str))))
-        self.half_mixture.setChecked(self.settings.value(prefix + "half_mixture", False, type=bool))
         self.rgb_order.setCurrentIndex(max(0, self.rgb_order.findData(self.settings.value(prefix + "rgb_order", "rgb", type=str))))
         self.hsi_min_wavelength.setValue(self.settings.value(prefix + "hsi_min_wavelength", 0.0, type=float))
         self.hsi_max_wavelength.setValue(self.settings.value(prefix + "hsi_max_wavelength", 0.0, type=float))
@@ -1223,11 +1167,6 @@ class PPEDockWidget(QDockWidget):
         prefix = "ppe_qgis/"
         self.settings.setValue(prefix + "output", self.output_path.text().strip())
         self.settings.setValue(prefix + "work", self.work_path.text().strip())
-        self.settings.setValue(prefix + "bright_guard", self.bright_guard.isChecked())
-        self.settings.setValue(prefix + "shadow_guard", self.shadow_guard.isChecked())
-        self.settings.setValue(prefix + "biofilm_guard", self.biofilm_guard.isChecked())
-        self.settings.setValue(prefix + "adaptation_mode_v371", self.adaptation_mode.currentData())
-        self.settings.setValue(prefix + "half_mixture", self.half_mixture.isChecked())
         self.settings.setValue(prefix + "rgb_order", self.rgb_order.currentData())
         self.settings.setValue(prefix + "hsi_min_wavelength", self.hsi_min_wavelength.value())
         self.settings.setValue(prefix + "hsi_max_wavelength", self.hsi_max_wavelength.value())
@@ -1254,14 +1193,18 @@ class PPEDockWidget(QDockWidget):
             "hsi_max_wavelength": self.hsi_max_wavelength.value() if is_hsi_selected else 0.0,
             "hsi_interval": self.hsi_interval.value() if is_hsi_selected else 0.0,
             "hsi_grid_confirmed": self.hsi_grid_confirmed if is_hsi_selected else False,
+            # Fixed settings (there is no Advanced settings card): threads are chosen by the
+            # engine from the computer's cores and free memory, thresholds follow local
+            # conditions, the four original methods vote, and the shadow and algae guards are
+            # always on (the colour guard switches itself on for camera RGB images).
             "threads": self.thread_count,
-            "adaptation_mode": self.adaptation_mode.currentData(),
-            "half_mixture": self.half_mixture.isChecked(),
-            "sample_size": self.sample_size.value(),
+            "adaptation_mode": "adaptive",
+            "half_mixture": False,
+            "sample_size": 100000,
             "initial_threshold": 0.5,
-            "bright_guard": self.bright_guard.isChecked(),
-            "shadow_guard": self.shadow_guard.isChecked(),
-            "biofilm_guard": self.biofilm_guard.isChecked(),
+            "bright_guard": False,
+            "shadow_guard": True,
+            "biofilm_guard": True,
         }
         config["field_info"] = self.field_info()
         if action == "apply":
@@ -1392,7 +1335,7 @@ class PPEDockWidget(QDockWidget):
     def _add_crop_row(self, name=""):
         frame = QFrame(); grid = QGridLayout(frame); grid.setContentsMargins(0, 0, 0, 0); grid.setHorizontalSpacing(6); grid.setVerticalSpacing(2)
         edit = QLineEdit(name); edit.setPlaceholderText("Crop, e.g. corn")
-        draw = QPushButton("Draw area"); draw.setProperty("secondary", True); draw.setEnabled(bool(self.result.get("vote_path")) and not self._busy)
+        draw = QPushButton("Draw area"); draw.setProperty("secondary", True); draw.setEnabled(self._draw_allowed())
         status = QLabel("not drawn"); status.setObjectName("ppeHint")
         remove = QToolButton(); remove.setText("✕"); remove.setToolTip("Remove this crop and its outline")
         slider = QSlider(Qt.Horizontal); slider.setRange(15, 95); slider.setValue(self.threshold_slider.value()); slider.setEnabled(False)
@@ -1423,40 +1366,71 @@ class PPEDockWidget(QDockWidget):
         ds = gdal.Open(self.result.get("vote_path", "")) if self.result.get("vote_path") else None
         return ds.GetProjection() if ds is not None else ""
 
+    def _draw_allowed(self):
+        return bool(self.result.get("vote_path")) and not self._busy and self._drawing_row is None
+
+    def _refresh_draw_buttons(self):
+        """While an outline is being drawn its button is greyed out and says so, and the other
+        crops cannot start drawing; afterwards every button returns to Draw area / Redraw."""
+        allowed = self._draw_allowed()
+        for row in self.crop_rows:
+            button = row["draw"]; drawing = row is self._drawing_row
+            button.setText("✎ Drawing…" if drawing else ("Redraw" if row["geometry"] is not None else "Draw area"))
+            button.setEnabled(allowed and not drawing)
+            button.setProperty("drawing", drawing)
+            button.setToolTip("Click the corners of the area on the map. Right-click to finish, Esc to cancel." if drawing else "")
+            row["remove"].setEnabled(not drawing and not self._busy)
+            row["status"].setProperty("drawing", drawing)
+            for widget in (button, row["status"]):
+                widget.style().unpolish(widget); widget.style().polish(widget)
+        self.crops_note.setProperty("drawing", self._drawing_row is not None)
+        self.crops_note.style().unpolish(self.crops_note); self.crops_note.style().polish(self.crops_note)
+
     def _draw_crop(self, row):
         if self._busy:
             self._busy_warning(); return
+        if self._drawing_row is not None:
+            return
         canvas = self.iface.mapCanvas()
-        if self._draw_tool is not None:
-            canvas.unsetMapTool(self._draw_tool)
-        else:
-            self._previous_tool = canvas.mapTool()
+        self._previous_tool = canvas.mapTool()
         tool = PolygonDrawTool(canvas)
         tool.finished.connect(lambda geometry: self._crop_drawn(row, geometry))
         tool.cancelled.connect(lambda: self._drawing_done(row, cancelled=True))
-        self._draw_tool = tool
+        self._draw_tool = tool; self._drawing_row = row
         canvas.setMapTool(tool)
-        row["status"].setText("drawing…")
-        self.crops_note.setText("Drawing the area of {}: click its corners on the map, right-click to finish, Esc to cancel, "
-                                "Backspace to undo the last corner.".format(row["name"].text().strip() or "this crop"))
+        name = row["name"].text().strip() or "this crop"
+        row["status"].setText("● drawing")
+        self.crops_note.setText("✎ Drawing the area of {}: click its corners on the map, right-click (or double-click) to finish. "
+                                "Esc cancels, Backspace undoes the last corner.".format(name))
+        self._refresh_draw_buttons()
+        bar = self.iface.messageBar()
+        self._draw_message = bar.createMessage("Plant Pixel Extractor", "Drawing the area of {}: click its corners on the map, "
+                                               "right-click to finish, Esc to cancel.".format(name))
+        bar.pushWidget(self._draw_message, Qgis.Info)
+        canvas.setFocus()
 
     def _drawing_done(self, row, cancelled=False):
         canvas = self.iface.mapCanvas()
         tool = self._draw_tool
-        self._draw_tool = None
-        if tool is not None and canvas.mapTool() is tool:
+        self._draw_tool = None; self._drawing_row = None
+        message, self._draw_message = getattr(self, "_draw_message", None), None
+        if message is not None:
+            try: self.iface.messageBar().popWidget(message)
+            except RuntimeError: pass           # already closed by the user
+        if tool is not None and canvas.mapTool() is tool and not getattr(tool, "switched_away", False):
             if self._previous_tool is not None: canvas.setMapTool(self._previous_tool)
-            else: canvas.unsetMapTool(tool)
+            else: self.iface.actionPan().trigger()      # no tool before drawing: leave the map on Pan
         if cancelled and row is not None and row in self.crop_rows:
             row["status"].setText("✓ drawn" if row["geometry"] is not None else "not drawn")
         self.crops_note.setText(self._crops_hint())
+        self._refresh_draw_buttons()
 
     def _crop_drawn(self, row, geometry):
         if row not in self.crop_rows:
             return
         copy, crs = to_crs(geometry, self.iface.mapCanvas().mapSettings().destinationCrs(), self._image_wkt())
         row["geometry"] = copy; self._crop_crs = crs
-        row["status"].setText("✓ drawn"); row["draw"].setText("Redraw")
+        row["status"].setText("✓ drawn")
         self._drawing_done(row)
         self._show_crop_layer()
         self._request_zones()
@@ -1630,8 +1604,7 @@ class PPEDockWidget(QDockWidget):
         self.continue_button.setEnabled(not running)
         for button in (self.export_bands_button, self.export_vis_button, self.export_all_button, self.aoi_export_button):
             button.setEnabled(not running and bool(self.result.get("mask_path")))
-        for row in self.crop_rows:
-            row["draw"].setEnabled(not running and bool(self.result.get("vote_path")))
+        self._refresh_draw_buttons()
         self.add_crop_button.setEnabled(not running and bool(self.result.get("vote_path")))
         if running and (action == "zones" or str(action).startswith("export")):
             bar = self._bar_for(action)
@@ -1732,8 +1705,8 @@ class PPEDockWidget(QDockWidget):
         self.append_log("Run folder: {}".format(result.get("run_dir", "")))
         self.zone_info = None
         self.add_crop_button.setEnabled(True)
+        self._refresh_draw_buttons()
         for row in self.crop_rows:
-            row["draw"].setEnabled(True)
             row["slider"].blockSignals(True); row["slider"].setValue(round(threshold * 100)); row["slider"].blockSignals(False)
             row["value"].setText("{:.2f}".format(threshold))
         self.crops_note.setText(self._crops_hint())
@@ -1846,6 +1819,10 @@ class PPEDockWidget(QDockWidget):
             QPushButton:disabled, QPushButton[primary="true"]:disabled, QPushButton[secondary="true"]:disabled {
                 color: #97a69e; background: #edf1ef; border-color: #dde5e0;
             }
+            QPushButton[drawing="true"]:disabled {
+                color: #3f4d47; background: #d5dcd8; border: 1px dashed #7d8f86; font-style: italic; font-weight: 600;
+            }
+            QLabel[drawing="true"], QLabel#ppeHint[drawing="true"] { color: #9a5b00; font-weight: 700; }
 
             QToolButton#sectionToggle { text-align: left; padding: 7px 10px; border: 1px solid #d9e3dd; border-radius: 8px; background: #ffffff; color: #17473a; font-weight: 700; }
             QToolButton#sectionToggle:hover { border-color: #2b8560; }

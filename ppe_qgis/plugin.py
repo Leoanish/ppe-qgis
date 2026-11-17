@@ -21,7 +21,7 @@ from .layer_utils import (
     replace_preview_layer,
     validate_aligned,
 )
-from .process_runner import PPEPreviewRunner, PPEProcessRunner
+from .process_runner import describe_error, PPEPreviewRunner, PPEProcessRunner
 
 
 class PPEPlugin:
@@ -226,9 +226,10 @@ class PPEPlugin:
     def _start_process(self, config):
         try:
             self.runner.start(config)
-        except RuntimeError as exc:
+        except Exception as exc:
+            # e.g. the output folder cannot be written (no permission, disconnected drive)
             self.dock.set_running(False, self.current_action)
-            self.dock.show_error(str(exc))
+            self._job_failed(describe_error(exc, config.get("action")))
 
     def _runner_state_changed(self, running):
         if self.dock is not None:
@@ -309,6 +310,7 @@ class PPEPlugin:
         )
 
     def _job_failed(self, message):
+        message = str(message or "").strip() or "PPE stopped without an error message; the Log box on the Run tab has the details."
         if self.dock is not None:
             self.dock.set_running(False, self.current_action)
             self.dock.show_error(message)

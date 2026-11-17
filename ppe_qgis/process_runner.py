@@ -4,14 +4,37 @@ from datetime import datetime
 from qgis.PyQt.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 from .native_engine import Cancelled, NativePPEEngine
 
+ACTION_NAMES = {"run": "Run", "apply": "Finalize", "zones": "Preparing the crop areas", "export_aoi": "Plot export", "preview": "Opening the image"}
+
+
+def describe_error(exc, action=None, step=None, log_path=None):
+    """A message that is never blank: what was being done, the kind of error and its text.
+    Some errors carry no text of their own (an empty KeyError, AssertionError or MemoryError),
+    which used to show in QGIS as an empty red message."""
+    text = str(exc).strip()
+    kind = type(exc).__name__
+    if isinstance(exc, MemoryError):
+        text = "the computer ran out of memory. Close other programs and try again"
+    elif isinstance(exc, KeyError):
+        text = "missing value {}".format(text or "(no name)")
+    what = ACTION_NAMES.get(action) or ("Export" if str(action or "").startswith("export") else "PPE")
+    message = "{} stopped{}: {}{}".format(
+        what, " while {}".format(step[0].lower() + step[1:]) if step else "",
+        "{}: ".format(kind) if kind not in ("ValueError", "RuntimeError") or not text else "",
+        text or "no further details")
+    if log_path:
+        message += "\nDetails are in the log: {}".format(log_path)
+    return message
+
 class _Worker(QObject):
     progress=pyqtSignal(int,str); log=pyqtSignal(str); import_ready=pyqtSignal(dict)
     succeeded=pyqtSignal(dict); failed=pyqtSignal(str); finished=pyqtSignal()
-    def __init__(self, config): super().__init__(); self.config=dict(config); self.cancelled=False
+    def __init__(self, config, log_path=None): super().__init__(); self.config=dict(config); self.cancelled=False; self.log_path=log_path; self.step=""
+    def _progress(self, percent, message): self.step=str(message or ""); self.progress.emit(percent, message)
     @pyqtSlot()
     def run(self):
         try:
-            engine=NativePPEEngine(self.progress.emit,self.log.emit,self.import_ready.emit,lambda:self.cancelled)
+            engine=NativePPEEngine(self._progress,self.log.emit,self.import_ready.emit,lambda:self.cancelled)
             action=self.config.get("action")
             if action=="apply": result=engine.apply(self.config)
             elif action=="zones": result=engine.prepare_crop_areas(self.config)
@@ -19,9 +42,10 @@ class _Worker(QObject):
             elif str(action).startswith("export"): result=engine.export_plant_only(self.config)
             else: result=engine.run(self.config)
             self.succeeded.emit(result)
-        except Cancelled as exc: self.failed.emit(str(exc))
+        except Cancelled as exc: self.failed.emit(str(exc).strip() or "Cancelled.")
         except Exception as exc:
-            self.log.emit(traceback.format_exc()); self.failed.emit("{}\nSee the permanent PPE log for details.".format(exc))
+            self.log.emit(traceback.format_exc())
+            self.failed.emit(describe_error(exc, self.config.get("action"), self.step, self.log_path))
         finally: self.finished.emit()
 
 class PPEProcessRunner(QObject):
@@ -34,7 +58,7 @@ class PPEProcessRunner(QObject):
         if self.is_running: raise RuntimeError("PPE is already processing imagery.")
         log_dir=os.path.join(config["output_dir"],"logs"); os.makedirs(log_dir,exist_ok=True)
         self._log_path=os.path.join(log_dir,"ppe_{}.log".format(datetime.now().strftime("%Y%m%d_%H%M%S"))); self._log_lines=[]
-        self.thread=QThread(self); self.worker=_Worker(config); self.worker.moveToThread(self.thread)
+        self.thread=QThread(self); self.worker=_Worker(config, self._log_path); self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run); self.worker.progress.connect(self.progress); self.worker.import_ready.connect(self.import_ready)
         self.worker.log.connect(self._capture_log); self.worker.succeeded.connect(self.succeeded); self.worker.failed.connect(self.failed)
         self.worker.finished.connect(self._write_log); self.worker.finished.connect(self.thread.quit)
@@ -57,7 +81,7 @@ class _PreviewWorker(QObject):
     @pyqtSlot()
     def run(self):
         try: self.ready.emit(NativePPEEngine().preview(self.config))
-        except Exception as exc: self.failed.emit(str(exc))
+        except Exception as exc: self.failed.emit(describe_error(exc, "preview"))
         finally: self.finished.emit()
 
 class PPEPreviewRunner(QObject):

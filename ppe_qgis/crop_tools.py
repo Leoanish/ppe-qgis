@@ -76,6 +76,7 @@ class PolygonDrawTool(QgsMapTool):
     def keyPressEvent(self, event):  # noqa: N802 - Qt API
         if event.key() == Qt.Key_Escape:
             self._stop()
+            self.done = True
             self.cancelled.emit()
         elif event.key() in (Qt.Key_Backspace, Qt.Key_Delete) and self.points:
             self.points.pop()
@@ -99,9 +100,15 @@ class PolygonDrawTool(QgsMapTool):
         self.points = []
         self.band.reset(QgsWkbTypes.PolygonGeometry)
 
+    switched_away = False
+
     def deactivate(self):
-        if not self.done and self.points:
+        # Another map tool was chosen (pan, zoom...) before the outline was finished: drawing is
+        # over, so the panel must hear about it even when no corner was clicked yet.
+        if not self.done:
             self._stop()
+            self.done = True
+            self.switched_away = True       # QGIS is switching to the tool the user chose: keep it
             self.cancelled.emit()
         self.band.reset(QgsWkbTypes.PolygonGeometry)
         super().deactivate()

@@ -2,7 +2,7 @@
 
 import csv
 import json
-import math
+import math, threading
 import os
 import re
 import time
@@ -631,6 +631,43 @@ def _bilinear_interp_block(grid, y, h, width, grid_h, grid_w, height, x_cache=No
     return ((1.0 - fy) * top + fy * bot).astype(np.float32)
 
 
+def physical_memory_bytes():
+    """Total RAM of the computer (macOS, Linux, Windows); 4 GB if it cannot be read."""
+    try:
+        if hasattr(os, "sysconf") and "SC_PAGE_SIZE" in os.sysconf_names and "SC_PHYS_PAGES" in os.sysconf_names:
+            value = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+            if value > 0: return float(value)
+        if os.name == "nt":
+            import ctypes
+
+            class MemoryStatus(ctypes.Structure):
+                _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong), ("total", ctypes.c_ulonglong),
+                            ("available", ctypes.c_ulonglong), ("page_total", ctypes.c_ulonglong),
+                            ("page_available", ctypes.c_ulonglong), ("virtual_total", ctypes.c_ulonglong),
+                            ("virtual_available", ctypes.c_ulonglong), ("extended", ctypes.c_ulonglong)]
+            status = MemoryStatus(); status.length = ctypes.sizeof(MemoryStatus)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)): return float(status.total)
+    except Exception:
+        pass
+    return 4.0 * 1024 ** 3
+
+
+def _interp_columns(grid, width, grid_w):
+    """First half of _bilinear_interp_block, done once per run: every grid row interpolated to full width."""
+    step_x = float(width) / max(1, grid_w)
+    x_idx = np.clip((np.arange(width, dtype=np.float32) + 0.5) / step_x - 0.5, 0, grid_w - 1)
+    x0 = np.floor(x_idx).astype(int); x1 = np.minimum(x0 + 1, grid_w - 1); fx = (x_idx - x0)[None, :]
+    return (1.0 - fx) * grid[:, x0] + fx * grid[:, x1]
+
+
+def _interp_rows(columns, y, h, grid_h, height):
+    """Second half: the same result as _bilinear_interp_block for rows y .. y+h."""
+    step_y = float(height) / max(1, grid_h)
+    y_idx = np.clip((np.arange(y, y + h, dtype=np.float32) + 0.5) / step_y - 0.5, 0, grid_h - 1)
+    y0 = np.floor(y_idx).astype(int); y1 = np.minimum(y0 + 1, grid_h - 1); fy = (y_idx - y0)[:, None]
+    return ((1.0 - fy) * columns[y0] + fy * columns[y1]).astype(np.float32)
+
+
 def local_offsets(layer, valid, split, low, high, grid_h, grid_w, min_pixels=80):
     """How far the soil-plant split of each part of the field sits from the whole-field split.
 
@@ -1063,7 +1100,15 @@ class NativePPEEngine:
 
     def _read_band(self, name, x=0, y=0, w=None, h=None, bx=None, by=None):
         w, h = w or self.width, h or self.height
-        band = self.datasets[name].GetRasterBand(self.sources[name][1])
+        # A GDAL dataset must not be read from two threads at once: worker threads open their own.
+        local = getattr(self, "_thread_local", None)
+        if local is not None and threading.current_thread() is not threading.main_thread():
+            if not hasattr(local, "datasets"): local.datasets = {}
+            if name not in local.datasets: local.datasets[name] = safe_gdal_open(self.sources[name][0])
+            ds = local.datasets[name]
+        else:
+            ds = self.datasets[name]
+        band = ds.GetRasterBand(self.sources[name][1])
         a = band.ReadAsArray(x, y, w, h, buf_xsize=bx, buf_ysize=by).astype(np.float32)
         nd = band.GetNoDataValue()
         if nd is not None: a[a == nd] = np.nan
@@ -1071,7 +1116,17 @@ class NativePPEEngine:
 
     def _sample_bands(self, n):
         ratio = self.width/max(1, self.height); bx = min(self.width, max(1, int(math.sqrt(n*ratio)))); by = min(self.height, max(1, int(n/bx)))
-        return {name: self._read_band(name, bx=bx, by=by) for name in self.sources}
+        if len(self.sources) < 2 or self.thread_count < 2:
+            return {name: self._read_band(name, bx=bx, by=by) for name in self.sources}
+        # Each band is decompressed in its own thread (with its own GDAL dataset).
+        from concurrent.futures import ThreadPoolExecutor
+        self._thread_local = threading.local()
+        try:
+            with ThreadPoolExecutor(max_workers=min(self.thread_count, len(self.sources))) as pool:
+                futures = {name: pool.submit(self._read_band, name, 0, 0, None, None, bx, by) for name in self.sources}
+                return {name: f.result() for name, f in futures.items()}
+        finally:
+            self._thread_local = None
 
     def _valid(self, bands):
         valid = np.logical_and.reduce([np.isfinite(v) for v in bands.values()])
@@ -1086,6 +1141,51 @@ class NativePPEEngine:
         out = gdal.GetDriverByName("GTiff").Create(path, self.width, self.height, 1, dtype, options=opts)
         out.SetGeoTransform(self.template.GetGeoTransform()); out.SetProjection(self.template.GetProjection()); out.GetRasterBand(1).SetNoDataValue(nodata)
         return out
+
+    @staticmethod
+    def _display_stretches(channel_names, sampled):
+        """Low and high display value of each channel: 0.2 and 99 percentiles of the sample."""
+        stretches = []
+        for name in channel_names:
+            values = sampled[name]; values = values[np.isfinite(values) & (values > 0)]
+            lo, hi = np.percentile(values, (0.2, 99.0)) if values.size else (0, 1)
+            if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo: lo, hi = 0, 1
+            stretches.append((float(lo), float(hi)))
+        return stretches
+
+    def _block_workers(self, block_rows, n_blocks):
+        """How many row blocks to process at once: no more than the CPU threads PPE may use, and
+        few enough that the blocks in memory stay within a quarter of the computer's RAM, so a
+        small laptop runs safely (just with fewer workers) and QGIS keeps room to draw."""
+        per_block = float(block_rows) * self.width * 4.0 * (len(self.sources) + 12)   # bands + votes, indices, guards (measured ~10)
+        budget = 0.25 * physical_memory_bytes()
+        by_memory = int(budget // max(per_block, 1.0)) - 1        # one more block waits in the queue
+        return max(1, min(self.thread_count, n_blocks, by_memory, 8))
+
+    def _display_writer(self, path, channel_names, sampled):
+        """The display image of _write_rgb_display, written block by block during the vote pass,
+        so the bands are read once for both instead of twice."""
+        opts = ["TILED=YES", "COMPRESS=DEFLATE", "BIGTIFF=IF_SAFER", "NUM_THREADS={}".format(self.thread_count)]
+        out = gdal.GetDriverByName("GTiff").Create(path, self.width, self.height, 3, gdal.GDT_Byte, options=opts)
+        out.SetGeoTransform(self.template.GetGeoTransform()); out.SetProjection(self.template.GetProjection())
+        stretches = self._display_stretches(channel_names, sampled)
+        for index in range(1, 4):
+            band = out.GetRasterBand(index); band.SetNoDataValue(0)
+            band.SetColorInterpretation((gdal.GCI_RedBand, gdal.GCI_GreenBand, gdal.GCI_BlueBand)[index-1])
+        class Writer:
+            def convert(self, raw):
+                planes = []
+                for name, (lo, hi) in zip(channel_names, stretches):
+                    values = raw[name]; valid = np.isfinite(values) & (values > 0)
+                    scaled = (values - lo) * 254.0 / max(hi - lo, 1e-6) + 1.0
+                    planes.append(np.where(valid, np.clip(scaled, 1, 255), 0).astype(np.uint8))
+                return planes
+            def write(self, planes, y):
+                for index, plane in enumerate(planes, 1): out.GetRasterBand(index).WriteArray(plane, 0, y)
+            def close(self):
+                nonlocal out
+                out.FlushCache(); out = None
+        return Writer()
 
     def _write_rgb_display(self, path, channel_names, sampled):
         """Write a reliable, full-resolution, display-ready RGB GeoTIFF."""
@@ -1122,10 +1222,13 @@ class NativePPEEngine:
         self.log_cb("Available vegetation indices ({}): {}".format(len(available), ", ".join(available)))
         display_mode, channels = display_channels(bands); rgb = display_mode == "true colour"
         rgb_sources = [self.sources[x][0] for x in channels]; rgb_source_bands = [self.sources[x][1] for x in channels]
-        self.progress(7, "Preparing the full-resolution display image ({})".format(display_mode))
-        display_sample = self._sample_cache; rgb_path = self._write_rgb_display(os.path.join(run_dir, "ppe_rgb_display.tif"), channels, display_sample)
+        self.progress(7, "Preparing the display image ({})".format(display_mode))
+        display_sample = self._sample_cache; display_path = rgb_path = os.path.join(run_dir, "ppe_rgb_display.tif")
         imported = {"rgb_path": rgb_path, "rgb_sources": rgb_sources, "rgb_source_bands": rgb_source_bands, "rgb_bands": list(dict.fromkeys(channels)), "true_rgb": rgb, "display_mode": display_mode, "source_bands": bands, "available_vis": available, "band_detection": self.detection_method, "hsi_proxies": self.hsi_proxy_info, "run_dir": run_dir}
-        self.import_cb(imported); self.progress(12, "Sampling the full field and calculating possible vegetation indices")
+        # The display file is written during the vote pass; until then QGIS draws the source bands
+        # with the same stretch (in the units of the files).
+        early_stretch = [(lo * self.scale, hi * self.scale) for lo, hi in self._display_stretches(channels, display_sample)]
+        self.import_cb(dict(imported, rgb_path="", display_stretch=early_stretch)); self.progress(12, "Sampling the full field and calculating possible vegetation indices")
         sample_2d = self._sample_cache
         valid_2d = self._valid(sample_2d)
         guard = self._fit_bright_guard(sample_2d, valid_2d) if cfg.get("bright_guard", False) else None
@@ -1234,52 +1337,63 @@ class NativePPEEngine:
         block_rows = 512
 
         # Step 3: every layer x method result is one equal vote.
-        for y in range(0, self.height, block_rows):
+        columns = {name: _interp_columns(offsets[name], self.width, grid_w) for name in offsets}
+        display = self._display_writer(display_path, channels, display_sample)
+
+        def block_votes(y):
             h = min(block_rows, self.height-y); raw = {n: self._read_band(n, y=y, h=h) for n in self.sources}; ok = self._valid(raw); total = np.zeros((h,self.width), np.float32); wsum = 0.
+            rgb = display.convert(raw)
             for name, polarity, methods in models:
                 x = raw[name] if name in raw else compute_vi(name, raw)
-                if name in offsets:
-                    x = x - _bilinear_interp_block(offsets[name], y, h, self.width, grid_h, grid_w, self.height)
+                if name in columns:
+                    x = x - _interp_rows(columns[name], y, h, grid_h, self.height)
                 for method, param in methods:
                     if isinstance(param, tuple):
-                        # three classes: soil 0, mixed 0.5, plant 1 (multi-Otsu, or a CDF with two knees)
                         vote = np.where(x > param[1], 1.0, np.where(x > param[0], 0.5, 0.0)).astype(np.float32)
                     else:
                         vote = (x >= param).astype(np.float32)
                     if polarity < 0: vote = 1.0 - vote
                     total += vote; wsum += 1.0
             result = total/max(wsum, 1e-12)
-            if single_class:
-                result = np.full((h, self.width), 1.0 if single_class == "plant" else 0.0, np.float32)
-            if guard and not single_class:
-                rejected = self._bright_guard_mask(raw, guard) & ok
-                # The percentages reported for the guards count only pixels that would
-                # otherwise have been plant at the default threshold.
-                rejected_count += int((rejected & (result >= 0.45)).sum())
-                result[rejected] = 0.0
-                rejection = np.where(ok, rejected.astype(np.uint8), 255).astype(np.uint8)
-                rejection_out.GetRasterBand(1).WriteArray(rejection, 0, y)
-            if shadow_guard and not single_class:
-                rejected_s = self._shadow_guard_mask(raw, shadow_guard) & ok
-                shadow_rejected_count += int((rejected_s & (result >= 0.45)).sum())
-                result[rejected_s] = 0.0
-                if shadow_rejection_out is not None:
-                    rejection_s = np.where(ok, rejected_s.astype(np.uint8), 255).astype(np.uint8)
-                    shadow_rejection_out.GetRasterBand(1).WriteArray(rejection_s, 0, y)
-            if colour_guard and not single_class:
-                rejected_c = self._colour_guard_mask(raw, colour_guard) & ok
-                colour_rejected_count += int((rejected_c & (result >= 0.45)).sum())
-                result[rejected_c] = 0.0
-            if algae_guard and not single_class:
-                rejected_b = self._algae_guard_mask(raw, algae_guard) & ok
-                biofilm_rejected_count += int((rejected_b & (result >= 0.45)).sum())
-                result[rejected_b] = 0.0
-                if biofilm_rejection_out is not None:
-                    rejection_b = np.where(ok, rejected_b.astype(np.uint8), 255).astype(np.uint8)
-                    biofilm_rejection_out.GetRasterBand(1).WriteArray(rejection_b, 0, y)
-            valid_count += int(ok.sum())
-            result[~ok] = NODATA; out.GetRasterBand(1).WriteArray(result, 0, y)
-            self.progress(40+int(45*(y+h)/self.height), "Combining {} full-resolution layer×method votes".format(n_masks))
+            masks = {}
+            if guard:
+                masks["bright"] = self._bright_guard_mask(raw, guard) & ok
+            if shadow_guard:
+                masks["shadow"] = self._shadow_guard_mask(raw, shadow_guard) & ok
+            if colour_guard:
+                masks["colour"] = self._colour_guard_mask(raw, colour_guard) & ok
+            if algae_guard:
+                masks["algae"] = self._algae_guard_mask(raw, algae_guard) & ok
+            counts = {}
+            for key in ("bright", "shadow", "colour", "algae"):
+                if key in masks:
+                    counts[key] = int((masks[key] & (result >= 0.45)).sum()); result[masks[key]] = 0.0
+            nvalid = int(ok.sum()); result[~ok] = NODATA
+            return y, h, result, ok, masks, counts, nvalid, rgb
+
+        from concurrent.futures import ThreadPoolExecutor
+        self._thread_local = threading.local()
+        starts = list(range(0, self.height, block_rows))
+        workers = self._block_workers(block_rows, len(starts))
+        self.log_cb("Full-resolution pass: {} blocks of {} rows on {} worker thread(s).".format(len(starts), block_rows, workers))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            pending = []; nxt = 0
+            def submit():
+                nonlocal nxt
+                if nxt < len(starts): pending.append(pool.submit(block_votes, starts[nxt])); nxt += 1
+            for _ in range(workers + 1): submit()
+            while pending:
+                y, h, result, ok, masks, counts, nvalid, rgb = pending.pop(0).result(); submit()
+                display.write(rgb, y)
+                rejected_count += counts.get("bright", 0); shadow_rejected_count += counts.get("shadow", 0)
+                colour_rejected_count += counts.get("colour", 0); biofilm_rejected_count += counts.get("algae", 0)
+                for key, target in (("bright", rejection_out), ("shadow", shadow_rejection_out), ("algae", biofilm_rejection_out)):
+                    if key in masks and target is not None:
+                        target.GetRasterBand(1).WriteArray(np.where(ok, masks[key].astype(np.uint8), 255).astype(np.uint8), 0, y)
+                valid_count += nvalid
+                out.GetRasterBand(1).WriteArray(result, 0, y)
+                self.progress(40+int(45*(y+h)/self.height), "Combining {} full-resolution layer×method votes".format(n_masks))
+        display.close(); self._thread_local = None
         out.FlushCache(); out = None
         if rejection_out is not None: rejection_out.FlushCache(); rejection_out = None
         if shadow_rejection_out is not None: shadow_rejection_out.FlushCache(); shadow_rejection_out = None

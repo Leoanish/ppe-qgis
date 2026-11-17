@@ -135,3 +135,17 @@ class SuggestionTests(unittest.TestCase):
         from ppe_qgis.native_engine import suggest_threshold
         frac, bands = self._field()
         self.assertIsNone(suggest_threshold(np.full(frac.shape, 0.5), bands, np.ones(frac.shape, bool), 2, 2))
+
+
+class ErrorMessageTests(unittest.TestCase):
+    """An error is never shown as an empty message: it names the step, the kind of error and its text."""
+
+    def test_messages_are_never_blank(self):
+        from ppe_qgis.process_runner import describe_error
+        for exc in (KeyError(), AssertionError(), MemoryError(), ValueError(""), RuntimeError(), OSError()):
+            message = describe_error(exc, "run", "Combining votes")
+            self.assertTrue(message.split("\n")[0].strip(), repr(exc))
+            self.assertIn("Run stopped while combining votes", message)
+        self.assertIn("log: /x.log", describe_error(KeyError("features"), "export_aoi", "Reading plots", "/x.log"))
+        self.assertEqual(describe_error(ValueError("No recognizable raster bands were found."), "preview"),
+                         "Opening the image stopped: No recognizable raster bands were found.")
