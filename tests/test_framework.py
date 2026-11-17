@@ -245,3 +245,24 @@ class DisplayTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TrueColourStretchTests(unittest.TestCase):
+    """True colour keeps the real colour balance: one stretch for red, green and blue together."""
+
+    def test_true_colour_shares_one_stretch(self):
+        from ppe_qgis.native_engine import display_stretch
+        rng = np.random.default_rng(0)
+        values = {"red": rng.uniform(0.01, 0.25, 5000), "green": rng.uniform(0.02, 0.17, 5000), "blue": rng.uniform(0.01, 0.10, 5000)}
+        s = display_stretch(["red", "green", "blue"], values)
+        self.assertEqual(len(set(s)), 1)
+        self.assertEqual(s[0][0], 0.0)
+        self.assertAlmostEqual(s[0][1], float(np.percentile(np.concatenate(list(values.values())), 99.5)))
+
+    def test_false_colour_keeps_a_stretch_per_band(self):
+        from ppe_qgis.native_engine import display_stretch
+        rng = np.random.default_rng(1)
+        values = {"nir": rng.uniform(0.2, 0.6, 5000), "red": rng.uniform(0.01, 0.2, 5000), "green": rng.uniform(0.02, 0.15, 5000)}
+        s = display_stretch(["nir", "red", "green"], values)
+        self.assertEqual(len(set(s)), 3)
+        self.assertGreater(s[0][1], s[1][1])

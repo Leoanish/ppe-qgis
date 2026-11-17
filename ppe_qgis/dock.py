@@ -1317,8 +1317,9 @@ class PPEDockWidget(QDockWidget):
             self.stage_tip.setVisible(False)
 
     # ---- pale plant parts (tassels, flowers, heads...): information only (Review tab) ----------
-    PALE_SHOW_IMAGE = 1.5      # show the card when this percent of the plant is pale...
+    PALE_SHOW_IMAGE = 1.5      # the full card when this percent of the plant is pale...
     PALE_SHOW_CROP = 2.0       # ...or this percent of one crop area
+    PALE_NOTE = 0.2            # below the card, a short calm note from this percent on (0.5 % for a crop)
 
     def _pale_card(self):
         frame = QFrame(); frame.setObjectName("paleCard")
@@ -1334,6 +1335,11 @@ class PPEDockWidget(QDockWidget):
         box.addWidget(self.pale_button)
         frame.setVisible(False); self.pale_frame = frame
         return frame
+
+    def _set_pale_style(self, full):
+        self.pale_frame.setProperty("compact", not full)
+        for widget in (self.pale_frame, self.pale_title):
+            widget.style().unpolish(widget); widget.style().polish(widget)
 
     def _pale_button_toggled(self, on):
         self.pale_button.setText("Hide them from the map" if on else "Show them on the map")
@@ -1356,10 +1362,23 @@ class PPEDockWidget(QDockWidget):
         rows = (self.zone_info or {}).get("rows") or []
         crops = [row["name"].text().strip() for row in self.crop_rows if row["name"].text().strip()]
         crop_hit = any(p is not None and p >= self.PALE_SHOW_CROP for p in zone_pct[1:])
-        if pct < self.PALE_SHOW_IMAGE and not crop_hit:
+        some = pct >= self.PALE_NOTE or any(p is not None and p >= 0.5 for p in zone_pct[1:])
+        if not some:
             self.pale_frame.setVisible(False)
             if self.pale_button.isChecked(): self.pale_button.setChecked(False)
             return
+        if pct < self.PALE_SHOW_IMAGE and not crop_hit:
+            # A little: just an indication, so nobody wonders whether plant was missed.
+            parts, _tip, _known = likely_parts(crops[0] if len(crops) == 1 else None, stage)
+            self._set_pale_style(False)
+            self.pale_title.setText("✿  A few pale plant parts ({:.1f} % of the plant)".format(pct))
+            self.pale_text.setText("Bright spots inside the canopy that are plant but not leaf-green, probably {}. "
+                                   "A small amount, nothing to change; they are shown here so you know they were "
+                                   "seen.".format(parts))
+            self.pale_frame.setVisible(True)
+            return
+        self._set_pale_style(True)
+        self.pale_title.setText("✿  Pale plant parts in this image")
         at_stage = " at {}".format(stage.split(" / ")[0].lower()) if stage else ""
         lines = ["About <b>{:.1f} %</b> of the plant in this image is <b>pale</b>: inside the canopy, reflecting "
                  "plant-level near-infrared light, but not leaf-green.".format(pct)]
@@ -1922,6 +1941,8 @@ class PPEDockWidget(QDockWidget):
             QFrame#paleCard { background: #fff6dd; border: 1px solid #f0c35a; border-left: 5px solid #e6a100; border-radius: 8px; }
             QFrame#paleCard QLabel { background: transparent; }
             QLabel#paleTitle { color: #7a4e00; font-weight: 700; font-size: 13px; }
+            QFrame#paleCard[compact="true"] { background: #fffaf0; border: 1px solid #f1dcae; border-left: 3px solid #e9c46a; }
+            QFrame#paleCard[compact="true"] QLabel#paleTitle { font-size: 12px; }
             QLabel#paleText { color: #4a3a12; }
 
             QToolButton#sectionToggle { text-align: left; padding: 7px 10px; border: 1px solid #d9e3dd; border-radius: 8px; background: #ffffff; color: #17473a; font-weight: 700; }

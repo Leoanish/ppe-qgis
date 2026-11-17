@@ -689,6 +689,29 @@ def pale_plant_mask(bands, fit):
             & (green_red < fit["green_red_max"]))
 
 
+def display_stretch(channel_names, values):
+    """Low and high display value for each of the three channels shown on the map.
+
+    True colour (red, green, blue): ONE stretch shared by the three bands, from zero reflectance to
+    the 99.5th percentile of all three together. That keeps the real colour balance: stretching
+    each band on its own (what PPE did before) turned brown soil grey-white and leaves cyan-green.
+    False colour and single-band pictures keep a stretch per band (0.2 and 99 percentiles), the
+    usual way to show them. `values` maps band name -> array of sampled values."""
+    names = list(channel_names)
+    clean = {n: np.asarray(values[n], np.float64)[np.isfinite(values[n]) & (np.asarray(values[n]) > 0)] for n in set(names)}
+    if names == ["red", "green", "blue"] and all(clean[n].size for n in names):
+        hi = float(np.percentile(np.concatenate([clean[n] for n in names]), 99.5))
+        if np.isfinite(hi) and hi > 0:
+            return [(0.0, hi)] * 3
+    out = []
+    for n in names:
+        v = clean[n]
+        lo, hi = (float(x) for x in np.percentile(v, (0.2, 99.0))) if v.size else (0.0, 1.0)
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo: lo, hi = 0.0, 1.0
+        out.append((lo, hi))
+    return out
+
+
 def physical_memory_bytes():
     """Total RAM of the computer (macOS, Linux, Windows); 4 GB if it cannot be read."""
     try:
@@ -1074,16 +1097,18 @@ class NativePPEEngine:
 
         Returns the same keys the run reports for its display, plus `display_stretch`: the
         low and high value for each of the three display channels, in the units of the file
-        (0.2 and 99 percentiles of a thin sample, the same stretch the run uses later).
+        (see display_stretch: one shared stretch for true colour; the same rule the run uses later).
         """
         self._map_bands(cfg)
         bands = list(self.sources)
         mode, channels = display_channels(bands)
-        # The stretch comes from a 6 x 6 grid of small full-resolution windows. A thinned read of
+        # The stretch comes from a grid of small full-resolution windows. A thinned read of
         # the whole image would have to decompress every tile of a compressed file and can take
         # many seconds; these windows touch only a few tiles, so the image appears at once.
-        size = int(max(16, min(128, self.width // 6, self.height // 6))); stretch = []; cache = {}
-        xs = np.linspace(0, self.width - size, 6).astype(int); ys = np.linspace(0, self.height - size, 6).astype(int)
+        # A 10 x 10 grid of 32-pixel windows: spread widely enough to catch bare ground at the field
+        # edges (6 x 6 larger windows missed it on Kritis and drew the image too bright and green).
+        size = int(max(8, min(32, self.width // 10, self.height // 10))); cache = {}
+        xs = np.linspace(0, self.width - size, 10).astype(int); ys = np.linspace(0, self.height - size, 10).astype(int)
         for name in channels:
             if name not in cache:
                 path, band = self.sources[name]; rb = self.datasets[name].GetRasterBand(band); nodata = rb.GetNoDataValue(); parts = []
@@ -1094,11 +1119,9 @@ class NativePPEEngine:
                         block = block.astype(np.float32)
                         if nodata is not None and np.isfinite(nodata): block[block == nodata] = np.nan
                         parts.append(block[np.isfinite(block) & (block > 0)])
-                values = np.concatenate(parts) if parts else np.array([], np.float32)
-                lo, hi = (float(v) for v in np.percentile(values, (0.2, 99.0))) if values.size >= 50 else (0.0, 0.0)
-                cache[name] = (lo, hi) if np.isfinite(lo) and np.isfinite(hi) and hi > lo else None
-            stretch.append(cache[name])
-        if any(item is None for item in stretch): stretch = None       # QGIS then works out its own stretch
+                cache[name] = np.concatenate(parts) if parts else np.array([], np.float32)
+        # the same stretch rule as the display image the run writes (one stretch for true colour)
+        stretch = display_stretch(channels, cache) if all(cache[n].size >= 50 for n in cache) else None   # else QGIS works out its own
         preview_dir = os.path.join(cfg.get("work_dir") or os.path.dirname(self.sources[channels[0]][0]), "ppe_preview")
         os.makedirs(preview_dir, exist_ok=True)
         available = [name for name, meta in VI_META.items() if all(x in bands for x in meta[0])]
@@ -1202,14 +1225,8 @@ class NativePPEEngine:
 
     @staticmethod
     def _display_stretches(channel_names, sampled):
-        """Low and high display value of each channel: 0.2 and 99 percentiles of the sample."""
-        stretches = []
-        for name in channel_names:
-            values = sampled[name]; values = values[np.isfinite(values) & (values > 0)]
-            lo, hi = np.percentile(values, (0.2, 99.0)) if values.size else (0, 1)
-            if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo: lo, hi = 0, 1
-            stretches.append((float(lo), float(hi)))
-        return stretches
+        """Display stretch of each channel from the fitting sample (see display_stretch)."""
+        return display_stretch(channel_names, sampled)
 
     def _block_workers(self, block_rows, n_blocks):
         """How many row blocks to process at once: no more than the CPU threads PPE may use, and
