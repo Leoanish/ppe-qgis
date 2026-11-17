@@ -26,6 +26,19 @@ Bugs and questions: <https://github.com/Leoanish/ppe-qgis/issues>. Please attach
 | **4 Export** | Write plant-only bands and vegetation indices as GeoTIFFs. |
 | **5 Plots** | Canopy cover of each plot and statistics of its plant pixels, as CSV files, with their own progress bar. |
 
+## Band folders: tick the band files
+
+When you choose a **folder of band files**, PPE lists every GeoTIFF in it:
+
+| Column | What it shows |
+|---|---|
+| Use | ticked = imported. Files PPE recognised as bands start ticked. |
+| File | the file name (hover for the full path and size) |
+| Band | the band PPE recognised from the file name, the band name inside the file or its wavelength; change it if it is wrong |
+| Note | why a file starts unticked: thermal, a stacked file with several bands, band not recognised, a second file for the same band, or a different size |
+
+Untick files that are not bands of the image, choose the band of files PPE could not recognise (for example `IMG_0001_4.tif`), and press **Use the ticked files**. PPE imports exactly those files; the dialog will not accept two files for one band, a ticked file without a band, or files of different sizes. Other files in the folder (`.aux.xml`, plot files, sub-folders) are not listed. **Choose band files…** under the folder opens the list again. Cancel keeps the automatic reading by file name.
+
 ## What you see on the map
 
 As soon as an image is chosen it is added to the map, before anything is analysed:

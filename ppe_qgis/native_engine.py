@@ -168,6 +168,55 @@ THREE_BAND_ORDERS = {
 BAND_LABELS = {"blue": "blue", "green": "green", "red": "red", "re": "red edge", "nir": "NIR"}
 
 
+def scan_band_folder(folder):
+    """Every GeoTIFF in a band folder, with the band PPE would read from it and why a file would
+    not be used. Reads file names and metadata only (no pixels). The panel shows this list so the
+    user can tick the files that really are bands.
+
+    Returns {"files": [{"path", "file", "band", "use", "note", "size"}], "other_files": n} where
+    band is blue/green/red/re/nir or None, use is PPE's proposal, size is (columns, rows).
+    """
+    files = []; other = 0; taken = {}; grid = None
+    for name in sorted(os.listdir(folder)):
+        path = os.path.join(folder, name)
+        if not os.path.isfile(path) or name.startswith("."):
+            continue
+        if not name.lower().endswith((".tif", ".tiff")):
+            other += 1; continue
+        entry = {"path": path, "file": name, "band": None, "use": False, "note": "", "size": None}
+        try:
+            ds = gdal.Open(path)
+        except Exception:
+            ds = None
+        if ds is None:
+            entry["note"] = "cannot be opened as a raster"; files.append(entry); continue
+        entry["size"] = (ds.RasterXSize, ds.RasterYSize)
+        if is_thermal_name(name):
+            entry["note"] = "thermal band: not used for plant and soil"; files.append(entry); continue
+        if ds.RasterCount != 1:
+            entry["note"] = "holds {} bands: a stacked file, not one band".format(ds.RasterCount); files.append(entry); continue
+        band = infer_band(name); how = "from the file name"
+        if band is None:
+            band = next(iter(named_band_map(ds)), None); how = "from the band name inside the file"
+        if band is None:
+            wavelength = dataset_wavelengths(ds, {"ortho_type": "ms"})[0]
+            if wavelength is not None:
+                for slot, (lo, hi) in (("blue", (420, 510)), ("green", (510, 590)), ("red", (620, 690)), ("re", (690, 760)), ("nir", (760, 1000))):
+                    if lo <= wavelength < hi: band = slot; how = "from its wavelength ({:g} nm)".format(wavelength)
+        entry["band"] = band
+        if band is None:
+            entry["note"] = "band not recognised: choose it if this is a band file"
+        elif band in taken:
+            entry["note"] = "a second {} file ({} is already used)".format(BAND_LABELS.get(band, band), taken[band])
+        elif grid is not None and entry["size"] != grid:
+            entry["note"] = "{} x {} pixels, unlike the other band files".format(*entry["size"])
+        else:
+            entry["use"] = True; entry["note"] = "{} {}".format(BAND_LABELS.get(band, band), how)
+            taken[band] = name; grid = grid or entry["size"]
+        files.append(entry)
+    return {"files": files, "other_files": other}
+
+
 def describe_image(cfg):
     """What kind of image the chosen source is, from band names, colour tags, wavelengths and
     file names only (no pixels are read). Used by the panel to say what was found.
@@ -197,6 +246,8 @@ def describe_image(cfg):
                 if count == 3: return {"kind": "unnamed3", "bands": [], "count": 3, "named": False}
                 if count == 5: found = list(CANONICAL)          # read in the standard blue..NIR order
                 else: return {"kind": "unnamed", "bands": [], "count": count, "named": False}
+        elif mode == "folder" and cfg.get("folder_bands"):
+            found = [k for k, v in cfg["folder_bands"].items() if v]; count = len(found)
         elif mode == "folder":
             folder = cfg.get("folder_path", "")
             for name in sorted(os.listdir(folder)):
@@ -822,6 +873,10 @@ class NativePPEEngine:
         mode = cfg["source_mode"]
         detection = "user band assignments"
         if mode == "bands": paths = dict(cfg["bands"])
+        elif mode == "folder" and cfg.get("folder_bands"):
+            paths = {band: path for band, path in cfg["folder_bands"].items() if path}
+            detection = "band files ticked in the folder"
+            self.log_cb("Band files ticked by the user: {}".format(", ".join("{}={}".format(b, os.path.basename(p)) for b, p in paths.items())))
         elif mode == "folder":
             files = [os.path.join(cfg["folder_path"], p) for p in sorted(os.listdir(cfg["folder_path"])) if p.lower().endswith((".tif", ".tiff"))]
             paths = {}; ignored = []

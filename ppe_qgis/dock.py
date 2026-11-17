@@ -37,10 +37,11 @@ from qgis.core import QgsProject
 from osgeo import gdal
 
 from .curve_widget import ThresholdCurveDialog
+from .band_dialog import BandFilesDialog
 from .crop_tools import PolygonDrawTool, show_crop_areas, to_crs
 from .layer_utils import canopy_at, load_plot_layer, plot_layer, remove_role, set_plot_labels
 from .native_engine import (BAND_LABELS, PLOT_FILE_FILTER, dataset_wavelengths, describe_image, display_channels,
-                            guess_plot_id_field, open_plot_file, plots_over_image)
+                            guess_plot_id_field, open_plot_file, plots_over_image, scan_band_folder)
 
 
 class HSIWavelengthDialog(QDialog):
@@ -116,6 +117,9 @@ class PPEDockWidget(QDockWidget):
         self.zone_info = None
         self._draw_tool = None
         self._previous_tool = None
+        self.folder_bands = None
+        self._folder_bands_for = None
+        self._band_dialog = None
         self.setObjectName("PPEDockWidget")
         self.setMinimumWidth(390)
         self._build_ui()
@@ -329,6 +333,13 @@ class PPEDockWidget(QDockWidget):
         self.folder_path = QLineEdit()
         self.folder_path.setPlaceholderText("Folder with blue/green/red/RE/NIR files")
         folder_form.addRow("Band folder", self._path_row(self.folder_path, directory=True, removable=True))
+        self.folder_files_note = QLabel("When you choose a folder, PPE lists its raster files so you can tick the band files.")
+        self.folder_files_note.setWordWrap(True); self.folder_files_note.setObjectName("ppeHint")
+        self.folder_files_button = QPushButton("Choose band files…"); self.folder_files_button.setProperty("secondary", True)
+        self.folder_files_button.setEnabled(False)
+        self.folder_files_button.clicked.connect(self._reopen_folder_files)
+        folder_form.addRow(self.folder_files_note)
+        folder_form.addRow(self.folder_files_button)
 
         bands_page = QWidget()
         bands_form = self._form(bands_page)
@@ -776,7 +787,19 @@ class PPEDockWidget(QDockWidget):
         path = self.folder_path.text().strip()
         if os.path.isdir(path):
             self._set_export_default(path)
+            if not self._folder_bands_for or os.path.normpath(path) != os.path.normpath(self._folder_bands_for):
+                self._choose_folder_files(path)
+        else:
+            self._forget_folder_bands()
         self._refresh_source_detection()
+
+    def _reopen_folder_files(self):
+        if self._busy:
+            self._busy_warning(); return
+        before = self._current_folder_bands()
+        self._choose_folder_files()
+        if self._current_folder_bands() != before:
+            self._refresh_source_detection()
 
     def _is_source_field(self, target):
         return target is self.stacked_path or target is self.folder_path or target in self.band_edits.values()
@@ -855,7 +878,7 @@ class PPEDockWidget(QDockWidget):
 
     def _detect_config(self):
         return {"source_mode": self.source_mode.currentData(), "stacked_path": self.stacked_path.text().strip(),
-                "folder_path": self.folder_path.text().strip(),
+                "folder_path": self.folder_path.text().strip(), "folder_bands": self._current_folder_bands(),
                 "bands": {k: e.text().strip() for k, e in self.band_edits.items() if e.text().strip()}}
 
     def _refresh_source_detection(self):
@@ -919,12 +942,55 @@ class PPEDockWidget(QDockWidget):
             self.source_mode.blockSignals(True); self.source_mode.setCurrentIndex(self._mode_index); self.source_mode.blockSignals(False)
             return
         self._mode_index = index
-        self.stacked_path.clear(); self.folder_path.clear()
+        self.stacked_path.clear(); self.folder_path.clear(); self._forget_folder_bands()
         for edit in self.band_edits.values():
             edit.clear()
         self.source_stack.setCurrentIndex(index)
         self._image_gone()
         self._refresh_source_detection()
+
+    # ---- band folder: the user ticks which files are bands ---------------------------------
+    def _current_folder_bands(self):
+        folder = self.folder_path.text().strip()
+        if self.folder_bands and self._folder_bands_for and os.path.normpath(folder) == os.path.normpath(self._folder_bands_for):
+            return dict(self.folder_bands)
+        return None
+
+    def _forget_folder_bands(self):
+        self.folder_bands = None; self._folder_bands_for = None
+        if hasattr(self, "folder_files_note"):
+            self.folder_files_note.setText("When you choose a folder, PPE lists its raster files so you can tick the band files.")
+            self.folder_files_button.setEnabled(False)
+
+    def _choose_folder_files(self, folder=None):
+        """Show the band files of the folder; the ticked files are what PPE imports."""
+        folder = folder or self.folder_path.text().strip()
+        if not os.path.isdir(folder):
+            return
+        try:
+            scan = scan_band_folder(folder)
+        except Exception as err:
+            self.folder_files_note.setText("The folder could not be read: {}".format(err)); return
+        self.folder_files_button.setEnabled(True)
+        if not scan["files"]:
+            self._forget_folder_bands(); self.folder_files_button.setEnabled(True)
+            self.folder_files_note.setText("⚠ No GeoTIFF (.tif) files in this folder.")
+            return
+        dialog = BandFilesDialog(folder, scan, self)
+        self._band_dialog = dialog
+        accepted = dialog.exec_() == QDialog.Accepted
+        self._band_dialog = None
+        if accepted:
+            self.folder_bands = dialog.chosen(); self._folder_bands_for = folder
+        elif self._folder_bands_for != folder:
+            self.folder_bands = None; self._folder_bands_for = None
+        chosen = self._current_folder_bands()
+        if chosen:
+            names = {"blue": "blue", "green": "green", "red": "red", "re": "red edge", "nir": "NIR"}
+            self.folder_files_note.setText("Using {} ticked file(s): {}.".format(
+                len(chosen), ", ".join(names[b] for b in ("blue", "green", "red", "re", "nir") if b in chosen)))
+        else:
+            self.folder_files_note.setText("No files ticked: PPE reads the bands from the file names.")
 
     def _remove_source(self, target):
         """The ✕ next to an image path."""
@@ -939,6 +1005,8 @@ class PPEDockWidget(QDockWidget):
         if not self._confirm("Remove the image?", question, "Remove"):
             return
         target.clear()
+        if target is self.folder_path:
+            self._forget_folder_bands()
         if self._has_source():
             self._refresh_source_detection()          # the remaining bands form a new image
         else:
@@ -947,7 +1015,7 @@ class PPEDockWidget(QDockWidget):
     def image_layer_removed(self):
         """The PPE image layer was deleted in the QGIS Layers panel: forget the image too, so the
         panel never refers to something that is no longer on the map."""
-        self.stacked_path.clear(); self.folder_path.clear()
+        self.stacked_path.clear(); self.folder_path.clear(); self._forget_folder_bands()
         for edit in self.band_edits.values():
             edit.clear()
         self._image_gone(emit=False)
@@ -1013,7 +1081,7 @@ class PPEDockWidget(QDockWidget):
             if self._preview_key is not None and not self._has_source():
                 self._image_gone()
             return
-        key = repr([config[k] for k in ("source_mode", "stacked_path", "folder_path", "ortho_type", "rgb_order", "hsi_min_wavelength", "hsi_max_wavelength", "hsi_interval")] + [sorted(config["bands"].items())])
+        key = repr([config[k] for k in ("source_mode", "stacked_path", "folder_path", "ortho_type", "rgb_order", "hsi_min_wavelength", "hsi_max_wavelength", "hsi_interval")] + [sorted(config["bands"].items()), sorted((config.get("folder_bands") or {}).items())])
         if key == self._preview_key or self.receivers(self.preview_requested) == 0:
             return
         if self._preview_key is not None or self.result:
@@ -1099,6 +1167,7 @@ class PPEDockWidget(QDockWidget):
             target.setText(path)
             if target is self.folder_path:
                 self._set_export_default(path)
+                self._choose_folder_files(path)
                 self._refresh_source_detection()
 
     def _set_export_default_from_source(self):
@@ -1175,6 +1244,7 @@ class PPEDockWidget(QDockWidget):
             "source_mode": mode,
             "stacked_path": self.stacked_path.text().strip(),
             "folder_path": self.folder_path.text().strip(),
+            "folder_bands": self._current_folder_bands() if mode == "folder" else None,
             "bands": bands,
             "output_dir": self.output_path.text().strip(),
             "work_dir": self.work_path.text().strip(),
