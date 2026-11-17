@@ -12,11 +12,16 @@ class ThresholdCurveWidget(QWidget):
         super().__init__(parent)
         self.points = list(points)
         self.threshold = float(threshold)
+        self.suggestion = {}
         self.setMinimumSize(620, 360)
         self.setMouseTracking(True)
 
     def set_threshold(self, threshold):
         self.threshold = float(threshold)
+        self.update()
+
+    def set_suggestion(self, suggestion):
+        self.suggestion = dict(suggestion or {})
         self.update()
 
     def _plot_rect(self):
@@ -51,6 +56,16 @@ class ThresholdCurveWidget(QWidget):
         painter.setPen(QPen(QColor("#52675d"), 1.4))
         painter.drawLine(rect.bottomLeft(), rect.bottomRight())
         painter.drawLine(rect.bottomLeft(), rect.topLeft())
+
+        if self.points and self.suggestion:
+            # good range as a shaded band, the suggested value as a dashed line
+            lo = self._to_pixel(float(self.suggestion["low"]), 0).x(); hi = self._to_pixel(float(self.suggestion["high"]), 0).x()
+            painter.fillRect(QRectF(lo, rect.top(), max(2.0, hi - lo), rect.height()), QColor(22, 133, 91, 28))
+            sx = self._to_pixel(float(self.suggestion["threshold"]), 0).x()
+            painter.setPen(QPen(QColor("#16855b"), 1.4, Qt.DashLine))
+            painter.drawLine(QPointF(sx, rect.top()), QPointF(sx, rect.bottom()))
+            painter.drawText(QPointF(min(sx + 6, rect.right() - 105), rect.bottom() - 8),
+                             "suggested {:.2f}".format(float(self.suggestion["threshold"])))
 
         if self.points:
             path = QPainterPath()
@@ -111,7 +126,8 @@ class ThresholdCurveDialog(QDialog):
         title = QLabel("Canopy response to plant vote threshold")
         title.setObjectName("curveTitle")
         subtitle = QLabel("Click anywhere on the curve to move the Review slider.")
-        subtitle.setObjectName("curveSubtitle")
+        subtitle.setObjectName("curveSubtitle"); subtitle.setWordWrap(True)
+        self.subtitle = subtitle
         self.curve = ThresholdCurveWidget(points, threshold, self)
         self.curve.threshold_selected.connect(self.threshold_selected)
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
@@ -129,3 +145,8 @@ class ThresholdCurveDialog(QDialog):
 
     def set_threshold(self, threshold):
         self.curve.set_threshold(threshold)
+
+    def set_suggestion(self, suggestion):
+        self.curve.set_suggestion(suggestion)
+        if suggestion:
+            self.subtitle.setText("Shaded: good range around the suggested threshold. Click anywhere on the curve to move the Review slider.")

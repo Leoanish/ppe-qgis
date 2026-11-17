@@ -489,6 +489,68 @@ def _smooth_grid2d(grid):
     return np.where(count > 0, total / np.maximum(count, 1), 0.0).astype(np.float32)
 
 
+SUGGEST_THRESHOLDS = np.round(np.arange(0.15, 0.951, 0.05), 2)   # candidate slider values
+SUGGEST_MIN_PURE = 30        # pure plant / pure soil sample pixels needed for a tile's own spectra
+SUGGEST_MAX_RESIDUAL = 0.25  # pixels a plant-soil mix explains this poorly are left out (algae, shade, objects)
+
+
+def suggest_threshold(votes, bands, valid, grid_h, grid_w):
+    """Suggested vote threshold: the slider value whose mask best matches "at least half of the
+    pixel is plant".
+
+    How much of each sample pixel is plant is estimated by mixing two spectra: the plant spectrum
+    (median of pixels where every vote says plant) and the soil spectrum (median of pixels where no
+    vote says plant). Both are taken per tile, so a pale plot is judged against its own pale plants,
+    and fall back to the whole-field spectra where a tile has too few pure pixels. Pixels that are
+    neither plant nor soil (a plant-soil mix explains them poorly) are left out. The suggestion is
+    the threshold whose mask overlaps best (IoU) with the pixels that are at least half plant; the
+    good range is every threshold within one IoU point of it.
+
+    votes: 2-D vote fractions on the sample grid; bands: dict of 2-D reflectance arrays on the same
+    grid; valid: 2-D bool. Returns a dict, or None when the image has too few pure pixels.
+    """
+    names = [k for k in CANONICAL if k in bands] or list(bands)
+    X = np.stack([np.asarray(bands[k], dtype=np.float64) for k in names])
+    v = np.asarray(votes, dtype=np.float64)
+    ok = valid & np.isfinite(v) & np.isfinite(X).all(0)
+    if ok.sum() < 500:
+        return None
+    pure_p = ok & (v >= 0.99); pure_s = ok & (v <= 0.01)
+    if pure_p.sum() < SUGGEST_MIN_PURE or pure_s.sum() < SUGGEST_MIN_PURE:
+        return None
+    all_p = np.median(X[:, pure_p], 1); all_s = np.median(X[:, pure_s], 1)
+    rows, cols = v.shape
+    ys = np.linspace(0, rows, grid_h + 1).astype(int); xs = np.linspace(0, cols, grid_w + 1).astype(int)
+    frac = np.full(v.shape, np.nan)
+    for j in range(grid_h):
+        for i in range(grid_w):
+            sl = (slice(ys[j], ys[j + 1]), slice(xs[i], xs[i + 1]))
+            o = ok[sl]
+            if not o.any():
+                continue
+            T = X[(slice(None),) + sl]
+            p = np.median(T[:, pure_p[sl]], 1) if pure_p[sl].sum() >= SUGGEST_MIN_PURE else all_p
+            q = np.median(T[:, pure_s[sl]], 1) if pure_s[sl].sum() >= SUGGEST_MIN_PURE else all_s
+            d = p - q; dd = float(d @ d)
+            if not dd > 0:
+                p, q = all_p, all_s; d = p - q; dd = float(d @ d)
+                if not dd > 0:
+                    continue
+            f = np.clip(np.tensordot(d, T - q[:, None, None], 1) / dd, 0, 1)
+            fit = q[:, None, None] + f[None] * d[:, None, None]
+            resid = np.sqrt(((T - fit) ** 2).sum(0)) / np.sqrt(dd)
+            frac[sl] = np.where(o & (resid <= SUGGEST_MAX_RESIDUAL), f, np.nan)
+    use = np.isfinite(frac)
+    if use.sum() < 500:
+        return None
+    half = frac[use] >= 0.5; vv = v[use]
+    iou = np.array([((vv >= t - 0.05) & half).sum() / max(1, ((vv >= t - 0.05) | half).sum()) for t in SUGGEST_THRESHOLDS])
+    best = int(np.argmax(iou)); good = SUGGEST_THRESHOLDS[iou >= iou[best] - 0.01]
+    return {"threshold": float(SUGGEST_THRESHOLDS[best]), "low": float(good.min()), "high": float(good.max()),
+            "agreement": float(100 * iou[best]), "half_plant_cover": float(100 * half.mean()),
+            "pixels_used": float(use.sum() / ok.sum())}
+
+
 def _bilinear_interp_block(grid, y, h, width, grid_h, grid_w, height, x_cache=None):
     """Bilinear interpolation from the tile grid to a block of full-resolution rows."""
     if x_cache is None:
@@ -997,7 +1059,25 @@ class NativePPEEngine:
         if colour_guard: self.log_cb("Colour guard changed {:.2f}% of valid pixels from plant to soil.".format(colour_rejected_pct))
         if algae_guard: self.log_cb("Algae guard changed {:.2f}% of valid pixels from plant to soil.".format(biofilm_rejected_pct))
         curve_path = os.path.join(run_dir, "threshold_curve.csv"); self._write_curve(vote_path, curve_path)
-        result = dict(imported, vote_path=vote_path, curve_path=curve_path, threshold=.5, selected_layers=chosen, chosen_layers=chosen, layer_details=layer_details, n_voters=n_masks, n_method_masks=n_masks, canopy_regime="classic", adaptation_mode="adaptive" if adaptive else "global", half_mixture=half_mixture, spread_ranking=[{"layer": name, "group": group, "spread": spread} for spread, name, group in leaders], mixed_class_vote=.5, bright_guard=bool(guard), bright_rejection_path=rejection_path, bright_rejected_pct=rejected_pct, shadow_guard=bool(shadow_guard), shadow_rejection_path=shadow_rejection_path, shadow_rejected_pct=shadow_rejected_pct, biofilm_guard=bool(algae_guard), algae_guard_fit=algae_guard or {}, biofilm_rejection_path=biofilm_rejection_path, biofilm_rejected_pct=biofilm_rejected_pct, colour_guard=bool(colour_guard), colour_rejected_pct=colour_rejected_pct, weak_green_warning=bool(colour_guard and colour_guard["plant_excess"] < WEAK_GREEN), single_class="", one_class_warning=one_class or "", ppe_version="native-3.7.7", processing_threads=self.thread_count, output_dir=cfg["output_dir"], timings={"total": time.time()-started})
+        # Suggested starting threshold, from the votes on the same sample grid as the fitting sample.
+        suggestion = None; no_suggestion_reason = "too few pixels that are clearly all plant and all soil"
+        if "nir" not in sample_2d:
+            # Without NIR, plant and soil differ too little in colour for a reliable plant share per pixel
+            # (tested on camera RGB fields: the estimate swung from far too much to far too little plant).
+            no_suggestion_reason = "it needs a NIR band; camera (RGB) images start at the standard 0.50"
+        elif cfg.get("suggest_threshold", True):
+            rows, cols = next(iter(sample_2d.values())).shape
+            vds = safe_gdal_open(vote_path)
+            sample_votes = vds.GetRasterBand(1).ReadAsArray(buf_xsize=cols, buf_ysize=rows).astype(np.float64); vds = None
+            sample_votes[(sample_votes == NODATA) | (sample_votes < 0) | (sample_votes > 1)] = np.nan
+            suggestion = suggest_threshold(sample_votes, sample_2d, valid_2d, grid_h, grid_w)
+        if suggestion:
+            self.log_cb("Suggested threshold {:.2f} (good range {:.2f}-{:.2f}): best match to pixels that are at least half plant.".format(
+                suggestion["threshold"], suggestion["low"], suggestion["high"]))
+        else:
+            self.log_cb("No threshold suggestion ({}); starting at 0.50.".format(no_suggestion_reason))
+        start_threshold = suggestion["threshold"] if suggestion else 0.5
+        result = dict(imported, vote_path=vote_path, curve_path=curve_path, threshold=start_threshold, suggestion=suggestion or {}, suggestion_note="" if suggestion else no_suggestion_reason, selected_layers=chosen, chosen_layers=chosen, layer_details=layer_details, n_voters=n_masks, n_method_masks=n_masks, canopy_regime="classic", adaptation_mode="adaptive" if adaptive else "global", half_mixture=half_mixture, spread_ranking=[{"layer": name, "group": group, "spread": spread} for spread, name, group in leaders], mixed_class_vote=.5, bright_guard=bool(guard), bright_rejection_path=rejection_path, bright_rejected_pct=rejected_pct, shadow_guard=bool(shadow_guard), shadow_rejection_path=shadow_rejection_path, shadow_rejected_pct=shadow_rejected_pct, biofilm_guard=bool(algae_guard), algae_guard_fit=algae_guard or {}, biofilm_rejection_path=biofilm_rejection_path, biofilm_rejected_pct=biofilm_rejected_pct, colour_guard=bool(colour_guard), colour_rejected_pct=colour_rejected_pct, weak_green_warning=bool(colour_guard and colour_guard["plant_excess"] < WEAK_GREEN), single_class="", one_class_warning=one_class or "", ppe_version="native-3.8.0", processing_threads=self.thread_count, output_dir=cfg["output_dir"], timings={"total": time.time()-started})
         with open(os.path.join(run_dir, "run_summary.json"), "w", encoding="utf-8") as handle: json.dump(result, handle, indent=2)
         self.progress(100, "Plant vote raster and threshold curve are ready"); return result
 

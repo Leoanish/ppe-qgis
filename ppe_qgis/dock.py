@@ -545,6 +545,18 @@ class PPEDockWidget(QDockWidget):
             if text.startswith("0.15"): range_row.addStretch()
         layout.addLayout(range_row)
 
+        # Suggested starting threshold (from the image itself; see suggest_threshold in native_engine).
+        self.suggestion_label = QLabel("Run PPE to get a suggested threshold for this image.")
+        self.suggestion_label.setWordWrap(True)
+        self.suggestion_label.setObjectName("ppeHint")
+        layout.addWidget(self.suggestion_label)
+        self.suggestion_button = QPushButton("Back to suggested threshold")
+        self.suggestion_button.setProperty("secondary", True)
+        self.suggestion_button.setEnabled(False)
+        self.suggestion_button.setVisible(False)
+        self.suggestion_button.clicked.connect(self._use_suggestion)
+        layout.addWidget(self.suggestion_button)
+
         self.curve_button = QPushButton("View threshold curve")
         self.curve_button.setProperty("secondary", True)
         self.curve_button.setEnabled(False)
@@ -858,6 +870,8 @@ class PPEDockWidget(QDockWidget):
         self.threshold_slider.blockSignals(True); self.threshold_slider.setValue(50); self.threshold_slider.blockSignals(False)
         self.threshold_slider.setEnabled(False)
         self.threshold_value.setText("0.50"); self.canopy_value.setText("—")
+        self.suggestion_label.setText("Run PPE to get a suggested threshold for this image.")
+        self.suggestion_button.setVisible(False); self.suggestion_button.setEnabled(False)
         for button in (self.curve_button, self.apply_button, self.review_button, self.export_bands_button,
                        self.export_vis_button, self.export_all_button, self.aoi_export_button):
             button.setEnabled(False)
@@ -1148,6 +1162,7 @@ class PPEDockWidget(QDockWidget):
         if not self.curve_points:
             return
         dialog = ThresholdCurveDialog(self.curve_points, self.threshold(), self)
+        dialog.set_suggestion((self.result or {}).get("suggestion") or {})
         dialog.threshold_selected.connect(lambda threshold: self.threshold_slider.setValue(round(threshold * 100)))
         dialog.finished.connect(lambda _result: setattr(self, "curve_dialog", None))
         self.curve_dialog = dialog
@@ -1190,6 +1205,18 @@ class PPEDockWidget(QDockWidget):
         self.threshold_slider.blockSignals(False)
         self.threshold_slider.setEnabled(True)
         self.curve_button.setEnabled(bool(curve_points))
+        suggestion = result.get("suggestion") or {}
+        if suggestion:
+            self.suggestion_label.setText(
+                "Suggested threshold {:.2f} (good range {:.2f}–{:.2f}). The slider starts here: it is the value whose "
+                "mask best matches the pixels that are at least half plant in this image. Check it on the map and "
+                "adjust if needed.".format(suggestion["threshold"], suggestion["low"], suggestion["high"]))
+            self.suggestion_button.setText("Back to suggested threshold ({:.2f})".format(suggestion["threshold"]))
+            self.suggestion_button.setVisible(True); self.suggestion_button.setEnabled(True)
+        else:
+            note = result.get("suggestion_note") or "not enough clearly plant and clearly soil pixels"
+            self.suggestion_label.setText("No suggested threshold for this image ({}). The slider starts at 0.50.".format(note))
+            self.suggestion_button.setVisible(False); self.suggestion_button.setEnabled(False)
         self.apply_button.setEnabled(True)
         self.review_button.setEnabled(True)
         self.progress.setValue(100)
@@ -1230,8 +1257,8 @@ class PPEDockWidget(QDockWidget):
         layers = ", ".join(names.get(n, n.upper()) for n in result.get("selected_layers", [])) or "—"
         seconds = float((result.get("timings", {}) or {}).get("total", 0.0))
         self.run_summary.setText(
-            "{}Canopy at {:.2f}: {}\nLayers: {} · {} votes\nMap: {}{}\nGuards removed: {}\nPPE {} · {}".format(
-                warning, threshold, "—" if canopy is None else "{:.1f} %".format(canopy),
+            "{}Canopy at {:.2f}{}: {}\nLayers: {} · {} votes\nMap: {}{}\nGuards removed: {}\nPPE {} · {}".format(
+                warning, threshold, " (suggested)" if result.get("suggestion") else "", "—" if canopy is None else "{:.1f} %".format(canopy),
                 layers, result.get("n_voters", "—"),
                 result.get("display_mode") or ("true colour" if result.get("true_rgb", False) else "single band"),
                 proxy_note.replace("\nBands used:", "\nBands:"),
@@ -1242,6 +1269,11 @@ class PPEDockWidget(QDockWidget):
         self.append_log("Run folder: {}".format(result.get("run_dir", "")))
         self.applied_status.setText(("⚠ " + warning.strip().replace("\n", "\n⚠ ") + "\n\n" if warning else "") +
                                     "Move the slider and watch the map. When the mask looks right, finalize it.")
+
+    def _use_suggestion(self):
+        suggestion = (self.result or {}).get("suggestion") or {}
+        if suggestion:
+            self.threshold_slider.setValue(round(float(suggestion["threshold"]) * 100))
 
     def set_applied(self, result):
         self.result.update(result)

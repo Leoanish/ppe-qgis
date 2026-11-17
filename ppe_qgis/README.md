@@ -46,7 +46,7 @@ Run then adds the plant vote on top of the same picture (the live preview), and 
 - Deleting the PPE image layer in the QGIS Layers panel resets PPE as well. Deleting only the live-preview layer switches the slider off until PPE is run again.
 - While PPE is running the image cannot be changed; cancel the run first.
 
-## How the mask is made (version 3.7.7)
+## How the mask is made (version 3.8.0)
 
 PPE follows three steps: pick the layers with the widest spread, split each one four ways, and count the votes.
 
@@ -86,6 +86,25 @@ The log and `run_summary.json` list the spread ranking, the chosen layers and al
 
 Bands are identified from, in order: colour tags and band names in the file, wavelength metadata, file names, then sensor order. Names from MicaSense (Blue, Green, Red, Red Edge, NIR), Parrot Sequoia (GRE, RED, REG, NIR), DJI multispectral (MS_G, MS_R, MS_RE, MS_NIR) and wavelength names such as `717nm` are recognised. Thermal bands (LWIR, TIR, thermal, temperature) are ignored. The Image tab reports the image type from the bands found, not the band count: a file or folder with only NIR, red edge and red is multispectral. A 3-band file with no names, colour tags or wavelengths asks for its band order: red, green, blue (camera RGB, the default); blue, green, red; NIR, red edge, red; or NIR, red, green (colour-infrared camera). For a hyperspectral cube, give the first wavelength, last wavelength and step; one band is chosen in each of the blue, green, red, red-edge and NIR windows.
 
+## Suggested threshold
+
+After a run the Review slider starts at a threshold suggested for this image, not at a fixed 0.50.
+
+**The idea.** A pixel should count as plant when at least half of it is plant. PPE estimates how much of each sample pixel is plant by mixing two spectra from the image itself: the plant spectrum (pixels where every vote says plant) and the soil spectrum (pixels where no vote says plant). Both are taken per tile, so a pale plot is judged against its own pale plants. Pixels that a plant–soil mix explains poorly (algae, deep shade, objects) are left out. The suggestion is the slider value whose mask matches the "at least half plant" pixels best; the good range is every value within one point of agreement.
+
+**How well it works** (IoU with the reference; higher is better):
+
+| Field | Reference | 0.50 | Suggested | Best possible |
+|---|---|---|---|---|
+| Tifton, whole field | independent classified plant mask | 87.1 | 91.3 (0.80) | 91.6 (0.70) |
+| IH, whole field | unmixing reference | 71.5 | 83.9 (0.40) | 92.0 (0.20) |
+| Kritis, whole field | labelled leaves, shade, soil, gaps | 100 | 100 (0.45) | 100 |
+| Ten 640-pixel Tifton clips | independent mask | 86.6 (mean) | 88.1 (mean) | 91.5 (mean) |
+
+On whole fields it is clearly better than 0.50. On small clips it is better on average but not on every clip, so always look at the map and move the slider if the mask looks too wide or too narrow; **Back to suggested threshold** returns to it.
+
+It needs a NIR band. On camera RGB images plant and soil differ too little in colour for a reliable plant share per pixel, so those start at 0.50 and the Review tab says so.
+
 ## Tested on
 
 Real fields, each processed whole in one run and checked on close-ups and labelled pixels. Details, figures and scripts are in `04_test_scripts/` (`tifton_test`, `ih_test`, `kritis_and_sensors_test`).
@@ -104,7 +123,7 @@ The Kritis field was also cut into sensor variants and compared with the full 5-
 ## Known limits
 
 - Real hyperspectral orthomosaics have not been run yet (only a cube made from real 5-band data). Thermal-only images cannot be segmented: they carry no plant–soil reflectance contrast.
-- The default vote threshold of 0.5 is not equally right everywhere. In the dense IH field a threshold of 0.3 to 0.4 agrees better with the reference; at Tifton 0.5 to 0.6 does. Use the curve and the preview.
+- The suggested threshold is a starting point, not a guarantee: on small clips it can be off by 0.2 or more. Use the curve and the preview.
 - The algae guard cannot work on images without a red-edge band, and at a quarter of the red-edge rise it lets the greenest algae through if the chosen layers also accept it.
 - Plants with very low chlorophyll have a weak red-edge rise and could still be rejected by the algae guard. Untick it and compare if you see gaps in yellow or stressed canopy.
 - On camera RGB images green weeds and grass are plants to PPE; it cannot tell crop from weed.

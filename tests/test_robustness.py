@@ -106,3 +106,32 @@ class ImageTypeTests(unittest.TestCase):
             path = self._stack(tmp, None); e = NativePPEEngine()
             e._map_bands({"source_mode": "stacked", "stacked_path": path, "ortho_type": "auto", "rgb_order": "nir_re_red"})
             self.assertEqual({k: v[1] for k, v in e.sources.items()}, {"nir": 1, "re": 2, "red": 3})
+
+
+class SuggestionTests(unittest.TestCase):
+    def _field(self, seed=1):
+        rng = np.random.RandomState(seed); h = w = 120
+        soil = np.array([.10, .09, .08, .12, .16]); plant = np.array([.04, .09, .03, .20, .45])
+        frac = np.clip(rng.uniform(-0.6, 1.6, (h, w)), 0, 1)            # many pure pixels, some mixed
+        X = soil[:, None, None] + frac[None] * (plant - soil)[:, None, None] + rng.normal(0, .004, (5, h, w))
+        bands = dict(zip(("blue", "green", "red", "re", "nir"), X))
+        return frac, bands
+
+    def test_suggestion_finds_the_half_plant_threshold(self):
+        from ppe_qgis.native_engine import suggest_threshold
+        frac, bands = self._field()
+        # votes that say plant a little too easily: a pixel 30 percent plant already gets vote 0.6
+        votes = np.clip(frac * 2.0, 0, 1)
+        s = suggest_threshold(votes, bands, np.ones(frac.shape, bool), 2, 2)
+        self.assertIsNotNone(s)
+        self.assertAlmostEqual(s["threshold"], 1.0, delta=0.1)      # half plant = vote 1.0 here, the slider top 0.95
+        votes2 = np.clip(frac * 0.8 + 0.1, 0, 1)                      # half plant = vote 0.5
+        votes2[frac >= 0.999] = 1.0; votes2[frac <= 0.001] = 0.0
+        s2 = suggest_threshold(votes2, bands, np.ones(frac.shape, bool), 2, 2)
+        self.assertAlmostEqual(s2["threshold"], 0.55, delta=0.051)
+        self.assertLessEqual(s2["low"], s2["threshold"]); self.assertGreaterEqual(s2["high"], s2["threshold"])
+
+    def test_no_suggestion_without_pure_pixels(self):
+        from ppe_qgis.native_engine import suggest_threshold
+        frac, bands = self._field()
+        self.assertIsNone(suggest_threshold(np.full(frac.shape, 0.5), bands, np.ones(frac.shape, bool), 2, 2))
