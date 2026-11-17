@@ -185,7 +185,7 @@ class PPEPlugin:
 
     def _start_generate(self, config):
         self.current_action = "run"
-        self._clear_ppe_layers(keep=("rgb",))       # the image stays on the map while PPE works
+        self._clear_ppe_layers(keep=("rgb", "plots"))   # the image and plot outlines stay on the map while PPE works
         self.layers = {"rgb": self.layers.get("rgb")} if self.layers.get("rgb") is not None else {}
         self.dock.log_view.clear()
         self.dock.set_running(True, "run")

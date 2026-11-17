@@ -37,8 +37,9 @@ from qgis.core import QgsProject
 from osgeo import gdal
 
 from .curve_widget import ThresholdCurveDialog
-from .layer_utils import canopy_at
-from .native_engine import BAND_LABELS, dataset_wavelengths, describe_image, display_channels
+from .layer_utils import canopy_at, load_plot_layer, plot_layer, remove_role, set_plot_labels
+from .native_engine import (BAND_LABELS, PLOT_FILE_FILTER, dataset_wavelengths, describe_image, display_channels,
+                            guess_plot_id_field, open_plot_file, plots_over_image)
 
 
 class HSIWavelengthDialog(QDialog):
@@ -598,22 +599,39 @@ class PPEDockWidget(QDockWidget):
     def _aoi_export_tab(self):
         page, layout = self._page()
         title = QLabel("Plot statistics"); title.setObjectName("sectionTitle")
-        detail = QLabel("Summarise the plant pixels inside each plot polygon: every band and vegetation index (for hyperspectral images, every original band).")
+        detail = QLabel("Canopy cover of each plot, and statistics of its plant pixels for every band and vegetation index "
+                        "(for hyperspectral images, every original band).")
         detail.setWordWrap(True); detail.setObjectName("ppeHint")
         layout.addWidget(title); layout.addWidget(detail)
         box, box_body = self._card("Plot boundaries"); form = self._form(box_body)
-        self.aoi_path = QLineEdit(); self.aoi_path.setPlaceholderText("GeoPackage, Shapefile, GeoJSON or KML")
+        self.aoi_path = QLineEdit(); self.aoi_path.setPlaceholderText("Shapefile (.shp or .zip), GeoPackage, GeoJSON, KML/KMZ …")
         form.addRow("Polygon file", self._aoi_path_row())
+        self.aoi_layer = QComboBox(); self.aoi_layer.setToolTip("The file holds several polygon layers: choose the one with the plots.")
+        self.aoi_layer_label = QLabel("Layer"); form.addRow(self.aoi_layer_label, self.aoi_layer)
+        self.aoi_layer.setVisible(False); self.aoi_layer_label.setVisible(False)
         self.aoi_id_field = QComboBox(); self.aoi_id_field.addItem("Automatic · feature ID", "")
-        self.aoi_id_field.setToolTip("Choose the boundary attribute that identifies each plot. Automatic uses the vector feature ID.")
-        form.addRow("Plot identifier", self.aoi_id_field); layout.addWidget(box)
-        output_note = QLabel("Output: one CSV with plot ID, variable, source band, pixel count, mean, median, SD and CV (%), saved in the export folder of tab 4.")
+        self.aoi_id_field.setToolTip("Choose the attribute that identifies each plot. Automatic uses the feature ID.")
+        form.addRow("Plot identifier", self.aoi_id_field)
+        self.aoi_labels = QCheckBox("Show plot IDs on the map"); self.aoi_labels.setChecked(True)
+        self.aoi_labels.setToolTip("The plots are shown as the layer 'PPE · Plots'. Switch the layer off in the Layers panel, "
+                                   "or change its style there like any QGIS layer.")
+        form.addRow("", self.aoi_labels)
+        layout.addWidget(box)
+        self.aoi_info = QLabel("Choose the plot file: the plots appear on the map with their IDs so you can check them.")
+        layout.addWidget(self._note(self.aoi_info))
+        output_note = QLabel("Output, in the export folder of tab 4: ppe_plot_canopy.csv (one row per plot: plot and plant pixels, "
+                             "canopy %, plot and plant area in m²) and ppe_plot_statistics.csv (one row per plot and variable: "
+                             "canopy columns, then pixel count, mean, median, SD, CV %, min, P10, Q25, Q75, P90 and max of the plant pixels).")
         output_note.setWordWrap(True); output_note.setObjectName("ppeHint"); layout.addWidget(output_note)
         self.aoi_export_button = QPushButton("Export plot statistics")
         self.aoi_export_button.setProperty("primary", True); self.aoi_export_button.setEnabled(False)
         layout.addWidget(self.aoi_export_button)
         self.aoi_status = QLabel("Finalize the mask on tab 3 before exporting plot statistics.")
         layout.addWidget(self._note(self.aoi_status))
+        self.aoi_id_field.currentIndexChanged.connect(self._plot_labels_changed)
+        self.aoi_labels.toggled.connect(self._plot_labels_changed)
+        self.aoi_layer.currentIndexChanged.connect(self._plot_layer_changed)
+        self.aoi_path.editingFinished.connect(self._plot_path_typed)
         layout.addStretch(); return self._scroll_tab(page)
 
     def _aoi_path_row(self):
@@ -623,19 +641,84 @@ class PPEDockWidget(QDockWidget):
         line.addWidget(self.aoi_path, 1); line.addWidget(button); return row
 
     def _browse_aoi(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Select polygon boundaries", self.aoi_path.text(), "Vector boundaries (*.gpkg *.shp *.geojson *.json *.kml);;All files (*)")
+        path, _ = QFileDialog.getOpenFileName(self, "Select plot boundaries", self.aoi_path.text(), PLOT_FILE_FILTER)
         if not path: return
-        self.aoi_path.setText(path); self.aoi_id_field.clear(); self.aoi_id_field.addItem("Automatic · feature ID", "")
+        self.aoi_path.setText(path)
+        self._load_plots(path)
+
+    def _plot_path_typed(self):
+        path = self.aoi_path.text().strip()
+        if path and path != getattr(self, "_plots_loaded_from", None):
+            self._load_plots(path)
+
+    def _plot_layer_changed(self):
+        if getattr(self, "_filling_plots", False): return
+        path = self.aoi_path.text().strip()
+        if path: self._load_plots(path, self.aoi_layer.currentData())
+
+    def _plot_labels_changed(self):
+        if getattr(self, "_filling_plots", False): return
         try:
-            from osgeo import ogr
-            source = ogr.Open(path); layer = source.GetLayer(0) if source else None
-            if layer:
-                definition = layer.GetLayerDefn()
-                for index in range(definition.GetFieldCount()):
-                    name = definition.GetFieldDefn(index).GetName()
-                    self.aoi_id_field.addItem(name, name)
+            set_plot_labels(plot_layer(), self.aoi_id_field.currentData() or "", self.aoi_labels.isChecked())
         except Exception as err:
-            self.append_log("Could not read the fields of the AOI file: {}".format(err))
+            self.append_log("Could not label the plots: {}".format(err))
+
+    def _clear_plots(self, message):
+        self._filling_plots = True
+        self.aoi_layer.clear(); self.aoi_layer.setVisible(False); self.aoi_layer_label.setVisible(False)
+        self.aoi_id_field.clear(); self.aoi_id_field.addItem("Automatic · feature ID", "")
+        self._filling_plots = False
+        self._plots_loaded_from = None
+        try:
+            remove_role("plots")
+        except Exception:
+            pass
+        self.aoi_info.setText(message)
+
+    def _load_plots(self, path, layer_name=None):
+        """Read the plot file, fill the layer and ID lists, check it against the image and show it on the map."""
+        try:
+            _, _, info = open_plot_file(path, layer_name)
+        except Exception as err:
+            self._clear_plots("This plot file cannot be used: {}".format(err))
+            return
+        self._filling_plots = True
+        previous_id = self.aoi_id_field.currentData() if layer_name else None
+        self.aoi_layer.clear()
+        for name in info["layers"]: self.aoi_layer.addItem(name, name)
+        self.aoi_layer.setCurrentIndex(max(0, self.aoi_layer.findData(info["layer"])))
+        several = len(info["layers"]) > 1
+        self.aoi_layer.setVisible(several); self.aoi_layer_label.setVisible(several)
+        self.aoi_id_field.clear(); self.aoi_id_field.addItem("Automatic · feature ID", "")
+        for name in info["fields"]: self.aoi_id_field.addItem(name, name)
+        wanted = previous_id if previous_id in info["fields"] else guess_plot_id_field(info["fields"])
+        self.aoi_id_field.setCurrentIndex(max(0, self.aoi_id_field.findData(wanted)))
+        self._filling_plots = False
+        self._plots_loaded_from = path
+        lines = ["{} plots in layer '{}'. Coordinate system: {}.".format(info["features"], info["layer"], info["crs_name"] or "none")]
+        if info["note"]: lines.append("Note: {}.".format(info["note"][0].upper() + info["note"][1:]))
+        image = getattr(self, "_image_grid_path", None)
+        if image:
+            try:
+                over, total, note = plots_over_image(path, image, info["layer"])
+                if over == 0:
+                    lines.append("None of the plots lie over the image. Check that the file belongs to this field and that its "
+                                 "coordinate system is right (for a Shapefile, the .prj file).")
+                elif over < total:
+                    lines.append("{} of {} plots lie over the image; the others will be listed with 0 pixels.".format(over, total))
+                else:
+                    lines.append("All {} plots lie over the image.".format(total))
+                if note: lines.append("Note: {}.".format(note[0].upper() + note[1:]))
+            except Exception as err:
+                self.append_log("Could not check the plots against the image: {}".format(err))
+        layer = None
+        try:
+            layer = load_plot_layer(info["uri"], info["layer"], self.aoi_id_field.currentData() or "", self.aoi_labels.isChecked())
+        except Exception as err:
+            self.append_log("Could not add the plots to the map: {}".format(err))
+        lines.append("Shown on the map as 'PPE · Plots' with their IDs: check them before exporting." if layer is not None
+                     else "QGIS could not draw this file, but the statistics can still be exported.")
+        self.aoi_info.setText("\n".join(lines))
 
     def _connect_ui(self):
         self._mode_index = self.source_mode.currentIndex()
@@ -881,7 +964,7 @@ class PPEDockWidget(QDockWidget):
         self.applied_status.setText("Run PPE first; the mask can then be reviewed here.")
         self.export_status.setText("Finalize the mask on tab 3 before exporting.")
         self.aoi_status.setText("Finalize the mask on tab 3 before exporting plot statistics.")
-        self.aoi_path.clear(); self.aoi_id_field.clear(); self.aoi_id_field.addItem("Automatic · feature ID", "")
+        self.aoi_path.clear(); self._clear_plots("Choose the plot file: the plots appear on the map with their IDs so you can check them.")
         self.export_path.clear()
         self.log_view.clear()
         self.hsi_grid_confirmed = False
@@ -923,6 +1006,9 @@ class PPEDockWidget(QDockWidget):
         self.preview_requested.emit(config)
 
     def set_preview(self, result):
+        sources = [p for p in (result.get("rgb_sources") or []) if p] or [result.get("rgb_path")]
+        self._image_grid_path = sources[0] if sources and sources[0] else None
+        if self.aoi_path.text().strip(): self._load_plots(self.aoi_path.text().strip(), self.aoi_layer.currentData())
         names = {"blue": "blue", "green": "green", "red": "red", "re": "red edge", "nir": "NIR"}
         found = ", ".join(names.get(b, b) for b in result.get("source_bands", []))
         mode = result.get("display_mode", "true colour")
@@ -1092,7 +1178,7 @@ class PPEDockWidget(QDockWidget):
                 "run_dir": self.result.get("run_dir", config["output_dir"]),
             })
         elif action.startswith("export"):
-            config.update({"mask_path": self.result.get("mask_path", ""), "export_dir": self.export_path.text().strip(), "aoi_path": self.aoi_path.text().strip(), "aoi_id_field": self.aoi_id_field.currentData()})
+            config.update({"mask_path": self.result.get("mask_path", ""), "export_dir": self.export_path.text().strip(), "aoi_path": self.aoi_path.text().strip(), "aoi_id_field": self.aoi_id_field.currentData(), "aoi_layer": self.aoi_layer.currentData() or ""})
         return config
 
     def validate_config(self, config):
@@ -1107,7 +1193,7 @@ class PPEDockWidget(QDockWidget):
         if config["action"].startswith("export"):
             if not os.path.isfile(config.get("mask_path", "")): return "Finalize the reviewed mask before exporting plant-only rasters."
             if not config.get("export_dir"): return "Select an export folder."
-            if config["action"] == "export_aoi" and not os.path.isfile(config.get("aoi_path", "")): return "Select a valid AOI polygon boundary file."
+            if config["action"] == "export_aoi" and not os.path.isfile(config.get("aoi_path", "")): return "Select the plot boundary file on tab 5."
             return ""
         mode = config["source_mode"]
         if mode == "stacked" and not os.path.isfile(config["stacked_path"]):
@@ -1290,7 +1376,10 @@ class PPEDockWidget(QDockWidget):
     def set_exported(self, result):
         self.export_progress.setValue(100); self.export_progress.setFormat("Complete")
         if result.get("aoi_csv"):
-            self.aoi_status.setText("Plot statistics written · {} plots · {} rows\n{}".format(result.get("plot_count", 0), result.get("row_count", 0), result["aoi_csv"]))
+            outside = result.get("plots_outside", 0)
+            self.aoi_status.setText("Plot statistics written · {} plots{} · {} rows\n{}\n{}".format(
+                result.get("plot_count", 0), " ({} outside the image)".format(outside) if outside else "",
+                result.get("row_count", 0), result.get("canopy_csv", ""), result["aoi_csv"]))
         else:
             self.export_status.setText("Export complete · {} GeoTIFFs\n{}".format(result.get("export_count", 0), result.get("export_dir", "")))
 

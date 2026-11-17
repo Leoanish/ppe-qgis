@@ -621,6 +621,175 @@ def display_channels(bands):
     return "{} band in grey".format(label), (single, single, single)
 
 
+# ---- plot boundaries ------------------------------------------------------------------------
+# Any polygon file GDAL reads: Shapefile (pick the .shp or any of its side files), a zipped
+# Shapefile or GeoPackage, GeoPackage, GeoJSON, KML/KMZ, GML, FlatGeobuf, SpatiaLite, MapInfo.
+PLOT_FILE_FILTER = ("Plot boundaries (*.shp *.zip *.gpkg *.geojson *.json *.kml *.kmz *.gml *.fgb *.sqlite *.tab "
+                    "*.dbf *.shx *.prj *.cpg);;All files (*)")
+SHAPEFILE_SIDE_FILES = (".dbf", ".shx", ".prj", ".cpg", ".sbn", ".sbx", ".qix", ".qmd", ".shp.xml")
+VECTOR_IN_ARCHIVE = (".shp", ".gpkg", ".geojson", ".json", ".kml", ".gml", ".fgb", ".sqlite", ".tab")
+POLYGON_TYPES = {ogr.wkbPolygon, ogr.wkbMultiPolygon, ogr.wkbCurvePolygon, ogr.wkbMultiSurface}
+STAT_NAMES = ("pixel_count", "mean", "median", "sd", "cv_pct", "min", "p10", "q25", "q75", "p90", "max")
+
+
+def _is_polygon_type(geom_type):
+    return ogr.GT_Flatten(geom_type) in POLYGON_TYPES
+
+
+def _plot_datasource_path(path):
+    """The path GDAL should open for a plot file the user picked, and a note when it was changed."""
+    path = os.path.abspath(os.path.expanduser(path or ""))
+    lower = path.lower()
+    for side in SHAPEFILE_SIDE_FILES:
+        if lower.endswith(side):
+            shp = path[: -len(side)] + ".shp"
+            if not os.path.isfile(shp):
+                shp = path[: -len(side)] + ".SHP"
+            if os.path.isfile(shp):
+                return shp, "using {} (the Shapefile that {} belongs to)".format(os.path.basename(shp), os.path.basename(path))
+            raise ValueError("{} is part of a Shapefile, but {} is not beside it. A Shapefile needs its .shp, .shx and .dbf "
+                             "files in the same folder.".format(os.path.basename(path), os.path.basename(path[: -len(side)] + ".shp")))
+    if lower.endswith(".zip"):
+        root = "/vsizip/" + path
+        listed = gdal.ReadDirRecursive(root) or []
+        inside = [name for name in listed if name.lower().endswith(VECTOR_IN_ARCHIVE) and "__macosx" not in name.lower()
+                  and not os.path.basename(name).startswith("._")]
+        if not inside:
+            raise ValueError("No plot file found inside {} (looked for .shp, .gpkg, .geojson, .kml and similar).".format(os.path.basename(path)))
+        inside.sort(key=lambda name: (VECTOR_IN_ARCHIVE.index(os.path.splitext(name.lower())[1]) if os.path.splitext(name.lower())[1] in VECTOR_IN_ARCHIVE else 99, name.count("/"), name))
+        note = "using {} inside the zip file".format(inside[0])
+        if len(inside) > 1:
+            note += " ({} other vector files ignored)".format(len(inside) - 1)
+        return root + "/" + inside[0], note
+    return path, ""
+
+
+def open_plot_file(path, layer_name=None):
+    """Open a plot boundary file and pick its polygon layer.
+
+    Returns (datasource, layer, info). info has: source (what GDAL opened), uri (for QGIS), layer,
+    layers (all polygon layers), features (polygon features), fields, crs_wkt, crs_name, note.
+    Raises ValueError with a plain message when the file cannot be used.
+    """
+    if not path:
+        raise ValueError("Choose a plot boundary file.")
+    if not (os.path.exists(path) or path.startswith("/vsi")):
+        raise ValueError("Plot file not found: {}".format(path))
+    source, note = _plot_datasource_path(path)
+    datasource = ogr.Open(source)
+    if datasource is None:
+        raise ValueError("GDAL cannot read {} as a vector file.".format(os.path.basename(path)))
+    polygon_layers = []
+    for index in range(datasource.GetLayerCount()):
+        layer = datasource.GetLayer(index)
+        count = 0
+        layer.ResetReading()
+        for feature in layer:
+            geometry = feature.GetGeometryRef()
+            if geometry is not None and not geometry.IsEmpty() and _is_polygon_type(geometry.GetGeometryType()):
+                count += 1
+        layer.ResetReading()
+        if count:
+            polygon_layers.append((layer.GetName(), count))
+    if not polygon_layers:
+        kinds = sorted({ogr.GeometryTypeToName(datasource.GetLayer(i).GetGeomType()) for i in range(datasource.GetLayerCount())})
+        raise ValueError("{} has no polygons (found: {}). Plot statistics need plot polygons, not points or lines."
+                         .format(os.path.basename(path), ", ".join(kinds) or "no features"))
+    names = [name for name, _ in polygon_layers]
+    chosen = layer_name if layer_name in names else names[0]
+    layer = datasource.GetLayerByName(chosen)
+    definition = layer.GetLayerDefn()
+    fields = [definition.GetFieldDefn(i).GetName() for i in range(definition.GetFieldCount())]
+    srs = layer.GetSpatialRef()
+    crs_name = ""
+    if srs is not None:
+        code = srs.GetAuthorityCode(None)
+        crs_name = "{}{}".format(srs.GetName() or "", " (EPSG:{})".format(code) if code else "")
+    uri = source if datasource.GetLayerCount() == 1 else "{}|layername={}".format(source, chosen)
+    info = {"source": source, "uri": uri, "layer": chosen, "layers": names, "features": dict(polygon_layers)[chosen],
+            "fields": fields, "crs_wkt": srs.ExportToWkt() if srs is not None else "", "crs_name": crs_name, "note": note}
+    return datasource, layer, info
+
+
+def guess_plot_id_field(fields):
+    """The attribute most likely to hold plot IDs (plot_id, plot, id, name ...), or ''."""
+    lower = {name.lower(): name for name in fields}
+    for wanted in ("plot_id", "plotid", "plot", "plot_no", "plot_num", "plotnumber", "plot_name", "id", "name", "label", "fid_plot"):
+        if wanted in lower:
+            return lower[wanted]
+    for name in fields:
+        if "plot" in name.lower():
+            return name
+    return ""
+
+
+def _plot_transform(layer, raster_wkt):
+    """Coordinate transformation from the plot layer to the image, or None when they already match."""
+    srs = layer.GetSpatialRef()
+    if srs is None or not raster_wkt:
+        return None
+    target = osr.SpatialReference(); target.ImportFromWkt(raster_wkt)
+    source = srs.Clone()
+    if hasattr(source, "SetAxisMappingStrategy"):
+        source.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER); target.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+    return None if source.IsSame(target) else osr.CoordinateTransformation(source, target)
+
+
+def _plot_geometry(feature, transform):
+    """A feature's polygon, flat (2-D), straight-edged and in image coordinates; None if it is not a polygon."""
+    geometry = feature.GetGeometryRef()
+    if geometry is None or geometry.IsEmpty() or not _is_polygon_type(geometry.GetGeometryType()):
+        return None
+    geometry = geometry.Clone()
+    if geometry.HasCurveGeometry():
+        geometry = geometry.GetLinearGeometry()
+    geometry.FlattenTo2D()
+    if transform is not None:
+        geometry.Transform(transform)
+    return geometry
+
+
+def plots_over_image(path, image_path, layer_name=None):
+    """How many plot polygons overlap the image: (overlapping, total, note)."""
+    image = safe_gdal_open(image_path)
+    datasource, layer, info = open_plot_file(path, layer_name)
+    if image is None:
+        return None, info["features"], "the image could not be read"
+    gt = image.GetGeoTransform(); w, h = image.RasterXSize, image.RasterYSize
+    xs = [gt[0], gt[0] + w * gt[1] + h * gt[2]]; ys = [gt[3], gt[3] + w * gt[4] + h * gt[5]]
+    box = (min(xs), max(xs), min(ys), max(ys))
+    raster_wkt = image.GetProjection()
+    note = ""
+    if layer.GetSpatialRef() is None:
+        note = "the plot file has no coordinate system (for a Shapefile: no .prj file), so it is assumed to match the image"
+    transform = _plot_transform(layer, raster_wkt)
+    over = 0
+    layer.ResetReading()
+    for feature in layer:
+        try:
+            geometry = _plot_geometry(feature, transform)
+        except Exception:
+            geometry = None
+        if geometry is None:
+            continue
+        e = geometry.GetEnvelope()
+        if e[0] < box[1] and e[1] > box[0] and e[2] < box[3] and e[3] > box[2]:
+            over += 1
+    return over, info["features"], note
+
+
+def _pixel_area_m2(dataset):
+    """Area of one pixel in square metres, or None when the image is not in a projected (metric) CRS."""
+    wkt = dataset.GetProjection()
+    if not wkt:
+        return None
+    srs = osr.SpatialReference(); srs.ImportFromWkt(wkt)
+    if not srs.IsProjected():
+        return None
+    gt = dataset.GetGeoTransform()
+    return abs(gt[1] * gt[5] - gt[2] * gt[4]) * srs.GetLinearUnits() ** 2
+
+
 class Cancelled(RuntimeError): pass
 
 
@@ -1376,11 +1545,15 @@ class NativePPEEngine:
 
     @staticmethod
     def _summary(values):
+        """Statistics of the plant pixels of one plot (percentiles as R's default, type 7)."""
         values = np.asarray(values, dtype=float); values = values[np.isfinite(values)]
-        if values.size == 0: return {"pixel_count": 0, "mean": None, "median": None, "sd": None, "cv_pct": None}
+        if values.size == 0:
+            out = {name: None for name in STAT_NAMES}; out["pixel_count"] = 0; return out
         mean = float(np.mean(values)); sd = float(np.std(values, ddof=1)) if values.size > 1 else 0.0
-        return {"pixel_count": int(values.size), "mean": mean, "median": float(np.median(values)),
-                "sd": sd, "cv_pct": (100.0*sd/abs(mean) if abs(mean) > 1e-12 else None)}
+        p = np.percentile(values, [0, 10, 25, 50, 75, 90, 100])
+        return {"pixel_count": int(values.size), "mean": mean, "median": float(p[3]), "sd": sd,
+                "cv_pct": (100.0*sd/abs(mean) if abs(mean) > 1e-12 else None),
+                "min": float(p[0]), "p10": float(p[1]), "q25": float(p[2]), "q75": float(p[4]), "p90": float(p[5]), "max": float(p[6])}
 
     def _aoi_window(self, geometry):
         envelope = geometry.GetEnvelope()  # min x, max x, min y, max y
@@ -1403,25 +1576,26 @@ class NativePPEEngine:
         return memory.GetRasterBand(1).ReadAsArray().astype(bool)
 
     def export_aoi_statistics(self, cfg):
-        """Summarize finalized plant pixels by AOI feature without resampling imagery."""
-        started=time.time(); self.progress(2,"Opening imagery, plant mask, and AOI boundaries"); self._resolve(cfg)
+        """Canopy cover and statistics of the plant pixels in each plot polygon, without resampling.
+
+        Writes two CSV files into the export folder:
+          ppe_plot_canopy.csv      one row per plot: plot pixels, plant pixels, canopy %, areas;
+          ppe_plot_statistics.csv  one row per plot and variable (band or index): the plot's canopy
+                                   columns, then pixel count, mean, median, SD, CV %, min, P10,
+                                   Q25, Q75, P90 and max of the plant pixels.
+        A pixel belongs to a plot when the polygon touches it.
+        """
+        started=time.time(); self.progress(2,"Opening imagery, plant mask, and plot boundaries"); self._resolve(cfg)
         mask=safe_gdal_open(cfg.get("mask_path", ""))
         if mask is None: raise ValueError("The finalized plant mask is missing or unreadable.")
         self._check_mask_grid(mask)
-        vector=ogr.Open(cfg.get("aoi_path", ""))
-        if vector is None: raise ValueError("The AOI boundary file is missing or unreadable.")
-        layer=vector.GetLayer(0)
-        if layer is None: raise ValueError("The AOI file contains no readable vector layer.")
-        raster_srs=osr.SpatialReference()
-        if self.template.GetProjection(): raster_srs.ImportFromWkt(self.template.GetProjection())   # an image without a CRS is allowed
-        vector_srs=layer.GetSpatialRef(); transform=None
-        if vector_srs and self.template.GetProjection():
-            source_srs=vector_srs.Clone(); target_srs=raster_srs.Clone()
-            if hasattr(source_srs, "SetAxisMappingStrategy"):
-                source_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER); target_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-            if not source_srs.IsSame(target_srs): transform=osr.CoordinateTransformation(source_srs,target_srs)
-        elif not vector_srs:
-            self.log_cb("AOI has no CRS; coordinates are assumed to match the imagery CRS.")
+        vector, layer, info = open_plot_file(cfg.get("aoi_path", ""), cfg.get("aoi_layer") or None)
+        if info["note"]: self.log_cb("Plot file: {}.".format(info["note"]))
+        self.log_cb("Plot layer '{}': {} polygons; CRS {}.".format(info["layer"], info["features"], info["crs_name"] or "none"))
+        transform=_plot_transform(layer, self.template.GetProjection())
+        if layer.GetSpatialRef() is None:
+            self.log_cb("The plot file has no coordinate system; its coordinates are assumed to match the image.")
+        pixel_area=_pixel_area_m2(self.template)
         is_hsi = cfg.get("ortho_type") == "hsi" or (cfg.get("source_mode") == "stacked" and gdal.Open(cfg["stacked_path"]).RasterCount > 15)
         raw=[]
         if cfg.get("source_mode") == "stacked":
@@ -1434,34 +1608,49 @@ class NativePPEEngine:
         else:
             for name,(path,index) in self.sources.items(): raw.append((name,self.datasets[name],index,None))
         vis=[] if is_hsi else [name for name,meta in VI_META.items() if all(band in self.sources for band in meta[0])]
-        rows=[]; id_field=cfg.get("aoi_id_field") or ""; total=max(1,layer.GetFeatureCount()); plots=0
+        id_field=cfg.get("aoi_id_field") or ""
+        rows=[]; canopy_rows=[]; total=max(1,info["features"]); plots=0; outside=0; position=0
         layer.ResetReading()
-        for position, feature in enumerate(layer):
-            geometry=feature.GetGeometryRef()
-            if geometry is None or geometry.IsEmpty(): continue
-            geometry=geometry.Clone()
-            if transform: geometry.Transform(transform)
-            x,y,width,height=self._aoi_window(geometry)
-            if width < 1 or height < 1: self.log_cb("AOI feature {} falls outside the imagery and was skipped.".format(feature.GetFID())); continue
-            inside=self._rasterize_aoi(geometry,x,y,width,height)
-            plant=mask.GetRasterBand(1).ReadAsArray(x,y,width,height)==1; keep=inside&plant
+        for feature in layer:
+            geometry=_plot_geometry(feature, transform)
+            if geometry is None: continue
+            position += 1
             plot_id=feature.GetField(id_field) if id_field and feature.GetFieldIndex(id_field)>=0 else feature.GetFID()
-            plots += 1
+            if isinstance(plot_id,float) and plot_id.is_integer(): plot_id=int(plot_id)   # KML and GeoJSON often store 401 as 401.0
+            base={"plot_id":plot_id,"feature_id":feature.GetFID(),"plot_pixels":0,"plant_pixels":0,"canopy_pct":None,"plot_area_m2":None,"plant_area_m2":None}
+            x,y,width,height=self._aoi_window(geometry)
+            if width < 1 or height < 1:
+                outside += 1; canopy_rows.append(base)
+                self.log_cb("Plot {} lies outside the image.".format(plot_id)); continue
+            inside=self._rasterize_aoi(geometry,x,y,width,height)
+            m=mask.GetRasterBand(1).ReadAsArray(x,y,width,height)
+            valid=inside&((m==0)|(m==1)); keep=valid&(m==1)
+            n_valid=int(valid.sum()); n_plant=int(keep.sum())
+            base.update(plot_pixels=n_valid, plant_pixels=n_plant, canopy_pct=(100.0*n_plant/n_valid if n_valid else None),
+                        plot_area_m2=(n_valid*pixel_area if pixel_area else None), plant_area_m2=(n_plant*pixel_area if pixel_area else None))
+            canopy_rows.append(base); plots += 1
             for name,source,index,wavelength in raw:
                 values=source.GetRasterBand(index).ReadAsArray(x,y,width,height).astype(float); nodata=source.GetRasterBand(index).GetNoDataValue(); good=keep&np.isfinite(values)
                 if nodata is not None: good &= values != nodata
-                summary=self._summary(values[good])
-                rows.append(dict(plot_id=plot_id,feature_id=feature.GetFID(),variable=name,variable_type="raw_band",source_band=index,wavelength_nm=wavelength,**summary))
+                rows.append(dict(base,variable=name,variable_type="raw_band",source_band=index,wavelength_nm=wavelength,**self._summary(values[good])))
             if vis:
-                bands={name:self._read_band(name,x=x,y=y,w=width,h=height) for name in self.sources}; valid=self._valid(bands); vi_keep=keep&valid
+                bands={name:self._read_band(name,x=x,y=y,w=width,h=height) for name in self.sources}; vi_keep=keep&self._valid(bands)
                 for name in vis:
-                    values=compute_vi(name,bands); summary=self._summary(values[vi_keep&np.isfinite(values)])
-                    rows.append(dict(plot_id=plot_id,feature_id=feature.GetFID(),variable=name,variable_type="vegetation_index",source_band=None,wavelength_nm=None,**summary))
-            self.progress(5+int(90*(position+1)/total),"Calculating AOI statistics for plot {} of {}".format(position+1,total))
-        if not rows: raise ValueError("No AOI polygon features intersect the source imagery.")
-        export_root=os.path.abspath(os.path.expanduser(cfg["export_dir"])); os.makedirs(export_root,exist_ok=True); path=os.path.join(export_root,"ppe_aoi_plot_statistics.csv")
-        fields=("plot_id","feature_id","variable","variable_type","source_band","wavelength_nm","pixel_count","mean","median","sd","cv_pct")
+                    values=compute_vi(name,bands)
+                    rows.append(dict(base,variable=name,variable_type="vegetation_index",source_band=None,wavelength_nm=None,**self._summary(values[vi_keep&np.isfinite(values)])))
+            self.progress(5+int(90*position/total),"Plot statistics: plot {} of {}".format(position,total))
+        if not plots:
+            raise ValueError("None of the {} plots overlap the image. Check that the plot file belongs to this field and has the "
+                             "right coordinate system (for a Shapefile, its .prj file).".format(position))
+        export_root=os.path.abspath(os.path.expanduser(cfg["export_dir"])); os.makedirs(export_root,exist_ok=True)
+        canopy_fields=("plot_id","feature_id","plot_pixels","plant_pixels","canopy_pct","plot_area_m2","plant_area_m2")
+        canopy_path=os.path.join(export_root,"ppe_plot_canopy.csv")
+        with open(canopy_path,"w",newline="",encoding="utf-8") as handle:
+            writer=csv.DictWriter(handle,fieldnames=canopy_fields); writer.writeheader(); writer.writerows(canopy_rows)
+        path=os.path.join(export_root,"ppe_plot_statistics.csv")
+        fields=canopy_fields+("variable","variable_type","source_band","wavelength_nm")+STAT_NAMES
         with open(path,"w",newline="",encoding="utf-8") as handle:
             writer=csv.DictWriter(handle,fieldnames=fields); writer.writeheader(); writer.writerows(rows)
-        self.progress(100,"AOI plot statistics export complete")
-        return {"aoi_csv":path,"export_dir":export_root,"plot_count":plots,"row_count":len(rows),"elapsed_seconds":time.time()-started}
+        if outside: self.log_cb("{} of {} plots lie outside the image; they are listed in ppe_plot_canopy.csv with 0 pixels.".format(outside, position))
+        self.progress(100,"Plot statistics export complete")
+        return {"aoi_csv":path,"canopy_csv":canopy_path,"export_dir":export_root,"plot_count":plots,"plots_outside":outside,"row_count":len(rows),"elapsed_seconds":time.time()-started}

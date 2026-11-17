@@ -7,7 +7,15 @@ from osgeo import gdal, osr
 
 from qgis.PyQt.QtGui import QColor
 from qgis.core import (
+    Qgis,
     QgsColorRampShader,
+    QgsFillSymbol,
+    QgsPalLayerSettings,
+    QgsSingleSymbolRenderer,
+    QgsTextBufferSettings,
+    QgsTextFormat,
+    QgsVectorLayer,
+    QgsVectorLayerSimpleLabeling,
     QgsContrastEnhancement,
     QgsMultiBandColorRenderer,
     QgsProject,
@@ -261,7 +269,7 @@ def style_bright_rejection(layer, opacity=0.72):
 
 
 def load_result_layers(iface, result, threshold=0.5):
-    remove_previous_layers()
+    remove_previous_layers(keep=("plots",))      # the plot outlines stay on the map across runs
     group = _project_group()
     rgb_path, rgb_bands = prepare_rgb_source(result)
     rgb = _add_raster(rgb_path, image_layer_name(result), "rgb", group, True)
@@ -275,6 +283,7 @@ def load_result_layers(iface, result, threshold=0.5):
         iface.mapCanvas().refresh()
     # Guard diagnostics (bright-neutral, shadow, algae rejection rasters) stay in the run folder
     # only; they are not added to the map, so the Layers panel holds just image, preview and mask.
+    raise_plot_layer()
     return {"rgb": rgb, "mask": mask, "votes": votes}
 
 
@@ -285,6 +294,7 @@ def load_import_layer(iface, result):
     rgb_path, rgb_bands = prepare_rgb_source(result)
     rgb = _add_raster(rgb_path, image_layer_name(result), "rgb", group, True)
     style_rgb(rgb, rgb_bands, result.get("display_stretch") if not result.get("rgb_path") else None)
+    raise_plot_layer()
     if rgb is not None:
         iface.mapCanvas().setExtent(rgb.extent())
         iface.mapCanvas().refresh()
@@ -299,4 +309,72 @@ def replace_applied_mask(result, layers):
     mask = _add_raster(result.get("mask_qgis_path"), "PPE · Applied plant mask", "mask", group, True)
     style_plant_mask(mask)
     layers["mask"] = mask
+    raise_plot_layer()
     return mask
+
+
+# ---- plot boundaries ------------------------------------------------------------------------
+PLOT_LAYER_NAME = "PPE · Plots"
+
+
+def plot_layer():
+    """The plot layer PPE added, or None."""
+    for layer in QgsProject.instance().mapLayers().values():
+        if layer.customProperty(ROLE_KEY, "") == "plots":
+            return layer
+    return None
+
+
+def raise_plot_layer():
+    """Keep the plot outlines above the image and masks in the Layers panel."""
+    layer = plot_layer()
+    if layer is None:
+        return
+    root = QgsProject.instance().layerTreeRoot()
+    node = root.findLayer(layer.id())
+    if node is None:
+        return
+    parent = node.parent()
+    if parent is None or parent.children() and parent.children()[0] is node:
+        return
+    clone = node.clone()
+    parent.insertChildNode(0, clone)
+    parent.removeChildNode(node)
+
+
+def load_plot_layer(uri, name, id_field="", show_labels=True):
+    """Show the plot polygons on the map: yellow outlines, no fill, labelled with their IDs.
+    The layer can be switched off in the Layers panel and restyled like any QGIS layer."""
+    remove_role("plots")
+    layer = QgsVectorLayer(uri, "{} ({})".format(PLOT_LAYER_NAME, name), "ogr")
+    if not layer.isValid():
+        return None
+    layer.setCustomProperty(ROLE_KEY, "plots")
+    symbol = QgsFillSymbol.createSimple({"style": "no", "outline_color": "255,221,0,255",
+                                         "outline_width": "0.6", "outline_width_unit": "MM"})
+    layer.setRenderer(QgsSingleSymbolRenderer(symbol))
+    set_plot_labels(layer, id_field, show_labels)
+    QgsProject.instance().addMapLayer(layer, False)
+    _project_group().insertLayer(0, layer)
+    return layer
+
+
+def set_plot_labels(layer, id_field="", show=True):
+    """Label each plot with its ID (the chosen attribute, or the feature ID when none is chosen)."""
+    if layer is None:
+        return
+    settings = QgsPalLayerSettings()
+    if id_field:
+        settings.fieldName = id_field; settings.isExpression = False
+    else:
+        settings.fieldName = "$id"; settings.isExpression = True
+    text = QgsTextFormat(); text.setSize(9); text.setColor(QColor(20, 20, 20))
+    buffer = QgsTextBufferSettings(); buffer.setEnabled(True); buffer.setSize(1.0); buffer.setColor(QColor(255, 255, 255))
+    text.setBuffer(buffer); settings.setFormat(text)
+    try:
+        settings.placement = Qgis.LabelPlacement.OverPoint
+    except AttributeError:
+        settings.placement = QgsPalLayerSettings.OverPoint
+    layer.setLabeling(QgsVectorLayerSimpleLabeling(settings))
+    layer.setLabelsEnabled(bool(show))
+    layer.triggerRepaint()

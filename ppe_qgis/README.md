@@ -24,7 +24,7 @@ Bugs and questions: <https://github.com/Leoanish/ppe-qgis/issues>. Please attach
 | **2 Run** | Build the plant vote. |
 | **3 Review** | Move the threshold slider, look at the canopy curve, then finalize the mask. |
 | **4 Export** | Write plant-only bands and vegetation indices as GeoTIFFs. |
-| **5 Plots** | Statistics of plant pixels for each plot polygon, as a CSV. |
+| **5 Plots** | Canopy cover of each plot and statistics of its plant pixels, as CSV files. |
 
 ## What you see on the map
 
@@ -37,6 +37,25 @@ As soon as an image is chosen it is added to the map, before anything is analyse
 | Anything else | One band in grey, NIR if there is one: plants bright, soil darker |
 
 Run then adds the plant vote on top of the same picture (the live preview), and Finalize adds the applied plant mask. PPE adds nothing else to the Layers panel: the rasters showing which pixels each guard removed (shadows, algae, bright soil) stay in the run folder (`ppe_YYYYMMDD_HHMMSS` inside the working folder set under Folders) for anyone who wants to inspect them.
+
+On tab **5 Plots**, the chosen plot file is added as **PPE · Plots**: yellow outlines with each plot's ID, kept above the image. Untick *Show plot IDs on the map* to hide the labels, untick the layer in the Layers panel to hide the plots, or restyle it there like any QGIS layer.
+
+## Plot statistics
+
+**Plot files.** Any polygon file QGIS reads:
+
+| Format | Choose |
+|---|---|
+| Shapefile | the `.shp`, or any of its side files (`.dbf`, `.shx`, `.prj`, `.cpg`); keep them together in one folder |
+| Zipped Shapefile (or GeoPackage, GeoJSON, KML) | the `.zip`; PPE finds the plot file inside, also in a sub-folder |
+| GeoPackage, GeoJSON, KML/KMZ, GML, FlatGeobuf, SpatiaLite, MapInfo TAB | the file; if it holds several polygon layers, choose one in *Layer* |
+
+PPE suggests the plot identifier (a field called plot_id, plot, id or name) and tells you how many plots lie over the image. Plots in another coordinate system are reprojected to the image. A Shapefile without its `.prj` file has no coordinate system and is assumed to match the image; if none of the plots lie over the image, that is the usual reason. Point and line files are refused.
+
+**Output** (in the export folder of tab 4). A pixel belongs to a plot when the polygon touches it.
+
+- `ppe_plot_canopy.csv`, one row per plot: `plot_pixels` (image pixels in the plot), `plant_pixels`, `canopy_pct`, `plot_area_m2` and `plant_area_m2` (areas only when the image is in metres). Plots outside the image are listed with 0 pixels.
+- `ppe_plot_statistics.csv`, one row per plot and variable (every band and vegetation index; for hyperspectral images every original band): the canopy columns above, then for the plant pixels only `pixel_count`, `mean`, `median`, `sd`, `cv_pct`, `min`, `p10`, `q25`, `q75`, `p90` and `max`. Percentiles are calculated as R's default (type 7), so they match the R package.
 
 ## Changing or removing the image
 
