@@ -989,7 +989,7 @@ class PPEDockWidget(QDockWidget):
             self.curve_dialog.close(); self.curve_dialog = None
         self.result = {}
         self.curve_points = []
-        self.pale_frame.setVisible(False); self.pale_layer_removed()
+        self.pale_frame.setVisible(False); self.pale_layer_removed(); self._close_pale_card()
         self.threshold_slider.blockSignals(True); self.threshold_slider.setValue(50); self.threshold_slider.blockSignals(False)
         self.threshold_slider.setEnabled(False)
         self.threshold_value.setText("0.50"); self.canopy_value.setText("—")
@@ -1323,18 +1323,33 @@ class PPEDockWidget(QDockWidget):
 
     def _pale_card(self):
         frame = QFrame(); frame.setObjectName("paleCard")
-        box = QVBoxLayout(frame); box.setContentsMargins(14, 12, 14, 12); box.setSpacing(6)
-        self.pale_title = QLabel("✿  Pale plant parts in this image"); self.pale_title.setObjectName("paleTitle")
+        box = QVBoxLayout(frame); box.setContentsMargins(12, 8, 12, 8); box.setSpacing(6)
+        # The header opens and closes the card; it starts closed, so only the header shows.
+        self.pale_title = QToolButton(); self.pale_title.setObjectName("paleTitle")
+        self.pale_title.setCheckable(True); self.pale_title.setChecked(False)
+        self.pale_title.setToolButtonStyle(Qt.ToolButtonTextBesideIcon); self.pale_title.setArrowType(Qt.RightArrow)
+        self.pale_title.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.pale_title.setToolTip("Click to open or close the details")
         box.addWidget(self.pale_title)
+        self.pale_body = QWidget(); body = QVBoxLayout(self.pale_body); body.setContentsMargins(0, 2, 0, 2); body.setSpacing(6)
         self.pale_text = QLabel(""); self.pale_text.setObjectName("paleText"); self.pale_text.setWordWrap(True)
         self.pale_text.setTextFormat(Qt.RichText); self.pale_text.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        box.addWidget(self.pale_text)
+        body.addWidget(self.pale_text)
         self.pale_button = QPushButton("Show them on the map"); self.pale_button.setCheckable(True)
         self.pale_button.setProperty("secondary", True)
         self.pale_button.toggled.connect(self._pale_button_toggled)
-        box.addWidget(self.pale_button)
+        body.addWidget(self.pale_button)
+        box.addWidget(self.pale_body); self.pale_body.setVisible(False)
+        self.pale_title.toggled.connect(self._pale_opened)
         frame.setVisible(False); self.pale_frame = frame
         return frame
+
+    def _pale_opened(self, opened):
+        self.pale_title.setArrowType(Qt.DownArrow if opened else Qt.RightArrow)
+        self.pale_body.setVisible(bool(opened))
+
+    def _close_pale_card(self):
+        self.pale_title.setChecked(False)
 
     def _set_pale_style(self, full):
         self.pale_frame.setProperty("compact", not full)
@@ -1378,7 +1393,7 @@ class PPEDockWidget(QDockWidget):
             self.pale_frame.setVisible(True)
             return
         self._set_pale_style(True)
-        self.pale_title.setText("✿  Pale plant parts in this image")
+        self.pale_title.setText("✿  Pale plant parts: {:.1f} % of the plant".format(pct))
         at_stage = " at {}".format(stage.split(" / ")[0].lower()) if stage else ""
         lines = ["About <b>{:.1f} %</b> of the plant in this image is <b>pale</b>: inside the canopy, reflecting "
                  "plant-level near-infrared light, but not leaf-green.".format(pct)]
@@ -1748,6 +1763,7 @@ class PPEDockWidget(QDockWidget):
 
     def set_results(self, result, curve_points):
         self.pale_layer_removed()                 # a new run removes the old pale-plant layer
+        self._close_pale_card()
         self.result = dict(result)
         self.curve_points = list(curve_points)
         threshold = float(result.get("threshold", 0.5))
@@ -1940,9 +1956,10 @@ class PPEDockWidget(QDockWidget):
             QLabel[drawing="true"], QLabel#ppeHint[drawing="true"] { color: #9a5b00; font-weight: 700; }
             QFrame#paleCard { background: #fff6dd; border: 1px solid #f0c35a; border-left: 5px solid #e6a100; border-radius: 8px; }
             QFrame#paleCard QLabel { background: transparent; }
-            QLabel#paleTitle { color: #7a4e00; font-weight: 700; font-size: 13px; }
+            QToolButton#paleTitle { text-align: left; border: none; background: transparent; color: #7a4e00; font-weight: 700; font-size: 13px; padding: 3px 0px; }
+            QToolButton#paleTitle:hover { color: #a86b00; }
             QFrame#paleCard[compact="true"] { background: #fffaf0; border: 1px solid #f1dcae; border-left: 3px solid #e9c46a; }
-            QFrame#paleCard[compact="true"] QLabel#paleTitle { font-size: 12px; }
+            QFrame#paleCard[compact="true"] QToolButton#paleTitle { font-size: 12px; }
             QLabel#paleText { color: #4a3a12; }
 
             QToolButton#sectionToggle { text-align: left; padding: 7px 10px; border: 1px solid #d9e3dd; border-radius: 8px; background: #ffffff; color: #17473a; font-weight: 700; }
