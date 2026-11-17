@@ -17,6 +17,8 @@ from .layer_utils import (
     remove_previous_layers,
     replace_applied_mask,
     style_vote_threshold,
+    style_zoned_preview,
+    replace_preview_layer,
     validate_aligned,
 )
 from .process_runner import PPEPreviewRunner, PPEProcessRunner
@@ -83,6 +85,9 @@ class PPEPlugin:
         self.dock.cancel_requested.connect(self.runner.cancel)
         self.dock.preview_requested.connect(self._start_preview)
         self.dock.reset_requested.connect(self._reset_layers)
+        self.dock.zones_requested.connect(self._start_zones)
+        self.dock.zones_cleared.connect(self._zones_cleared)
+        self.dock.crop_preview_changed.connect(lambda: self.preview_timer.start())
         QgsProject.instance().layersWillBeRemoved.connect(self._layers_will_be_removed)
         QgsProject.instance().layersRemoved.connect(self._layers_removed)
         self._project_hooked = True
@@ -185,11 +190,28 @@ class PPEPlugin:
 
     def _start_generate(self, config):
         self.current_action = "run"
-        self._clear_ppe_layers(keep=("rgb", "plots"))   # the image and plot outlines stay on the map while PPE works
+        self._clear_ppe_layers(keep=("rgb", "plots", "crops"))   # image, plot and crop outlines stay on the map while PPE works
         self.layers = {"rgb": self.layers.get("rgb")} if self.layers.get("rgb") is not None else {}
         self.dock.log_view.clear()
         self.dock.set_running(True, "run")
         self._start_process(config)
+
+    def _start_zones(self, config):
+        """Prepare the crop areas in the background (crop raster, preview raster, per-crop curves)."""
+        if self.runner.is_running:
+            QTimer.singleShot(400, lambda: self._start_zones(config))
+            return
+        self.current_action = "zones"
+        self.dock.set_running(True, "zones")
+        self._start_process(config)
+
+    def _zones_cleared(self):
+        """Every crop outline was removed: the preview shows the plain vote again."""
+        vote = (self.dock.result or {}).get("vote_path")
+        if vote and self.layers.get("votes") is not None:
+            with self._own_changes():
+                replace_preview_layer(vote, self.layers)
+            self._refresh_preview()
 
     def _start_apply(self, config):
         self.current_action = "apply"
@@ -217,6 +239,13 @@ class PPEPlugin:
             self.dock.set_exported(result)
             message = "AOI plot statistics export complete." if result.get("aoi_csv") else "Plant-only GeoTIFF export complete."
             self._message(message, Qgis.Success)
+            return
+        if self.current_action == "zones":
+            with self._own_changes():
+                replace_preview_layer(result.get("preview_path"), self.layers)
+            self.dock.set_running(False, "zones")
+            self.dock.set_zones(result)
+            self._refresh_preview()
             return
         if self.current_action == "apply":
             aligned, detail = validate_aligned([self.dock.result.get("vote_path"), result.get("mask_qgis_path")])
@@ -291,7 +320,10 @@ class PPEPlugin:
         votes = self.layers.get("votes")
         if votes is None:
             return
-        style_vote_threshold(votes, self.dock.threshold())
+        if self.dock.zone_info:
+            style_zoned_preview(votes, self.dock.zone_thresholds(), self.dock.zone_names())
+        else:
+            style_vote_threshold(votes, self.dock.threshold())
         self.iface.mapCanvas().refresh()
 
     def _message(self, message, level):

@@ -20,11 +20,11 @@ Bugs and questions: <https://github.com/Leoanish/ppe-qgis/issues>. Please attach
 
 | Tab | What you do |
 |---|---|
-| **1 Image** | Choose a stacked GeoTIFF, a folder of band files, or individual band files. The image appears on the map straight away, and the tab lists the bands that were found. |
+| **1 Image** | Choose a stacked GeoTIFF, a folder of band files, or individual band files. The image appears on the map straight away, and the tab lists the bands that were found. Optionally, describe the field (growth stage, dates, soil moisture, weeds, notes). |
 | **2 Run** | Build the plant vote. |
-| **3 Review** | Move the threshold slider, look at the canopy curve, then finalize the mask. |
+| **3 Review** | Move the threshold slider, look at the canopy curve, then finalize the mask. With several crops in the image, draw each crop's area and give it its own slider. |
 | **4 Export** | Write plant-only bands and vegetation indices as GeoTIFFs. |
-| **5 Plots** | Canopy cover of each plot and statistics of its plant pixels, as CSV files. |
+| **5 Plots** | Canopy cover of each plot and statistics of its plant pixels, as CSV files, with their own progress bar. |
 
 ## What you see on the map
 
@@ -40,6 +40,21 @@ Run then adds the plant vote on top of the same picture (the live preview), and 
 
 On tab **5 Plots**, the chosen plot file is added as **PPE · Plots**: yellow outlines with each plot's ID, kept above the image. Untick *Show plot IDs on the map* to hide the labels, untick the layer in the Layers panel to hide the plots, or restyle it there like any QGIS layer.
 
+## Several crops in one image
+
+Different crops can need different thresholds; on a corn field at tasselling, for example, a lower threshold keeps the tassels. On the **Review** tab, under *Crops in this image*:
+
+1. **+ Add crop** and type its name (any number of crops).
+2. **Draw area**: click the corners of a rough outline around that crop on the map, right-click to finish (Esc cancels, Backspace removes the last corner). A ✓ appears and the outline is shown as **PPE · Crop areas**. **Redraw** replaces it, ✕ removes the crop.
+3. Each drawn crop gets its own slider and canopy; the slider above sets the rest of the image (headlands, roads). *Use the slider above for every crop* moves them all together. The live preview shows every area at its own threshold.
+4. **Finalize** writes one mask, `ppe_plant_mask_by_crop.tif`, and reports the canopy of each crop.
+
+Only the threshold differs between areas; the vote is the same as without crop areas, so a crop slider at the same value as the main slider gives exactly the usual mask. Where outlines overlap, the crop listed first wins. Every crop slider starts at the suggested threshold of the whole image: a suggestion per crop area was tested on Kritis and was not reliable on closed canopy (it gave 0.95 for soybean, which would drop shaded leaves). Preparing the areas takes a few seconds (7 s on a 9371 × 10056 field) and moving a slider is instant.
+
+## About this field (optional) and the run record
+
+On the **Image** tab, *About this field* takes the growth stage, planting and flight dates, soil moisture, weeds and notes. Nothing there changes the mask. At *Flowering / tasselling* or *Drying down* the Review tab shows a threshold tip. Finalize saves `ppe_run_record.json` (image, chosen layers, suggestion, final thresholds, canopy per crop and the field information); the plot export copies it and adds the crop, the threshold used and the field information to `ppe_plot_canopy.csv`. Kept over many fields and dates, these records can show which thresholds suit which crops and stages.
+
 ## Plot statistics
 
 **Plot files.** Any polygon file QGIS reads:
@@ -54,7 +69,7 @@ PPE suggests the plot identifier (a field called plot_id, plot, id or name) and 
 
 **Output** (in the export folder of tab 4). A pixel belongs to a plot when the polygon touches it.
 
-- `ppe_plot_canopy.csv`, one row per plot: `plot_pixels` (image pixels in the plot), `plant_pixels`, `canopy_pct`, `plot_area_m2` and `plant_area_m2` (areas only when the image is in metres). Plots outside the image are listed with 0 pixels.
+- `ppe_plot_canopy.csv`, one row per plot: `crop` and `threshold` (the crop area holding most of the plot, and the threshold used there), `plot_pixels` (image pixels in the plot), `plant_pixels`, `canopy_pct`, `plot_area_m2` and `plant_area_m2` (areas only when the image is in metres). Plots outside the image are listed with 0 pixels. Then the field information from tab 1 (`growth_stage`, `planting_date`, `flight_date`, `irrigation`, `weeds`).
 - `ppe_plot_statistics.csv`, one row per plot and variable (every band and vegetation index; for hyperspectral images every original band): the canopy columns above, then for the plant pixels only `pixel_count`, `mean`, `median`, `sd`, `cv_pct`, `min`, `p10`, `q25`, `q75`, `p90` and `max`. Percentiles are calculated as R's default (type 7), so they match the R package.
 
 ## Changing or removing the image
@@ -65,7 +80,7 @@ PPE suggests the plot identifier (a field called plot_id, plot, id or name) and 
 - Deleting the PPE image layer in the QGIS Layers panel resets PPE as well. Deleting only the live-preview layer switches the slider off until PPE is run again.
 - While PPE is running the image cannot be changed; cancel the run first.
 
-## How the mask is made (version 3.8.0)
+## How the mask is made (version 3.9.0)
 
 PPE follows three steps: pick the layers with the widest spread, split each one four ways, and count the votes.
 
@@ -146,6 +161,7 @@ The Kritis field was also cut into sensor variants and compared with the full 5-
 - The algae guard cannot work on images without a red-edge band, and at a quarter of the red-edge rise it lets the greenest algae through if the chosen layers also accept it.
 - Plants with very low chlorophyll have a weak red-edge rise and could still be rejected by the algae guard. Untick it and compare if you see gaps in yellow or stressed canopy.
 - On camera RGB images green weeds and grass are plants to PPE; it cannot tell crop from weed.
+- PPE does not find crop areas by itself: the user draws them. Telling crops apart automatically from one image without training data was not reliable enough.
 - An image of bare soil only, or of closed canopy only, is still split in two. PPE warns about it.
 
 ## Support and logs

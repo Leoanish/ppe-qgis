@@ -800,6 +800,7 @@ class NativePPEEngine:
         self.import_cb = import_ready or (lambda r: None)
         self.cancelled = cancelled or (lambda: False)
         self.sources = {}
+        self.template = None
         self.hsi_proxy_info = []
         logical_cpus = max(1, os.cpu_count() or 1)
         self.thread_count = max(1, min(16, logical_cpus-1 if logical_cpus > 2 else logical_cpus))
@@ -1246,7 +1247,7 @@ class NativePPEEngine:
         else:
             self.log_cb("No threshold suggestion ({}); starting at 0.50.".format(no_suggestion_reason))
         start_threshold = suggestion["threshold"] if suggestion else 0.5
-        result = dict(imported, vote_path=vote_path, curve_path=curve_path, threshold=start_threshold, suggestion=suggestion or {}, suggestion_note="" if suggestion else no_suggestion_reason, selected_layers=chosen, chosen_layers=chosen, layer_details=layer_details, n_voters=n_masks, n_method_masks=n_masks, canopy_regime="classic", adaptation_mode="adaptive" if adaptive else "global", half_mixture=half_mixture, spread_ranking=[{"layer": name, "group": group, "spread": spread} for spread, name, group in leaders], mixed_class_vote=.5, bright_guard=bool(guard), bright_rejection_path=rejection_path, bright_rejected_pct=rejected_pct, shadow_guard=bool(shadow_guard), shadow_rejection_path=shadow_rejection_path, shadow_rejected_pct=shadow_rejected_pct, biofilm_guard=bool(algae_guard), algae_guard_fit=algae_guard or {}, biofilm_rejection_path=biofilm_rejection_path, biofilm_rejected_pct=biofilm_rejected_pct, colour_guard=bool(colour_guard), colour_rejected_pct=colour_rejected_pct, weak_green_warning=bool(colour_guard and colour_guard["plant_excess"] < WEAK_GREEN), single_class="", one_class_warning=one_class or "", ppe_version="native-3.8.0", processing_threads=self.thread_count, output_dir=cfg["output_dir"], timings={"total": time.time()-started})
+        result = dict(imported, vote_path=vote_path, curve_path=curve_path, threshold=start_threshold, suggestion=suggestion or {}, suggestion_note="" if suggestion else no_suggestion_reason, selected_layers=chosen, chosen_layers=chosen, layer_details=layer_details, n_voters=n_masks, n_method_masks=n_masks, canopy_regime="classic", adaptation_mode="adaptive" if adaptive else "global", half_mixture=half_mixture, spread_ranking=[{"layer": name, "group": group, "spread": spread} for spread, name, group in leaders], mixed_class_vote=.5, bright_guard=bool(guard), bright_rejection_path=rejection_path, bright_rejected_pct=rejected_pct, shadow_guard=bool(shadow_guard), shadow_rejection_path=shadow_rejection_path, shadow_rejected_pct=shadow_rejected_pct, biofilm_guard=bool(algae_guard), algae_guard_fit=algae_guard or {}, biofilm_rejection_path=biofilm_rejection_path, biofilm_rejected_pct=biofilm_rejected_pct, colour_guard=bool(colour_guard), colour_rejected_pct=colour_rejected_pct, weak_green_warning=bool(colour_guard and colour_guard["plant_excess"] < WEAK_GREEN), single_class="", one_class_warning=one_class or "", ppe_version="native-3.9.0", processing_threads=self.thread_count, output_dir=cfg["output_dir"], timings={"total": time.time()-started})
         with open(os.path.join(run_dir, "run_summary.json"), "w", encoding="utf-8") as handle: json.dump(result, handle, indent=2)
         self.progress(100, "Plant vote raster and threshold curve are ready"); return result
 
@@ -1467,10 +1468,96 @@ class NativePPEEngine:
             for t in np.arange(.15,.951,.01): w.writerow((round(float(t),2),float(100*np.mean(x >= max(0,t-.05)))))
 
     def apply(self, cfg):
-        self.thread_count=max(1,min(16,int(cfg.get("threads",self.thread_count) or self.thread_count))); vote_path=cfg["vote_path"]; ds=safe_gdal_open(vote_path); self.template=ds; self.width=ds.RasterXSize; self.height=ds.RasterYSize; threshold=float(cfg["threshold"]); out_dir=cfg["output_dir"]; os.makedirs(out_dir,exist_ok=True); mask_path=os.path.join(out_dir,"ppe_plant_mask_{:.2f}.tif".format(threshold)); out=self._create_output(mask_path,gdal.GDT_Byte,255); count=valid_count=0
+        """Write the plant mask. With crop areas (cfg zone_path + zone_thresholds: index 0 for the rest
+        of the image, then one per crop) each area gets its own threshold; the vote is unchanged."""
+        self.thread_count=max(1,min(16,int(cfg.get("threads",self.thread_count) or self.thread_count))); vote_path=cfg["vote_path"]; ds=safe_gdal_open(vote_path); self.template=ds; self.width=ds.RasterXSize; self.height=ds.RasterYSize
+        threshold=float(cfg["threshold"]); out_dir=cfg["output_dir"]; os.makedirs(out_dir,exist_ok=True)
+        zone_path=cfg.get("zone_path") or ""; zone_t=[float(t) for t in (cfg.get("zone_thresholds") or [])]
+        zones=safe_gdal_open(zone_path) if zone_path and len(zone_t) > 1 else None
+        if zones is not None and (zones.RasterXSize != self.width or zones.RasterYSize != self.height): zones=None
+        if zones is not None: zone_t[0]=threshold
+        cut=np.maximum(0, np.array(zone_t if zones is not None else [threshold], dtype=float)-.05)
+        mask_path=os.path.join(out_dir,"ppe_plant_mask_by_crop.tif" if zones is not None else "ppe_plant_mask_{:.2f}.tif".format(threshold))
+        out=self._create_output(mask_path,gdal.GDT_Byte,255); n=len(cut); count=np.zeros(n,np.int64); valid_count=np.zeros(n,np.int64)
         for y in range(0,self.height,512):
-            h=min(512,self.height-y); x=ds.GetRasterBand(1).ReadAsArray(0,y,self.width,h); valid=(x != NODATA)&np.isfinite(x); m=np.where(valid,(x >= max(0,threshold-.05)).astype(np.uint8),255).astype(np.uint8); out.GetRasterBand(1).WriteArray(m,0,y); count += int(np.sum(m[valid]==1)); valid_count += int(valid.sum()); self.progress(int(100*(y+h)/self.height),"Writing native-resolution plant mask")
-        out.FlushCache(); out=None; return {"mask_path":mask_path,"mask_qgis_path":mask_path,"threshold":threshold,"canopy_pct":100*count/max(1,valid_count)}
+            h=min(512,self.height-y); x=ds.GetRasterBand(1).ReadAsArray(0,y,self.width,h); valid=(x != NODATA)&np.isfinite(x)
+            z=zones.GetRasterBand(1).ReadAsArray(0,y,self.width,h).astype(np.intp) if zones is not None else np.zeros(x.shape,np.intp)
+            z=np.clip(z,0,n-1); plant=valid&(x >= cut[z])
+            m=np.where(valid,plant.astype(np.uint8),255).astype(np.uint8); out.GetRasterBand(1).WriteArray(m,0,y)
+            count += np.bincount(z[plant],minlength=n)[:n]; valid_count += np.bincount(z[valid],minlength=n)[:n]
+            self.progress(int(100*(y+h)/self.height),"Writing native-resolution plant mask")
+        out.FlushCache(); out=None
+        result={"mask_path":mask_path,"mask_qgis_path":mask_path,"threshold":threshold,"canopy_pct":100*count.sum()/max(1,valid_count.sum())}
+        if zones is not None:
+            names=list(cfg.get("zone_names") or [])
+            result["zone_path"]=zone_path; result["zone_thresholds"]=zone_t
+            result["crops"]=[{"crop":(names[k-1] if k-1 < len(names) else "crop {}".format(k)),"threshold":zone_t[k],
+                              "pixels":int(valid_count[k]),"canopy_pct":(100*count[k]/valid_count[k] if valid_count[k] else None)} for k in range(1,n)]
+            result["rest_canopy_pct"]=100*count[0]/valid_count[0] if valid_count[0] else None
+        record=self.write_run_record(cfg, result, out_dir)
+        if record: result["run_record"]=record
+        return result
+
+    def prepare_crop_areas(self, cfg):
+        """Turn the crop outlines into (1) a crop-area raster on the image grid (0 = outside every
+        outline, 1..n = the crops in the order listed; where outlines overlap the crop listed first
+        wins), (2) a preview raster holding vote + 10 x crop number, so that one colour ramp can show a
+        different threshold in every area, and (3) for every area a canopy-by-threshold curve from all
+        of its pixels. The vote itself is not changed."""
+        vote=safe_gdal_open(cfg["vote_path"])
+        if vote is None: raise ValueError("The vote raster is missing; run PPE again.")
+        self.template=vote; self.width=vote.RasterXSize; self.height=vote.RasterYSize
+        areas=[a for a in (cfg.get("crop_areas") or []) if a.get("wkt")]
+        if not areas: raise ValueError("Draw at least one crop area first.")
+        out_dir=cfg.get("output_dir") or os.path.dirname(cfg["vote_path"]); os.makedirs(out_dir,exist_ok=True)
+        zone_path=os.path.join(out_dir,"ppe_crop_areas.tif"); preview_path=os.path.join(out_dir,"ppe_vote_by_crop.tif")
+        self.progress(5,"Drawing the crop areas on the image grid")
+        zones=self._create_output(zone_path,gdal.GDT_Byte,255); zones.GetRasterBand(1).Fill(0); zones.GetRasterBand(1).SetNoDataValue(255)
+        srs=osr.SpatialReference(); wkt=vote.GetProjection()
+        if wkt: srs.ImportFromWkt(wkt)
+        memory=ogr.GetDriverByName("Memory").CreateDataSource(""); layer=memory.CreateLayer("crops",srs=srs if wkt else None,geom_type=ogr.wkbMultiPolygon)
+        layer.CreateField(ogr.FieldDefn("zone",ogr.OFTInteger))
+        for k in range(len(areas),0,-1):                       # last first, so the crop listed first wins overlaps
+            geometry=ogr.CreateGeometryFromWkt(areas[k-1]["wkt"])
+            if geometry is None or geometry.IsEmpty(): continue
+            feature=ogr.Feature(layer.GetLayerDefn()); feature.SetField("zone",k); feature.SetGeometry(geometry); layer.CreateFeature(feature)
+        gdal.RasterizeLayer(zones,[1],layer,options=["ATTRIBUTE=zone"]); zones.FlushCache()
+        preview=self._create_output(preview_path,gdal.GDT_Float32,NODATA)
+        n=len(areas)+1; levels=1200                            # votes are multiples of 1/24 (1/30 with half-mixture)
+        hist=np.zeros((n,levels+1),np.int64); overlap=0
+        for y in range(0,self.height,512):
+            h=min(512,self.height-y); v=vote.GetRasterBand(1).ReadAsArray(0,y,self.width,h); z=zones.GetRasterBand(1).ReadAsArray(0,y,self.width,h).astype(np.intp)
+            valid=(v != NODATA)&np.isfinite(v)&(v >= 0)&(v <= 1); z=np.where(z == 255,0,z)
+            preview.GetRasterBand(1).WriteArray(np.where(valid,v+10.0*z,NODATA).astype(np.float32),0,y)
+            q=np.rint(v[valid]*levels).astype(np.intp); hist += np.bincount(z[valid]*(levels+1)+q,minlength=n*(levels+1)).reshape(n,levels+1)
+            self.progress(10+int(85*(y+h)/self.height),"Preparing the crop preview")
+        preview.FlushCache(); preview=None; zones=None
+        values=np.arange(levels+1)/levels; thresholds=np.round(np.arange(.15,.951,.01),2); curves=[]
+        for k in range(n):
+            total=hist[k].sum(); above=[int(hist[k][values >= max(0,t-.05)-1e-9].sum()) for t in thresholds]
+            curves.append([(float(t),(100.0*a/total if total else None)) for t,a in zip(thresholds,above)])
+        names=[a.get("name") or "crop {}".format(i+1) for i,a in enumerate(areas)]
+        self.progress(100,"Crop areas ready")
+        return {"zone_path":zone_path,"preview_path":preview_path,"zone_names":names,"zone_pixels":[int(hist[k].sum()) for k in range(n)],
+                "zone_curves":curves}
+
+    def write_run_record(self, cfg, result, out_dir):
+        """Save what was run and chosen as ppe_run_record.json (the start of a data catalogue)."""
+        try:
+            record={"plugin_version":"3.9.0","written":datetime.now().isoformat(timespec="seconds"),
+                    "source_mode":cfg.get("source_mode"),"source":cfg.get("stacked_path") or cfg.get("folder_path") or cfg.get("bands"),
+                    "field_info":cfg.get("field_info") or {},"suggestion":cfg.get("suggestion") or {},
+                    "final_threshold":result.get("threshold"),"canopy_pct":result.get("canopy_pct"),
+                    "crops":result.get("crops") or [],"rest_of_image_canopy_pct":result.get("rest_canopy_pct"),
+                    "chosen_layers":cfg.get("chosen_layers") or [],"mask_path":result.get("mask_path")}
+            if self.template is not None:
+                gt=self.template.GetGeoTransform(); record["image"]={"width":self.width,"height":self.height,"pixel_size":[gt[1],abs(gt[5])],
+                                                                     "crs":(osr.SpatialReference(wkt=self.template.GetProjection()).GetName() if self.template.GetProjection() else "")}
+            path=os.path.join(out_dir,"ppe_run_record.json")
+            with open(path,"w",encoding="utf-8") as handle: json.dump(record,handle,indent=2,default=str)
+            return path
+        except Exception as err:
+            self.log_cb("The run record could not be written: {}".format(err)); return ""
 
     @staticmethod
     def _safe_filename(value):
@@ -1596,6 +1683,11 @@ class NativePPEEngine:
         if layer.GetSpatialRef() is None:
             self.log_cb("The plot file has no coordinate system; its coordinates are assumed to match the image.")
         pixel_area=_pixel_area_m2(self.template)
+        zone_names=list(cfg.get("zone_names") or []); zone_t=list(cfg.get("zone_thresholds") or [])
+        zones=safe_gdal_open(cfg.get("zone_path") or "") if zone_names else None
+        if zones is not None and (zones.RasterXSize != self.width or zones.RasterYSize != self.height): zones=None
+        field_info=cfg.get("field_info") or {}
+        info_columns={key:field_info.get(key,"") for key in ("growth_stage","planting_date","flight_date","irrigation","weeds")}
         is_hsi = cfg.get("ortho_type") == "hsi" or (cfg.get("source_mode") == "stacked" and gdal.Open(cfg["stacked_path"]).RasterCount > 15)
         raw=[]
         if cfg.get("source_mode") == "stacked":
@@ -1617,7 +1709,8 @@ class NativePPEEngine:
             position += 1
             plot_id=feature.GetField(id_field) if id_field and feature.GetFieldIndex(id_field)>=0 else feature.GetFID()
             if isinstance(plot_id,float) and plot_id.is_integer(): plot_id=int(plot_id)   # KML and GeoJSON often store 401 as 401.0
-            base={"plot_id":plot_id,"feature_id":feature.GetFID(),"plot_pixels":0,"plant_pixels":0,"canopy_pct":None,"plot_area_m2":None,"plant_area_m2":None}
+            base={"plot_id":plot_id,"feature_id":feature.GetFID(),"crop":"","threshold":(cfg.get("threshold") if cfg.get("threshold") is not None else ""),
+                  "plot_pixels":0,"plant_pixels":0,"canopy_pct":None,"plot_area_m2":None,"plant_area_m2":None}
             x,y,width,height=self._aoi_window(geometry)
             if width < 1 or height < 1:
                 outside += 1; canopy_rows.append(base)
@@ -1625,6 +1718,11 @@ class NativePPEEngine:
             inside=self._rasterize_aoi(geometry,x,y,width,height)
             m=mask.GetRasterBand(1).ReadAsArray(x,y,width,height)
             valid=inside&((m==0)|(m==1)); keep=valid&(m==1)
+            if zones is not None:                                   # the crop area holding most of the plot
+                z=zones.GetRasterBand(1).ReadAsArray(x,y,width,height)[inside]; z=z[(z > 0)&(z <= len(zone_names))]
+                if z.size:
+                    k=int(np.bincount(z).argmax()); base["crop"]=zone_names[k-1]
+                    if k < len(zone_t): base["threshold"]=zone_t[k]
             n_valid=int(valid.sum()); n_plant=int(keep.sum())
             base.update(plot_pixels=n_valid, plant_pixels=n_plant, canopy_pct=(100.0*n_plant/n_valid if n_valid else None),
                         plot_area_m2=(n_valid*pixel_area if pixel_area else None), plant_area_m2=(n_plant*pixel_area if pixel_area else None))
@@ -1643,14 +1741,19 @@ class NativePPEEngine:
             raise ValueError("None of the {} plots overlap the image. Check that the plot file belongs to this field and has the "
                              "right coordinate system (for a Shapefile, its .prj file).".format(position))
         export_root=os.path.abspath(os.path.expanduser(cfg["export_dir"])); os.makedirs(export_root,exist_ok=True)
-        canopy_fields=("plot_id","feature_id","plot_pixels","plant_pixels","canopy_pct","plot_area_m2","plant_area_m2")
+        for row in canopy_rows: row.update(info_columns)
+        canopy_fields=("plot_id","feature_id","crop","threshold","plot_pixels","plant_pixels","canopy_pct","plot_area_m2","plant_area_m2")+tuple(info_columns)
         canopy_path=os.path.join(export_root,"ppe_plot_canopy.csv")
         with open(canopy_path,"w",newline="",encoding="utf-8") as handle:
             writer=csv.DictWriter(handle,fieldnames=canopy_fields); writer.writeheader(); writer.writerows(canopy_rows)
         path=os.path.join(export_root,"ppe_plot_statistics.csv")
-        fields=canopy_fields+("variable","variable_type","source_band","wavelength_nm")+STAT_NAMES
+        fields=canopy_fields[:9]+("variable","variable_type","source_band","wavelength_nm")+STAT_NAMES
         with open(path,"w",newline="",encoding="utf-8") as handle:
-            writer=csv.DictWriter(handle,fieldnames=fields); writer.writeheader(); writer.writerows(rows)
+            writer=csv.DictWriter(handle,fieldnames=fields,extrasaction="ignore"); writer.writeheader(); writer.writerows(rows)
+        record=cfg.get("run_record") or ""
+        if record and os.path.isfile(record):
+            import shutil
+            shutil.copyfile(record,os.path.join(export_root,"ppe_run_record.json"))
         if outside: self.log_cb("{} of {} plots lie outside the image; they are listed in ppe_plot_canopy.csv with 0 pixels.".format(outside, position))
         self.progress(100,"Plot statistics export complete")
         return {"aoi_csv":path,"canopy_csv":canopy_path,"export_dir":export_root,"plot_count":plots,"plots_outside":outside,"row_count":len(rows),"elapsed_seconds":time.time()-started}

@@ -3,7 +3,7 @@
 import os
 from statistics import median
 
-from qgis.PyQt.QtCore import QSettings, QStandardPaths, Qt, pyqtSignal
+from qgis.PyQt.QtCore import QSettings, QStandardPaths, Qt, QTimer, pyqtSignal
 from qgis.PyQt.QtWidgets import (
     QAbstractSpinBox,
     QCheckBox,
@@ -37,6 +37,7 @@ from qgis.core import QgsProject
 from osgeo import gdal
 
 from .curve_widget import ThresholdCurveDialog
+from .crop_tools import PolygonDrawTool, show_crop_areas, to_crs
 from .layer_utils import canopy_at, load_plot_layer, plot_layer, remove_role, set_plot_labels
 from .native_engine import (BAND_LABELS, PLOT_FILE_FILTER, dataset_wavelengths, describe_image, display_channels,
                             guess_plot_id_field, open_plot_file, plots_over_image)
@@ -96,6 +97,9 @@ class PPEDockWidget(QDockWidget):
     cancel_requested = pyqtSignal()
     preview_requested = pyqtSignal(dict)
     reset_requested = pyqtSignal()
+    zones_requested = pyqtSignal(dict)      # prepare the crop areas (outlines -> crop raster + preview)
+    zones_cleared = pyqtSignal()            # back to one threshold for the whole image
+    crop_preview_changed = pyqtSignal()     # a crop slider moved
     closing = pyqtSignal()
 
     def __init__(self, iface, parent=None):
@@ -108,6 +112,10 @@ class PPEDockWidget(QDockWidget):
         self.curve_dialog = None
         self._preview_key = None
         self._busy = False
+        self.crop_rows = []
+        self.zone_info = None
+        self._draw_tool = None
+        self._previous_tool = None
         self.setObjectName("PPEDockWidget")
         self.setMinimumWidth(390)
         self._build_ui()
@@ -438,6 +446,8 @@ class PPEDockWidget(QDockWidget):
         self.sample_size.setToolTip("Pixels used to fit the thresholds. The mask is always full resolution.")
         layout.addWidget(self._collapsible("Advanced settings", advanced_body))
 
+        layout.addWidget(self._collapsible("About this field (optional)", self._field_info_box()))
+
         output_box = QWidget()
         output_form = self._form(output_box)
         self.output_path = QLineEdit()
@@ -563,6 +573,8 @@ class PPEDockWidget(QDockWidget):
         self.curve_button.setEnabled(False)
         layout.addWidget(self.curve_button)
 
+        layout.addWidget(self._crops_box())
+
         self.apply_button = QPushButton("Finalize mask")
         self.apply_button.setProperty("primary", True)
         self.apply_button.setEnabled(False)
@@ -619,13 +631,17 @@ class PPEDockWidget(QDockWidget):
         layout.addWidget(box)
         self.aoi_info = QLabel("Choose the plot file: the plots appear on the map with their IDs so you can check them.")
         layout.addWidget(self._note(self.aoi_info))
-        output_note = QLabel("Output, in the export folder of tab 4: ppe_plot_canopy.csv (one row per plot: plot and plant pixels, "
-                             "canopy %, plot and plant area in m²) and ppe_plot_statistics.csv (one row per plot and variable: "
-                             "canopy columns, then pixel count, mean, median, SD, CV %, min, P10, Q25, Q75, P90 and max of the plant pixels).")
+        output_note = QLabel("Output, in the export folder of tab 4: ppe_plot_canopy.csv (one row per plot: crop and threshold used, "
+                             "plot and plant pixels, canopy %, plot and plant area in m², and the field information from tab 1) and "
+                             "ppe_plot_statistics.csv (one row per plot and variable: crop, threshold and canopy columns, then pixel "
+                             "count, mean, median, SD, CV %, min, P10, Q25, Q75, P90 and max of the plant pixels), with "
+                             "ppe_run_record.json.")
         output_note.setWordWrap(True); output_note.setObjectName("ppeHint"); layout.addWidget(output_note)
         self.aoi_export_button = QPushButton("Export plot statistics")
         self.aoi_export_button.setProperty("primary", True); self.aoi_export_button.setEnabled(False)
         layout.addWidget(self.aoi_export_button)
+        self.aoi_progress = QProgressBar(); self.aoi_progress.setRange(0, 100); self.aoi_progress.setValue(0); self.aoi_progress.setFormat("Ready")
+        layout.addWidget(self.aoi_progress)
         self.aoi_status = QLabel("Finalize the mask on tab 3 before exporting plot statistics.")
         layout.addWidget(self._note(self.aoi_status))
         self.aoi_id_field.currentIndexChanged.connect(self._plot_labels_changed)
@@ -742,6 +758,9 @@ class PPEDockWidget(QDockWidget):
         self.export_vis_button.clicked.connect(lambda: self._emit_export("export_vis"))
         self.export_all_button.clicked.connect(lambda: self._emit_export("export_all"))
         self.aoi_export_button.clicked.connect(lambda: self._emit_export("export_aoi"))
+        self.add_crop_button.clicked.connect(lambda: self._add_crop_row())
+        self.same_threshold.toggled.connect(self._same_threshold_toggled)
+        self.field_stage.currentIndexChanged.connect(lambda _index: self._update_stage_tip())
 
     def _on_stacked_path_edited(self):
         path = self.stacked_path.text().strip()
@@ -960,6 +979,9 @@ class PPEDockWidget(QDockWidget):
             button.setEnabled(False)
         self.progress.setValue(0); self.progress.setFormat("Ready")
         self.export_progress.setValue(0); self.export_progress.setFormat("Ready")
+        self.aoi_progress.setValue(0); self.aoi_progress.setFormat("Ready")
+        self._clear_crops(remove_layer=True)
+        self._reset_field_info()
         self.run_summary.setText("No mask generated yet.")
         self.applied_status.setText("Run PPE first; the mask can then be reviewed here.")
         self.export_status.setText("Finalize the mask on tab 3 before exporting.")
@@ -1171,14 +1193,25 @@ class PPEDockWidget(QDockWidget):
             "shadow_guard": self.shadow_guard.isChecked(),
             "biofilm_guard": self.biofilm_guard.isChecked(),
         }
+        config["field_info"] = self.field_info()
         if action == "apply":
             config.update({
                 "vote_path": self.result.get("vote_path", ""),
                 "threshold": self.threshold(),
                 "run_dir": self.result.get("run_dir", config["output_dir"]),
+                "suggestion": self.result.get("suggestion") or {},
+                "chosen_layers": self.result.get("chosen_layers") or [],
             })
+            if self.zone_info:
+                config.update({"zone_path": self.zone_info["zone_path"], "zone_thresholds": self.zone_thresholds(),
+                               "zone_names": [row["name"].text().strip() or "crop {}".format(i + 1)
+                                              for i, row in enumerate(self.zone_info["rows"])]})
         elif action.startswith("export"):
-            config.update({"mask_path": self.result.get("mask_path", ""), "export_dir": self.export_path.text().strip(), "aoi_path": self.aoi_path.text().strip(), "aoi_id_field": self.aoi_id_field.currentData(), "aoi_layer": self.aoi_layer.currentData() or ""})
+            config.update({"mask_path": self.result.get("mask_path", ""), "export_dir": self.export_path.text().strip(), "aoi_path": self.aoi_path.text().strip(), "aoi_id_field": self.aoi_id_field.currentData(), "aoi_layer": self.aoi_layer.currentData() or "",
+                           "threshold": self.result.get("applied_threshold"), "run_record": self.result.get("run_record", ""),
+                           "zone_path": self.result.get("zone_path", "") if self.result.get("crops") else "",
+                           "zone_names": [c["crop"] for c in (self.result.get("crops") or [])],
+                           "zone_thresholds": self.result.get("zone_thresholds") or []})
         return config
 
     def validate_config(self, config):
@@ -1207,6 +1240,264 @@ class PPEDockWidget(QDockWidget):
             if len(config["bands"]) < 1:
                 return "Select at least one individual band raster."
         return ""
+
+    # ---- optional information about the field (tab 1) --------------------------------------
+    STAGES = ("Not given", "Early / vegetative", "Closed canopy", "Flowering / tasselling", "Drying down / senescence")
+
+    def _field_info_box(self):
+        box = QWidget(); form = self._form(box)
+        hint = QLabel("Optional. Saved with the results (ppe_run_record.json and the plot CSV files) so runs can be "
+                      "compared later. The growth stage also gives a tip on the Review tab. List the crops on the "
+                      "Review tab, where each can get its own area and slider.")
+        hint.setWordWrap(True); hint.setObjectName("ppeHint"); form.addRow(hint)
+        self.field_stage = QComboBox()
+        for text in self.STAGES: self.field_stage.addItem(text)
+        form.addRow("Growth stage", self.field_stage)
+        self.field_planting = QLineEdit(); self.field_planting.setPlaceholderText("YYYY-MM-DD")
+        form.addRow("Planting date", self.field_planting)
+        self.field_flight = QLineEdit(); self.field_flight.setPlaceholderText("YYYY-MM-DD")
+        form.addRow("Flight date", self.field_flight)
+        self.field_irrigation = QComboBox()
+        for text in ("Not given", "Irrigated or wet soil", "Dry soil"): self.field_irrigation.addItem(text)
+        form.addRow("Soil moisture", self.field_irrigation)
+        self.field_weeds = QComboBox()
+        for text in ("Not given", "Few weeds", "Some weeds", "Many weeds"): self.field_weeds.addItem(text)
+        form.addRow("Weeds", self.field_weeds)
+        self.field_notes = QLineEdit(); self.field_notes.setPlaceholderText("Variety, row spacing, anything else")
+        form.addRow("Notes", self.field_notes)
+        return box
+
+    def field_info(self):
+        pick = lambda combo: "" if combo.currentIndex() == 0 else combo.currentText()
+        crops = [row["name"].text().strip() for row in self.crop_rows if row["name"].text().strip()]
+        info = {"crops": crops, "growth_stage": pick(self.field_stage), "planting_date": self.field_planting.text().strip(),
+                "flight_date": self.field_flight.text().strip(), "irrigation": pick(self.field_irrigation),
+                "weeds": pick(self.field_weeds), "notes": self.field_notes.text().strip()}
+        return {key: value for key, value in info.items() if value}
+
+    def _reset_field_info(self):
+        for combo in (self.field_stage, self.field_irrigation, self.field_weeds): combo.setCurrentIndex(0)
+        for edit in (self.field_planting, self.field_flight, self.field_notes): edit.clear()
+
+    def _update_stage_tip(self):
+        stage = self.field_stage.currentText()
+        if "Flowering" in stage:
+            self.stage_tip.setText("Flowering / tasselling: tassels and flowers are plant material but not green, so many get "
+                                   "few plant votes. On a corn field at tasselling a threshold near 0.30 kept them without "
+                                   "letting soil in. Check on the map.")
+            self.stage_tip.setVisible(True)
+        elif "Drying" in stage:
+            self.stage_tip.setText("Drying down: yellow and brown leaves get fewer plant votes; a lower threshold keeps more "
+                                   "of them. Check on the map.")
+            self.stage_tip.setVisible(True)
+        else:
+            self.stage_tip.setVisible(False)
+
+    # ---- crops in this image: one outline and one slider per crop (Review tab) ------------------
+    def _crops_hint(self):
+        if not self.result.get("vote_path"):
+            return "Run PPE first. Then, for an image with more than one crop, add each crop and draw a rough outline around it."
+        return ("More than one crop in the image? Add each crop and draw a rough outline around it on the map "
+                "(click the corners, right-click to finish, Esc to cancel). Each crop then gets its own slider; "
+                "the slider above sets the rest of the image.")
+
+    def _crops_box(self):
+        frame = QFrame(); frame.setObjectName("card")
+        box = QVBoxLayout(frame); box.setContentsMargins(14, 12, 14, 12); box.setSpacing(6)
+        title = QLabel("Crops in this image (optional)"); title.setObjectName("cardTitle"); box.addWidget(title)
+        self.crops_note = QLabel(self._crops_hint()); self.crops_note.setWordWrap(True); self.crops_note.setObjectName("ppeHint")
+        box.addWidget(self.crops_note)
+        self.stage_tip = QLabel(""); self.stage_tip.setWordWrap(True); self.stage_tip.setObjectName("ppeHint"); self.stage_tip.setVisible(False)
+        box.addWidget(self.stage_tip)
+        self.crop_list = QVBoxLayout(); self.crop_list.setSpacing(8); box.addLayout(self.crop_list)
+        buttons = QHBoxLayout()
+        self.add_crop_button = QPushButton("+ Add crop"); self.add_crop_button.setProperty("secondary", True); self.add_crop_button.setEnabled(False)
+        buttons.addWidget(self.add_crop_button); buttons.addStretch(); box.addLayout(buttons)
+        self.same_threshold = QCheckBox("Use the slider above for every crop"); self.same_threshold.setVisible(False)
+        box.addWidget(self.same_threshold)
+        self.crop_progress = QProgressBar(); self.crop_progress.setRange(0, 100); self.crop_progress.setValue(0); self.crop_progress.setFormat("Ready")
+        self.crop_progress.setVisible(False); box.addWidget(self.crop_progress)
+        return frame
+
+    def _add_crop_row(self, name=""):
+        frame = QFrame(); grid = QGridLayout(frame); grid.setContentsMargins(0, 0, 0, 0); grid.setHorizontalSpacing(6); grid.setVerticalSpacing(2)
+        edit = QLineEdit(name); edit.setPlaceholderText("Crop, e.g. corn")
+        draw = QPushButton("Draw area"); draw.setProperty("secondary", True); draw.setEnabled(bool(self.result.get("vote_path")) and not self._busy)
+        status = QLabel("not drawn"); status.setObjectName("ppeHint")
+        remove = QToolButton(); remove.setText("✕"); remove.setToolTip("Remove this crop and its outline")
+        slider = QSlider(Qt.Horizontal); slider.setRange(15, 95); slider.setValue(self.threshold_slider.value()); slider.setEnabled(False)
+        value = QLabel("{:.2f}".format(slider.value() / 100.0)); canopy = QLabel("—"); canopy.setObjectName("ppeHint")
+        grid.addWidget(edit, 0, 0); grid.addWidget(draw, 0, 1); grid.addWidget(status, 0, 2); grid.addWidget(remove, 0, 3)
+        grid.addWidget(slider, 1, 0, 1, 2); grid.addWidget(value, 1, 2); grid.addWidget(canopy, 1, 3)
+        grid.setColumnStretch(0, 1)
+        row = {"frame": frame, "name": edit, "draw": draw, "status": status, "remove": remove, "slider": slider,
+               "value": value, "canopy": canopy, "geometry": None}
+        self.crop_rows.append(row); self.crop_list.addWidget(frame)
+        draw.clicked.connect(lambda: self._draw_crop(row))
+        remove.clicked.connect(lambda: self._remove_crop(row))
+        edit.editingFinished.connect(self._crop_names_changed)
+        slider.valueChanged.connect(lambda v: self._crop_slider_moved(row, v))
+        self.same_threshold.setVisible(len(self.crop_rows) > 1)
+        edit.setFocus()
+        return row
+
+    def _crop_slider_moved(self, row, value):
+        row["value"].setText("{:.2f}".format(value / 100.0))
+        self._threshold_changed(self.threshold_slider.value())
+        self.crop_preview_changed.emit()
+
+    def _drawn_rows(self):
+        return [row for row in self.crop_rows if row["geometry"] is not None]
+
+    def _image_wkt(self):
+        ds = gdal.Open(self.result.get("vote_path", "")) if self.result.get("vote_path") else None
+        return ds.GetProjection() if ds is not None else ""
+
+    def _draw_crop(self, row):
+        if self._busy:
+            self._busy_warning(); return
+        canvas = self.iface.mapCanvas()
+        if self._draw_tool is not None:
+            canvas.unsetMapTool(self._draw_tool)
+        else:
+            self._previous_tool = canvas.mapTool()
+        tool = PolygonDrawTool(canvas)
+        tool.finished.connect(lambda geometry: self._crop_drawn(row, geometry))
+        tool.cancelled.connect(lambda: self._drawing_done(row, cancelled=True))
+        self._draw_tool = tool
+        canvas.setMapTool(tool)
+        row["status"].setText("drawing…")
+        self.crops_note.setText("Drawing the area of {}: click its corners on the map, right-click to finish, Esc to cancel, "
+                                "Backspace to undo the last corner.".format(row["name"].text().strip() or "this crop"))
+
+    def _drawing_done(self, row, cancelled=False):
+        canvas = self.iface.mapCanvas()
+        tool = self._draw_tool
+        self._draw_tool = None
+        if tool is not None and canvas.mapTool() is tool:
+            if self._previous_tool is not None: canvas.setMapTool(self._previous_tool)
+            else: canvas.unsetMapTool(tool)
+        if cancelled and row is not None and row in self.crop_rows:
+            row["status"].setText("✓ drawn" if row["geometry"] is not None else "not drawn")
+        self.crops_note.setText(self._crops_hint())
+
+    def _crop_drawn(self, row, geometry):
+        if row not in self.crop_rows:
+            return
+        copy, crs = to_crs(geometry, self.iface.mapCanvas().mapSettings().destinationCrs(), self._image_wkt())
+        row["geometry"] = copy; self._crop_crs = crs
+        row["status"].setText("✓ drawn"); row["draw"].setText("Redraw")
+        self._drawing_done(row)
+        self._show_crop_layer()
+        self._request_zones()
+
+    def _remove_crop(self, row):
+        if self._busy:
+            self._busy_warning(); return
+        had_area = row["geometry"] is not None
+        self.crop_rows.remove(row); row["frame"].setParent(None); row["frame"].deleteLater()
+        self.same_threshold.setVisible(len(self.crop_rows) > 1)
+        self._show_crop_layer()
+        if had_area:
+            if self._drawn_rows(): self._request_zones()
+            else: self._zones_gone()
+
+    def _crop_names_changed(self):
+        self._show_crop_layer()
+        self.crop_preview_changed.emit()          # legend names follow the crop names
+
+    def _show_crop_layer(self):
+        crs = getattr(self, "_crop_crs", None)
+        if crs is None:
+            return
+        try:
+            show_crop_areas([(row["name"].text().strip() or "crop {}".format(i + 1), row["geometry"])
+                             for i, row in enumerate(self.crop_rows)], crs)
+        except Exception as err:
+            self.append_log("Could not show the crop areas: {}".format(err))
+
+    def _request_zones(self):
+        rows = self._drawn_rows()
+        if not rows or not self.result.get("vote_path"):
+            return
+        for row in self.crop_rows: row["slider"].setEnabled(False)
+        self.crop_progress.setVisible(True)
+        self.zone_info = None
+        self._pending_zone_rows = rows
+        self.zones_requested.emit({"action": "zones", "vote_path": self.result["vote_path"],
+                                   "output_dir": self.result.get("run_dir") or os.path.dirname(self.result["vote_path"]),
+                                   "crop_areas": [{"name": row["name"].text().strip() or "crop {}".format(i + 1),
+                                                   "wkt": row["geometry"].asWkt()} for i, row in enumerate(rows)]})
+
+    def set_zones(self, result):
+        # The crop areas are ready: switch on one slider per drawn crop.
+        rows = [row for row in getattr(self, "_pending_zone_rows", []) if row in self.crop_rows and row["geometry"] is not None]
+        if len(rows) != len(result.get("zone_curves", [])) - 1:
+            self._request_zones(); return                    # the outlines changed while preparing
+        self.zone_info = dict(result); self.zone_info["rows"] = rows
+        for row in rows: row["slider"].setEnabled(not self.same_threshold.isChecked())
+        self.crop_progress.setValue(100); self.crop_progress.setFormat("Crop areas ready")
+        self._threshold_changed(self.threshold_slider.value())
+
+    def _zones_gone(self):
+        self.zone_info = None
+        self.crop_progress.setVisible(False)
+        self.zones_cleared.emit()
+        self._threshold_changed(self.threshold_slider.value())
+
+    def _clear_crops(self, remove_layer=False):
+        if self._draw_tool is not None:
+            self._drawing_done(None)
+        for row in list(self.crop_rows):
+            row["frame"].setParent(None); row["frame"].deleteLater()
+        self.crop_rows = []; self.zone_info = None
+        self.same_threshold.setChecked(False); self.same_threshold.setVisible(False)
+        self.crop_progress.setVisible(False); self.add_crop_button.setEnabled(False)
+        self.crops_note.setText(self._crops_hint())
+        if remove_layer:
+            try: remove_role("crops")
+            except Exception: pass
+
+    def _same_threshold_toggled(self, on):
+        for row in self.crop_rows:
+            if on:
+                row["slider"].blockSignals(True); row["slider"].setValue(self.threshold_slider.value()); row["slider"].blockSignals(False)
+                row["value"].setText("{:.2f}".format(self.threshold()))
+            row["slider"].setEnabled(not on and self.zone_info is not None and row in self.zone_info["rows"])
+        self._threshold_changed(self.threshold_slider.value()); self.crop_preview_changed.emit()
+
+    def zone_thresholds(self):
+        # Thresholds for the preview and the final mask: [rest of image, crop 1, crop 2, ...].
+        if not self.zone_info:
+            return [self.threshold()]
+        main = self.threshold()
+        return [main] + [main if self.same_threshold.isChecked() else row["slider"].value() / 100.0 for row in self.zone_info["rows"]]
+
+    def zone_names(self):
+        if not self.zone_info:
+            return []
+        return [row["name"].text().strip() or "crop {}".format(i + 1) for i, row in enumerate(self.zone_info["rows"])]
+
+    def _update_crop_labels(self):
+        if not self.zone_info:
+            for row in self.crop_rows: row["canopy"].setText("—")
+            return
+        curves = self.zone_info["zone_curves"]; thresholds = self.zone_thresholds()
+        for k, row in enumerate(self.zone_info["rows"], start=1):
+            value = canopy_at([(t, c) for t, c in curves[k] if c is not None], thresholds[k])
+            row["canopy"].setText("—" if value is None else "{:.1f} %".format(value))
+
+    def _whole_canopy(self, main_threshold):
+        curves = self.zone_info["zone_curves"]; pixels = self.zone_info["zone_pixels"]; thresholds = self.zone_thresholds()
+        thresholds[0] = main_threshold
+        total = sum(pixels)
+        if not total:
+            return None
+        plant = 0.0
+        for k, (curve, count) in enumerate(zip(curves, pixels)):
+            value = canopy_at([(t, c) for t, c in curve if c is not None], thresholds[k]) if count else 0.0
+            plant += (value or 0.0) * count
+        return plant / total
 
     def _emit_generate(self):
         config = self.build_config("run")
@@ -1239,7 +1530,12 @@ class PPEDockWidget(QDockWidget):
     def _threshold_changed(self, value):
         threshold = value / 100.0
         self.threshold_value.setText("{:.2f}".format(threshold))
-        canopy = canopy_at(self.curve_points, threshold)
+        if self.same_threshold.isChecked():
+            for row in self.crop_rows:
+                row["slider"].blockSignals(True); row["slider"].setValue(value); row["slider"].blockSignals(False)
+                row["value"].setText("{:.2f}".format(threshold))
+        self._update_crop_labels()
+        canopy = self._whole_canopy(threshold) if self.zone_info else canopy_at(self.curve_points, threshold)
         self.canopy_value.setText("—" if canopy is None else "{:.1f}%".format(canopy))
         if self.curve_dialog is not None:
             self.curve_dialog.set_threshold(threshold)
@@ -1264,17 +1560,28 @@ class PPEDockWidget(QDockWidget):
         self.continue_button.setEnabled(not running)
         for button in (self.export_bands_button, self.export_vis_button, self.export_all_button, self.aoi_export_button):
             button.setEnabled(not running and bool(self.result.get("mask_path")))
-        if running and str(action).startswith("export"):
-            self.export_progress.setValue(0)
-            self.export_progress.setFormat("Starting…")
+        for row in self.crop_rows:
+            row["draw"].setEnabled(not running and bool(self.result.get("vote_path")))
+        self.add_crop_button.setEnabled(not running and bool(self.result.get("vote_path")))
+        if running and (action == "zones" or str(action).startswith("export")):
+            bar = self._bar_for(action)
+            bar.setValue(0)
+            bar.setFormat("Starting…")
         elif running:
             self.progress.setValue(0)
             self.progress.setFormat("Starting…")
             if action == "run":
                 self.run_summary.setText("PPE is processing the imagery in the background.")
 
+    def _bar_for(self, action):
+        action = str(action)
+        if action == "export_aoi": return self.aoi_progress
+        if action == "zones": return self.crop_progress
+        if action.startswith("export"): return self.export_progress
+        return self.progress
+
     def set_progress(self, percent, message):
-        bar = self.export_progress if str(getattr(self, "_action", "run")).startswith("export") else self.progress
+        bar = self._bar_for(getattr(self, "_action", "run"))
         bar.setValue(percent)
         bar.setFormat("{}% · {}".format(percent, message))
 
@@ -1353,6 +1660,16 @@ class PPEDockWidget(QDockWidget):
             )
         )
         self.append_log("Run folder: {}".format(result.get("run_dir", "")))
+        self.zone_info = None
+        self.add_crop_button.setEnabled(True)
+        for row in self.crop_rows:
+            row["draw"].setEnabled(True)
+            row["slider"].blockSignals(True); row["slider"].setValue(round(threshold * 100)); row["slider"].blockSignals(False)
+            row["value"].setText("{:.2f}".format(threshold))
+        self.crops_note.setText(self._crops_hint())
+        self._update_stage_tip()
+        if self._drawn_rows():
+            QTimer.singleShot(300, self._request_zones)      # the vote changed: rebuild the crop preview
         self.applied_status.setText(("⚠ " + warning.strip().replace("\n", "\n⚠ ") + "\n\n" if warning else "") +
                                     "Move the slider and watch the map. When the mask looks right, finalize it.")
 
@@ -1362,19 +1679,27 @@ class PPEDockWidget(QDockWidget):
             self.threshold_slider.setValue(round(float(suggestion["threshold"]) * 100))
 
     def set_applied(self, result):
+        for key in ("zone_path", "zone_thresholds", "crops", "rest_canopy_pct", "run_record"):
+            self.result.pop(key, None)
         self.result.update(result)
-        self.applied_status.setText(
-            "Mask finalized at {:.2f} · canopy {:.1f} %\n{}".format(
-                float(result.get("threshold", self.threshold())),
-                float(result.get("canopy_pct", 0.0)),
-                result.get("mask_path", ""),
-            )
-        )
+        self.result["applied_threshold"] = result.get("threshold")
+        if result.get("crops"):
+            lines = ["Mask finalized · canopy {:.1f} % of the image".format(float(result.get("canopy_pct", 0.0)))]
+            for crop in result["crops"]:
+                lines.append("  {} at {:.2f}: {}".format(crop["crop"], crop["threshold"],
+                             "no pixels" if crop["canopy_pct"] is None else "{:.1f} % canopy".format(crop["canopy_pct"])))
+            if result.get("rest_canopy_pct") is not None:
+                lines.append("  rest of the image at {:.2f}: {:.1f} % canopy".format(float(result.get("threshold", 0.5)), result["rest_canopy_pct"]))
+        else:
+            lines = ["Mask finalized at {:.2f} · canopy {:.1f} %".format(float(result.get("threshold", self.threshold())), float(result.get("canopy_pct", 0.0)))]
+        lines.append(result.get("mask_path", ""))
+        self.applied_status.setText("\n".join(lines))
         for button in (self.export_bands_button, self.export_vis_button, self.export_all_button, self.aoi_export_button): button.setEnabled(True)
         self.export_status.setText("Mask finalized. Choose what to export.")
 
     def set_exported(self, result):
-        self.export_progress.setValue(100); self.export_progress.setFormat("Complete")
+        bar = self.aoi_progress if result.get("aoi_csv") else self.export_progress
+        bar.setValue(100); bar.setFormat("Complete")
         if result.get("aoi_csv"):
             outside = result.get("plots_outside", 0)
             self.aoi_status.setText("Plot statistics written · {} plots{} · {} rows\n{}\n{}".format(
@@ -1385,8 +1710,7 @@ class PPEDockWidget(QDockWidget):
 
     def show_error(self, message):
         QMessageBox.critical(self, "Plant Pixel Extractor", message)
-        bar = self.export_progress if str(getattr(self, "_action", "run")).startswith("export") else self.progress
-        bar.setFormat("Failed")
+        self._bar_for(getattr(self, "_action", "run")).setFormat("Failed")
 
     def closeEvent(self, event):
         self._save_settings()

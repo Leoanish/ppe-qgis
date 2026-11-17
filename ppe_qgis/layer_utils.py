@@ -269,7 +269,7 @@ def style_bright_rejection(layer, opacity=0.72):
 
 
 def load_result_layers(iface, result, threshold=0.5):
-    remove_previous_layers(keep=("plots",))      # the plot outlines stay on the map across runs
+    remove_previous_layers(keep=("plots", "crops"))   # plot and crop outlines stay on the map across runs
     group = _project_group()
     rgb_path, rgb_bands = prepare_rgb_source(result)
     rgb = _add_raster(rgb_path, image_layer_name(result), "rgb", group, True)
@@ -283,6 +283,7 @@ def load_result_layers(iface, result, threshold=0.5):
         iface.mapCanvas().refresh()
     # Guard diagnostics (bright-neutral, shadow, algae rejection rasters) stay in the run folder
     # only; they are not added to the map, so the Layers panel holds just image, preview and mask.
+    _raise_role("crops")
     raise_plot_layer()
     return {"rgb": rgb, "mask": mask, "votes": votes}
 
@@ -378,3 +379,51 @@ def set_plot_labels(layer, id_field="", show=True):
     layer.setLabeling(QgsVectorLayerSimpleLabeling(settings))
     layer.setLabelsEnabled(bool(show))
     layer.triggerRepaint()
+
+
+def style_zoned_preview(layer, thresholds, names=None, opacity=0.62):
+    """Live preview with one threshold per crop area. The preview raster holds vote + 10 x area
+    (0 = outside every crop outline), so a single discrete colour ramp can cut each area at its
+    own threshold: thresholds[0] for the rest of the image, thresholds[k] for crop k."""
+    if layer is None or not layer.isValid():
+        return
+    _force_nearest(layer)
+    items = []
+    for k, threshold in enumerate(thresholds):
+        cutoff = 10.0 * k + max(0.0, float(threshold) - 0.05)
+        items.append(QgsColorRampShader.ColorRampItem(cutoff - 0.000001, QColor(0, 0, 0, 0), "Below threshold"))
+        items.append(QgsColorRampShader.ColorRampItem(10.0 * k + 1.000001, QColor(220, 43, 155, 235),
+                                                      "Plant preview" if k == 0 else "Plant preview ({})".format(
+                                                          (names or [])[k - 1] if k - 1 < len(names or []) else "crop {}".format(k))))
+    ramp = QgsColorRampShader()
+    ramp.setColorRampType(QgsColorRampShader.Discrete)
+    ramp.setColorRampItemList(items)
+    shader = QgsRasterShader()
+    shader.setRasterShaderFunction(ramp)
+    renderer = QgsSingleBandPseudoColorRenderer(layer.dataProvider(), 1, shader)
+    renderer.setOpacity(float(opacity))
+    layer.setRenderer(renderer)
+    layer.triggerRepaint()
+
+
+def replace_preview_layer(path, layers):
+    """Swap the live-preview layer's raster (the plain vote, or vote by crop area) in place."""
+    old = layers.get("votes")
+    visible = True
+    if old is not None:
+        node = QgsProject.instance().layerTreeRoot().findLayer(old.id())
+        visible = node.isVisible() if node is not None else True
+        QgsProject.instance().removeMapLayer(old.id())
+    layer = _add_raster(path, "PPE · Live threshold preview", "votes", _project_group(), visible)
+    layers["votes"] = layer
+    for role in ("crops", "plots"):
+        _raise_role(role)
+    return layer
+
+
+def _raise_role(role):
+    for layer in QgsProject.instance().mapLayers().values():
+        if layer.customProperty(ROLE_KEY, "") == role:
+            root = QgsProject.instance().layerTreeRoot(); node = root.findLayer(layer.id())
+            if node is not None and node.parent() is not None:
+                parent = node.parent(); clone = node.clone(); parent.insertChildNode(0, clone); parent.removeChildNode(node)

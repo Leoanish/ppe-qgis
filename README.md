@@ -4,6 +4,8 @@ PPE separates plant pixels from soil in drone orthomosaics, with no training dat
 
 **How it works.** PPE ranks the vegetation indices the image allows by how well they spread plant from soil, splits the three best with four automatic thresholds (Otsu, CDF knee, k-means and multi-Otsu) and lets the twelve results vote. Guards then remove shadows, algae on wet soil and grey objects. For images with a NIR band, PPE also suggests a vote threshold (the one that best matches pixels that are at least half plant) and the slider starts there; a live slider previews the mask on the map before it is written.
 
+**Several crops in one image.** Draw a rough outline around each crop on the map and give each its own threshold slider; the live preview and the final mask use each crop's threshold.
+
 **Plot statistics.** Choose a plot file (Shapefile, zipped Shapefile, GeoPackage, GeoJSON, KML/KMZ and more): the plots appear on the map with their IDs, and the export gives canopy cover per plot and statistics of the plant pixels for every band and index.
 
 - Plugin source and full user guide: [`ppe_qgis/README.md`](ppe_qgis/README.md)
