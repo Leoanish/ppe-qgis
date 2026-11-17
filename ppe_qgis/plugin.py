@@ -20,6 +20,8 @@ from .layer_utils import (
     style_zoned_preview,
     replace_preview_layer,
     validate_aligned,
+    show_pale_plant,
+    ROLE_KEY,
 )
 from .process_runner import describe_error, PPEPreviewRunner, PPEProcessRunner
 
@@ -87,6 +89,7 @@ class PPEPlugin:
         self.dock.reset_requested.connect(self._reset_layers)
         self.dock.zones_requested.connect(self._start_zones)
         self.dock.zones_cleared.connect(self._zones_cleared)
+        self.dock.pale_layer_toggled.connect(self._pale_layer_toggled)
         self.dock.crop_preview_changed.connect(lambda: self.preview_timer.start())
         QgsProject.instance().layersWillBeRemoved.connect(self._layers_will_be_removed)
         QgsProject.instance().layersRemoved.connect(self._layers_removed)
@@ -133,9 +136,22 @@ class PPEPlugin:
                 self.layers[role] = None
         return ids
 
+    def _pale_layer_toggled(self, on):
+        path = (self.dock.result or {}).get("pale_plant_path", "") if self.dock else ""
+        with self._own_changes():
+            layer = show_pale_plant(path, on)
+        if on and layer is None:
+            self.dock.pale_layer_removed()
+        self.iface.mapCanvas().refresh()
+
     def _layers_will_be_removed(self, layer_ids):
         """Something removed layers from the project. When it was the user and it was a PPE
         layer, bring the panel in line with what is still on the map."""
+        if self.dock is not None and not self._removing:
+            for layer_id in layer_ids:
+                layer = QgsProject.instance().mapLayer(layer_id)
+                if layer is not None and layer.customProperty(ROLE_KEY, "") == "pale":
+                    self.dock.pale_layer_removed()
         if self._removing or self.dock is None:
             return
         known = self._layer_ids()

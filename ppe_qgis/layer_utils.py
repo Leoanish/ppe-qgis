@@ -310,6 +310,8 @@ def replace_applied_mask(result, layers):
     mask = _add_raster(result.get("mask_qgis_path"), "PPE · Applied plant mask", "mask", group, True)
     style_plant_mask(mask)
     layers["mask"] = mask
+    for role in ("pale", "crops"):
+        _raise_role(role)
     raise_plot_layer()
     return mask
 
@@ -416,7 +418,7 @@ def replace_preview_layer(path, layers):
         QgsProject.instance().removeMapLayer(old.id())
     layer = _add_raster(path, "PPE · Live threshold preview", "votes", _project_group(), visible)
     layers["votes"] = layer
-    for role in ("crops", "plots"):
+    for role in ("pale", "crops", "plots"):
         _raise_role(role)
     return layer
 
@@ -427,3 +429,30 @@ def _raise_role(role):
             root = QgsProject.instance().layerTreeRoot(); node = root.findLayer(layer.id())
             if node is not None and node.parent() is not None:
                 parent = node.parent(); clone = node.clone(); parent.insertChildNode(0, clone); parent.removeChildNode(node)
+
+
+PALE_LAYER_NAME = "PPE · Pale plant (tassels, flowers…)"
+
+
+def show_pale_plant(path, visible=True):
+    """Add (or remove) the pale-plant layer: amber where PPE found pale plant parts, clear elsewhere.
+    Information only; it is not part of the mask."""
+    remove_role("pale")
+    if not visible:
+        return None
+    layer = _add_raster(path, PALE_LAYER_NAME, "pale", _project_group(), True)
+    if layer is None:
+        return None
+    _force_nearest(layer)
+    ramp = QgsColorRampShader()
+    ramp.setColorRampType(QgsColorRampShader.Discrete)
+    ramp.setColorRampItemList([
+        QgsColorRampShader.ColorRampItem(0.999999, QColor(0, 0, 0, 0), "Not pale plant"),
+        QgsColorRampShader.ColorRampItem(1.000001, QColor(255, 176, 0, 245), "Pale plant part (tassel, flower, head…)"),
+        QgsColorRampShader.ColorRampItem(255.0, QColor(0, 0, 0, 0), "No data"),
+    ])
+    shader = QgsRasterShader(); shader.setRasterShaderFunction(ramp)
+    renderer = QgsSingleBandPseudoColorRenderer(layer.dataProvider(), 1, shader)
+    layer.setRenderer(renderer); layer.triggerRepaint()
+    _raise_role("crops"); raise_plot_layer()
+    return layer

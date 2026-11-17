@@ -38,6 +38,7 @@ from osgeo import gdal
 
 from .curve_widget import ThresholdCurveDialog
 from .band_dialog import BandFilesDialog
+from .plant_parts import likely_parts
 from .crop_tools import PolygonDrawTool, show_crop_areas, to_crs
 from .layer_utils import canopy_at, load_plot_layer, plot_layer, remove_role, set_plot_labels
 from .native_engine import (BAND_LABELS, PLOT_FILE_FILTER, dataset_wavelengths, describe_image, display_channels,
@@ -101,6 +102,7 @@ class PPEDockWidget(QDockWidget):
     zones_requested = pyqtSignal(dict)      # prepare the crop areas (outlines -> crop raster + preview)
     zones_cleared = pyqtSignal()            # back to one threshold for the whole image
     crop_preview_changed = pyqtSignal()     # a crop slider moved
+    pale_layer_toggled = pyqtSignal(bool)   # show / hide the pale-plant layer on the map
     closing = pyqtSignal()
 
     def __init__(self, iface, parent=None):
@@ -533,6 +535,7 @@ class PPEDockWidget(QDockWidget):
         self.curve_button.setEnabled(False)
         layout.addWidget(self.curve_button)
 
+        layout.addWidget(self._pale_card())
         layout.addWidget(self._crops_box())
 
         self.apply_button = QPushButton("Finalize mask")
@@ -986,6 +989,7 @@ class PPEDockWidget(QDockWidget):
             self.curve_dialog.close(); self.curve_dialog = None
         self.result = {}
         self.curve_points = []
+        self.pale_frame.setVisible(False); self.pale_layer_removed()
         self.threshold_slider.blockSignals(True); self.threshold_slider.setValue(50); self.threshold_slider.blockSignals(False)
         self.threshold_slider.setEnabled(False)
         self.threshold_value.setText("0.50"); self.canopy_value.setText("—")
@@ -1214,6 +1218,8 @@ class PPEDockWidget(QDockWidget):
                 "run_dir": self.result.get("run_dir", config["output_dir"]),
                 "suggestion": self.result.get("suggestion") or {},
                 "chosen_layers": self.result.get("chosen_layers") or [],
+                "pale_plant_pct": self.result.get("pale_plant_pct"),
+                "pale_path": self.result.get("pale_plant_path", ""),
             })
             if self.zone_info:
                 config.update({"zone_path": self.zone_info["zone_path"], "zone_thresholds": self.zone_thresholds(),
@@ -1224,7 +1230,8 @@ class PPEDockWidget(QDockWidget):
                            "threshold": self.result.get("applied_threshold"), "run_record": self.result.get("run_record", ""),
                            "zone_path": self.result.get("zone_path", "") if self.result.get("crops") else "",
                            "zone_names": [c["crop"] for c in (self.result.get("crops") or [])],
-                           "zone_thresholds": self.result.get("zone_thresholds") or []})
+                           "zone_thresholds": self.result.get("zone_thresholds") or [],
+                           "pale_path": self.result.get("pale_plant_path", "")})
         return config
 
     def validate_config(self, config):
@@ -1305,6 +1312,90 @@ class PPEDockWidget(QDockWidget):
             self.stage_tip.setVisible(True)
         else:
             self.stage_tip.setVisible(False)
+        self._update_pale_card()
+        if self.pale_frame.isVisible():
+            self.stage_tip.setVisible(False)
+
+    # ---- pale plant parts (tassels, flowers, heads...): information only (Review tab) ----------
+    PALE_SHOW_IMAGE = 1.5      # show the card when this percent of the plant is pale...
+    PALE_SHOW_CROP = 2.0       # ...or this percent of one crop area
+
+    def _pale_card(self):
+        frame = QFrame(); frame.setObjectName("paleCard")
+        box = QVBoxLayout(frame); box.setContentsMargins(14, 12, 14, 12); box.setSpacing(6)
+        self.pale_title = QLabel("✿  Pale plant parts in this image"); self.pale_title.setObjectName("paleTitle")
+        box.addWidget(self.pale_title)
+        self.pale_text = QLabel(""); self.pale_text.setObjectName("paleText"); self.pale_text.setWordWrap(True)
+        self.pale_text.setTextFormat(Qt.RichText); self.pale_text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        box.addWidget(self.pale_text)
+        self.pale_button = QPushButton("Show them on the map"); self.pale_button.setCheckable(True)
+        self.pale_button.setProperty("secondary", True)
+        self.pale_button.toggled.connect(self._pale_button_toggled)
+        box.addWidget(self.pale_button)
+        frame.setVisible(False); self.pale_frame = frame
+        return frame
+
+    def _pale_button_toggled(self, on):
+        self.pale_button.setText("Hide them from the map" if on else "Show them on the map")
+        self.pale_layer_toggled.emit(bool(on))
+
+    def pale_layer_removed(self):
+        """The pale-plant layer was deleted in the Layers panel (or by a new run)."""
+        self.pale_button.blockSignals(True); self.pale_button.setChecked(False); self.pale_button.blockSignals(False)
+        self.pale_button.setText("Show them on the map")
+
+    def _update_pale_card(self):
+        """Tell the user, in plain words, that part of the plant is pale and what it probably is
+        (from the crop names and the growth stage when given). The mask is not changed."""
+        result = self.result or {}
+        pct = result.get("pale_plant_pct"); path = result.get("pale_plant_path")
+        if not path or pct is None:
+            self.pale_frame.setVisible(False); return
+        stage = self.field_stage.currentText() if self.field_stage.currentIndex() > 0 else ""
+        zone_pct = (self.zone_info or {}).get("zone_pale_pct") or []
+        rows = (self.zone_info or {}).get("rows") or []
+        crops = [row["name"].text().strip() for row in self.crop_rows if row["name"].text().strip()]
+        crop_hit = any(p is not None and p >= self.PALE_SHOW_CROP for p in zone_pct[1:])
+        if pct < self.PALE_SHOW_IMAGE and not crop_hit:
+            self.pale_frame.setVisible(False)
+            if self.pale_button.isChecked(): self.pale_button.setChecked(False)
+            return
+        at_stage = " at {}".format(stage.split(" / ")[0].lower()) if stage else ""
+        lines = ["About <b>{:.1f} %</b> of the plant in this image is <b>pale</b>: inside the canopy, reflecting "
+                 "plant-level near-infrared light, but not leaf-green.".format(pct)]
+        tips = []
+        if zone_pct and len(zone_pct) == len(rows) + 1:
+            items = []
+            for k, row in enumerate(rows, start=1):
+                name = row["name"].text().strip() or "crop {}".format(k); share = zone_pct[k]
+                if share is None: continue
+                parts, tip, _known = likely_parts(name, stage)
+                if share >= 0.5:
+                    items.append("<b>{}</b>{}: {:.1f} % of its plant, probably {}".format(name, at_stage, share, parts))
+                    if tip and tip not in tips: tips.append(tip)
+                else:
+                    items.append("<b>{}</b>: hardly any ({:.1f} %)".format(name, share))
+            if zone_pct[0] is not None and zone_pct[0] >= 0.5:
+                items.append("rest of the image: {:.1f} %".format(zone_pct[0]))
+            lines.append("<br>".join("• " + item for item in items))
+        else:
+            name = crops[0] if len(crops) == 1 else None
+            parts, tip, known = likely_parts(name, stage)
+            if name and known:
+                lines.append("In <b>{}</b>{} these are probably <b>{}</b>.".format(name, at_stage, parts))
+            else:
+                lines.append("These are probably <b>{}</b>{}.".format(parts, " ({})".format(stage.lower()) if stage else ""))
+            if tip: tips.append(tip)
+            if not (name and known) or not stage:
+                lines.append("<i>For a better guess, name the crop under <b>Crops in this image</b> and set the growth stage "
+                             "under <b>About this field</b> (tab 1).</i>")
+        lines.append("They are plant, but they get fewer plant votes than green leaves, so they drop out of the mask as "
+                     "the slider goes up ({:.0f} % of them are gone at 0.60). To keep them, keep the threshold (or that crop's "
+                     "slider) low and check on the map. The mask itself is not changed by this note.".format(
+                         float(result.get("pale_plant_lost_pct") or 0.0)))
+        lines.extend(tips)
+        self.pale_text.setText("<br><br>".join(lines))
+        self.pale_frame.setVisible(True)
 
     # ---- crops in this image: one outline and one slider per crop (Review tab) ------------------
     def _crops_hint(self):
@@ -1447,6 +1538,7 @@ class PPEDockWidget(QDockWidget):
             else: self._zones_gone()
 
     def _crop_names_changed(self):
+        self._update_stage_tip()
         self._show_crop_layer()
         self.crop_preview_changed.emit()          # legend names follow the crop names
 
@@ -1469,6 +1561,7 @@ class PPEDockWidget(QDockWidget):
         self.zone_info = None
         self._pending_zone_rows = rows
         self.zones_requested.emit({"action": "zones", "vote_path": self.result["vote_path"],
+                                   "pale_path": self.result.get("pale_plant_path", ""),
                                    "output_dir": self.result.get("run_dir") or os.path.dirname(self.result["vote_path"]),
                                    "crop_areas": [{"name": row["name"].text().strip() or "crop {}".format(i + 1),
                                                    "wkt": row["geometry"].asWkt()} for i, row in enumerate(rows)]})
@@ -1482,12 +1575,14 @@ class PPEDockWidget(QDockWidget):
         for row in rows: row["slider"].setEnabled(not self.same_threshold.isChecked())
         self.crop_progress.setValue(100); self.crop_progress.setFormat("Crop areas ready")
         self._threshold_changed(self.threshold_slider.value())
+        self._update_stage_tip()
 
     def _zones_gone(self):
         self.zone_info = None
         self.crop_progress.setVisible(False)
         self.zones_cleared.emit()
         self._threshold_changed(self.threshold_slider.value())
+        self._update_stage_tip()
 
     def _clear_crops(self, remove_layer=False):
         if self._draw_tool is not None:
@@ -1633,6 +1728,7 @@ class PPEDockWidget(QDockWidget):
             self.log_view.appendPlainText(message)
 
     def set_results(self, result, curve_points):
+        self.pale_layer_removed()                 # a new run removes the old pale-plant layer
         self.result = dict(result)
         self.curve_points = list(curve_points)
         threshold = float(result.get("threshold", 0.5))
@@ -1823,6 +1919,10 @@ class PPEDockWidget(QDockWidget):
                 color: #3f4d47; background: #d5dcd8; border: 1px dashed #7d8f86; font-style: italic; font-weight: 600;
             }
             QLabel[drawing="true"], QLabel#ppeHint[drawing="true"] { color: #9a5b00; font-weight: 700; }
+            QFrame#paleCard { background: #fff6dd; border: 1px solid #f0c35a; border-left: 5px solid #e6a100; border-radius: 8px; }
+            QFrame#paleCard QLabel { background: transparent; }
+            QLabel#paleTitle { color: #7a4e00; font-weight: 700; font-size: 13px; }
+            QLabel#paleText { color: #4a3a12; }
 
             QToolButton#sectionToggle { text-align: left; padding: 7px 10px; border: 1px solid #d9e3dd; border-radius: 8px; background: #ffffff; color: #17473a; font-weight: 700; }
             QToolButton#sectionToggle:hover { border-color: #2b8560; }
