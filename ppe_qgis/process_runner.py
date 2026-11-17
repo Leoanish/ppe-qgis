@@ -1,0 +1,85 @@
+"""Non-blocking native PPE worker; no external runtime or subprocess."""
+import os, traceback
+from datetime import datetime
+from qgis.PyQt.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
+from .native_engine import Cancelled, NativePPEEngine
+
+class _Worker(QObject):
+    progress=pyqtSignal(int,str); log=pyqtSignal(str); import_ready=pyqtSignal(dict)
+    succeeded=pyqtSignal(dict); failed=pyqtSignal(str); finished=pyqtSignal()
+    def __init__(self, config): super().__init__(); self.config=dict(config); self.cancelled=False
+    @pyqtSlot()
+    def run(self):
+        try:
+            engine=NativePPEEngine(self.progress.emit,self.log.emit,self.import_ready.emit,lambda:self.cancelled)
+            action=self.config.get("action")
+            if action=="apply": result=engine.apply(self.config)
+            elif action=="export_aoi": result=engine.export_aoi_statistics(self.config)
+            elif str(action).startswith("export"): result=engine.export_plant_only(self.config)
+            else: result=engine.run(self.config)
+            self.succeeded.emit(result)
+        except Cancelled as exc: self.failed.emit(str(exc))
+        except Exception as exc:
+            self.log.emit(traceback.format_exc()); self.failed.emit("{}\nSee the permanent PPE log for details.".format(exc))
+        finally: self.finished.emit()
+
+class PPEProcessRunner(QObject):
+    progress=pyqtSignal(int,str); log=pyqtSignal(str); import_ready=pyqtSignal(dict)
+    succeeded=pyqtSignal(dict); failed=pyqtSignal(str); running_changed=pyqtSignal(bool)
+    def __init__(self,parent=None): super().__init__(parent); self.thread=None; self.worker=None; self._log_lines=[]; self._log_path=None
+    @property
+    def is_running(self): return self.thread is not None and self.thread.isRunning()
+    def start(self,config):
+        if self.is_running: raise RuntimeError("PPE is already processing imagery.")
+        log_dir=os.path.join(config["output_dir"],"logs"); os.makedirs(log_dir,exist_ok=True)
+        self._log_path=os.path.join(log_dir,"ppe_{}.log".format(datetime.now().strftime("%Y%m%d_%H%M%S"))); self._log_lines=[]
+        self.thread=QThread(self); self.worker=_Worker(config); self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run); self.worker.progress.connect(self.progress); self.worker.import_ready.connect(self.import_ready)
+        self.worker.log.connect(self._capture_log); self.worker.succeeded.connect(self.succeeded); self.worker.failed.connect(self.failed)
+        self.worker.finished.connect(self._write_log); self.worker.finished.connect(self.thread.quit)
+        self.thread.finished.connect(self.worker.deleteLater); self.thread.finished.connect(self._thread_finished); self.thread.finished.connect(self.thread.deleteLater)
+        self.running_changed.emit(True); self._capture_log("Native PPE started; permanent log: {}".format(self._log_path)); self.thread.start()
+    def cancel(self):
+        if self.worker is not None: self.worker.cancelled=True; self._capture_log("Cancellation requested; finishing the current raster block…")
+    def _capture_log(self,message): self._log_lines.append(str(message)); self.log.emit(str(message))
+    def _write_log(self):
+        try:
+            with open(self._log_path,"w",encoding="utf-8") as handle: handle.write("\n".join(self._log_lines)+"\n")
+        except OSError: pass
+    def _thread_finished(self):
+        self.running_changed.emit(False); self.thread=None; self.worker=None
+
+
+class _PreviewWorker(QObject):
+    ready=pyqtSignal(dict); failed=pyqtSignal(str); finished=pyqtSignal()
+    def __init__(self, config): super().__init__(); self.config=dict(config)
+    @pyqtSlot()
+    def run(self):
+        try: self.ready.emit(NativePPEEngine().preview(self.config))
+        except Exception as exc: self.failed.emit(str(exc))
+        finally: self.finished.emit()
+
+class PPEPreviewRunner(QObject):
+    """Identifies the bands of a newly chosen image in the background so it can be shown on the
+    map at once. If the user changes the selection while one request is running, only the
+    newest one is answered."""
+    ready=pyqtSignal(dict); failed=pyqtSignal(str)
+    def __init__(self,parent=None): super().__init__(parent); self.thread=None; self.worker=None; self.pending=None
+    @property
+    def is_running(self): return self.thread is not None
+    def request(self,config):
+        if self.thread is not None: self.pending=dict(config); return
+        self._start(config)
+    def _start(self,config):
+        self.thread=QThread(self); self.worker=_PreviewWorker(config); self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run); self.worker.ready.connect(self._ready); self.worker.failed.connect(self._failed)
+        self.worker.finished.connect(self.thread.quit); self.thread.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self._thread_finished); self.thread.finished.connect(self.thread.deleteLater); self.thread.start()
+    def _ready(self,result):
+        if self.pending is None: self.ready.emit(result)
+    def _failed(self,message):
+        if self.pending is None: self.failed.emit(message)
+    def _thread_finished(self):
+        self.thread=None; self.worker=None
+        if self.pending is not None:
+            config,self.pending=self.pending,None; self._start(config)

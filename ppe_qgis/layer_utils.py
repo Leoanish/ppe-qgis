@@ -1,0 +1,302 @@
+"""QGIS raster loading and lightweight threshold rendering."""
+
+import csv
+import os
+
+from osgeo import gdal, osr
+
+from qgis.PyQt.QtGui import QColor
+from qgis.core import (
+    QgsColorRampShader,
+    QgsContrastEnhancement,
+    QgsMultiBandColorRenderer,
+    QgsProject,
+    QgsRasterLayer,
+    QgsRasterShader,
+    QgsSingleBandPseudoColorRenderer,
+)
+
+
+GROUP_NAME = "Plant Pixel Extractor"
+ROLE_KEY = "ppe/role"
+
+
+def _grid_signature(path):
+    dataset = gdal.Open(path) if path and os.path.isfile(path) else None
+    if dataset is None:
+        raise ValueError("Raster is missing or unreadable: {}".format(path or "(empty path)"))
+    return dataset.RasterXSize, dataset.RasterYSize, dataset.GetGeoTransform(), dataset.GetProjection()
+
+
+def validate_aligned(paths):
+    """Require identical dimensions, affine grid, and CRS for every raster."""
+    paths = [path for path in paths if path and os.path.isfile(path)]
+    if len(paths) < 2:
+        return True, ""
+    reference = _grid_signature(paths[0])
+    for path in paths[1:]:
+        current = _grid_signature(path)
+        if current[:2] != reference[:2]:
+            return False, "Raster dimensions differ: {} is {}×{}, expected {}×{}.".format(path, current[0], current[1], reference[0], reference[1])
+        tolerance = max(1e-10, max(abs(value) for value in reference[2]) * 1e-12)
+        if any(abs(a-b) > tolerance for a, b in zip(current[2], reference[2])):
+            return False, "Raster pixel grids differ in origin, resolution, or rotation: {}.".format(path)
+        left, right = osr.SpatialReference(), osr.SpatialReference()
+        left.ImportFromWkt(reference[3]); right.ImportFromWkt(current[3])
+        if not bool(left.IsSame(right)):
+            return False, "Raster coordinate reference systems differ: {}.".format(path)
+    return True, ""
+
+
+def _force_nearest(layer):
+    """Disable visual interpolation for categorical/threshold overlays."""
+    if layer is None or not layer.isValid():
+        return
+    resampling = layer.resampleFilter()
+    if resampling is not None:
+        resampling.setZoomedInResampler(None)
+        resampling.setZoomedOutResampler(None)
+
+
+def read_curve(path):
+    points = []
+    if not path or not os.path.isfile(path):
+        return points
+    with open(path, "r", encoding="utf-8-sig", newline="") as handle:
+        for row in csv.DictReader(handle):
+            try:
+                points.append((float(row["plant_thresh"]), float(row["canopy_pct"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+    return sorted(points)
+
+
+def canopy_at(points, threshold):
+    if not points:
+        return None
+    if threshold <= points[0][0]:
+        return points[0][1]
+    if threshold >= points[-1][0]:
+        return points[-1][1]
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        if x0 <= threshold <= x1:
+            if x1 == x0:
+                return y1
+            weight = (threshold - x0) / (x1 - x0)
+            return y0 + weight * (y1 - y0)
+    return points[-1][1]
+
+
+def _project_group():
+    root = QgsProject.instance().layerTreeRoot()
+    group = root.findGroup(GROUP_NAME)
+    if group is None:
+        group = root.insertGroup(0, GROUP_NAME)
+    return group
+
+
+def remove_previous_layers(keep=()):
+    """Remove the layers PPE added, except those whose role is in `keep`."""
+    project = QgsProject.instance()
+    layer_ids = [
+        layer.id()
+        for layer in project.mapLayers().values()
+        if layer.customProperty(ROLE_KEY, "") and layer.customProperty(ROLE_KEY, "") not in keep
+    ]
+    if layer_ids:
+        project.removeMapLayers(layer_ids)
+
+
+def remove_role(role):
+    project = QgsProject.instance()
+    layer_ids = [
+        layer.id() for layer in project.mapLayers().values()
+        if layer.customProperty(ROLE_KEY, "") == role
+    ]
+    if layer_ids:
+        project.removeMapLayers(layer_ids)
+
+
+def _add_raster(path, name, role, group, visible=True):
+    if not path or not os.path.isfile(path):
+        return None
+    layer = QgsRasterLayer(path, name, "gdal")
+    if not layer.isValid():
+        return None
+    layer.setCustomProperty(ROLE_KEY, role)
+    QgsProject.instance().addMapLayer(layer, False)
+    node = group.insertLayer(0, layer)
+    node.setItemVisibilityChecked(visible)
+    return layer
+
+
+def prepare_rgb_source(result):
+    """Return a zero-copy RGB source plus its display band numbers."""
+    display = result.get("rgb_path")
+    if display and os.path.isfile(display):
+        return display, [1, 2, 3]
+    sources = [path for path in result.get("rgb_sources", []) if path and os.path.isfile(path)]
+    bands = [int(value) for value in result.get("rgb_source_bands", [])]
+    if not sources:
+        legacy = result.get("rgb_path")
+        return legacy, [1, 2, 3]
+    if len(set(sources[:3])) == 1:
+        # One file holds every display band (a stacked image): draw the file itself, no copy.
+        return sources[0], (bands[:3] if len(bands) >= 3 else [1, 2, 3])
+
+    run_dir = result.get("run_dir") or os.path.dirname(sources[0])
+    vrt_path = os.path.join(run_dir, "ppe_rgb_display.vrt")
+    selected_sources = []
+    for index, source in enumerate(sources[:3]):
+        band = bands[index] if index < len(bands) else 1
+        if band == 1:
+            selected_sources.append(source)
+            continue
+        band_vrt = os.path.join(run_dir, "ppe_rgb_band_{}.vrt".format(index + 1))
+        dataset = gdal.Translate(band_vrt, source, format="VRT", bandList=[band])
+        if dataset is None:
+            return None, [1, 2, 3]
+        dataset = None
+        selected_sources.append(band_vrt)
+    options = gdal.BuildVRTOptions(separate=True)
+    dataset = gdal.BuildVRT(vrt_path, selected_sources, options=options)
+    if dataset is None:
+        return None, [1, 2, 3]
+    dataset = None
+    return vrt_path, [1, 2, 3]
+
+
+def image_layer_name(result):
+    return "PPE · Image ({})".format(result.get("display_mode") or ("true colour" if result.get("true_rgb", True) else "single band"))
+
+
+def style_rgb(layer, band_indices=None, stretch=None):
+    """Draw three bands as red, green and blue. `stretch` gives (low, high) for each of the
+    three; without it QGIS works out a 2-98 % stretch itself."""
+    if layer is None or layer.bandCount() < 1:
+        return
+    bands = list(band_indices or [1, 2, 3])
+    if len(bands) < 3 or any(band < 1 or band > layer.bandCount() for band in bands[:3]):
+        bands = [1, 1, 1] if layer.bandCount() == 1 else [1, 2, 3]
+    provider = layer.dataProvider()
+    renderer = QgsMultiBandColorRenderer(provider, bands[0], bands[1], bands[2])
+    is_display_copy = os.path.basename(layer.source()) == "ppe_rgb_display.tif"
+    setters = (renderer.setRedContrastEnhancement, renderer.setGreenContrastEnhancement, renderer.setBlueContrastEnhancement)
+    for position, (band, setter) in enumerate(zip(bands[:3], setters)):
+        if stretch and position < len(stretch):
+            lower, upper = float(stretch[position][0]), float(stretch[position][1])
+        elif is_display_copy:
+            lower, upper = 0, 255
+        else:
+            lower, upper = provider.cumulativeCut(band, 0.02, 0.98, layer.extent(), 10000)
+        if not (upper > lower):
+            lower, upper = 0, 255
+        # A new renderer has no contrast enhancement at all; without one, reflectance values
+        # (0 to 1) are drawn as they are and the image comes out black.
+        enhancement = QgsContrastEnhancement(provider.dataType(band))
+        enhancement.setMinimumValue(lower)
+        enhancement.setMaximumValue(upper)
+        enhancement.setContrastEnhancementAlgorithm(QgsContrastEnhancement.StretchToMinimumMaximum)
+        setter(enhancement)
+    layer.setRenderer(renderer)
+    layer.triggerRepaint()
+
+
+def style_vote_threshold(layer, plant_threshold, opacity=0.62):
+    """Show vote cells classified as plant by PPE's ambiguous='vote' rule."""
+    if layer is None or not layer.isValid():
+        return
+    _force_nearest(layer)
+    # PPE derives soil = plant - 0.1 and uses their midpoint for ambiguous='vote'.
+    effective_cutoff = max(0.0, float(plant_threshold) - 0.05)
+    ramp = QgsColorRampShader()
+    ramp.setColorRampType(QgsColorRampShader.Discrete)
+    ramp.setColorRampItemList([
+        QgsColorRampShader.ColorRampItem(
+            max(0.0, effective_cutoff - 0.000001), QColor(0, 0, 0, 0), "Below threshold"
+        ),
+        QgsColorRampShader.ColorRampItem(
+            1.000001, QColor(220, 43, 155, 235), "Plant preview"
+        ),
+    ])
+    shader = QgsRasterShader()
+    shader.setRasterShaderFunction(ramp)
+    renderer = QgsSingleBandPseudoColorRenderer(layer.dataProvider(), 1, shader)
+    renderer.setOpacity(float(opacity))
+    layer.setRenderer(renderer)
+    layer.triggerRepaint()
+
+
+def style_plant_mask(layer, opacity=0.72):
+    if layer is None or not layer.isValid():
+        return
+    _force_nearest(layer)
+    ramp = QgsColorRampShader()
+    ramp.setColorRampType(QgsColorRampShader.Discrete)
+    ramp.setColorRampItemList([
+        QgsColorRampShader.ColorRampItem(0.999999, QColor(0, 0, 0, 0), "Not plant"),
+        QgsColorRampShader.ColorRampItem(1.000001, QColor(220, 43, 155, 240), "Applied plant mask"),
+    ])
+    shader = QgsRasterShader()
+    shader.setRasterShaderFunction(ramp)
+    renderer = QgsSingleBandPseudoColorRenderer(layer.dataProvider(), 1, shader)
+    renderer.setOpacity(float(opacity))
+    layer.setRenderer(renderer)
+    layer.triggerRepaint()
+
+
+def style_bright_rejection(layer, opacity=0.72):
+    if layer is None or not layer.isValid():
+        return
+    _force_nearest(layer)
+    ramp = QgsColorRampShader()
+    ramp.setColorRampType(QgsColorRampShader.Discrete)
+    ramp.setColorRampItemList([
+        QgsColorRampShader.ColorRampItem(0.999999, QColor(0, 0, 0, 0), "Retained"),
+        QgsColorRampShader.ColorRampItem(1.000001, QColor(235, 91, 64, 235), "Rejected bright-neutral pixel"),
+    ])
+    shader = QgsRasterShader(); shader.setRasterShaderFunction(ramp)
+    renderer = QgsSingleBandPseudoColorRenderer(layer.dataProvider(), 1, shader)
+    renderer.setOpacity(float(opacity)); layer.setRenderer(renderer); layer.triggerRepaint()
+
+
+def load_result_layers(iface, result, threshold=0.5):
+    remove_previous_layers()
+    group = _project_group()
+    rgb_path, rgb_bands = prepare_rgb_source(result)
+    rgb = _add_raster(rgb_path, image_layer_name(result), "rgb", group, True)
+    style_rgb(rgb, rgb_bands)
+    mask = _add_raster(result.get("mask_qgis_path"), "PPE · Applied plant mask", "mask", group, False)
+    style_plant_mask(mask)
+    votes = _add_raster(result.get("vote_path"), "PPE · Live threshold preview", "votes", group, True)
+    style_vote_threshold(votes, threshold)
+    if rgb is not None:
+        iface.mapCanvas().setExtent(rgb.extent())
+        iface.mapCanvas().refresh()
+    # Guard diagnostics (bright-neutral, shadow, algae rejection rasters) stay in the run folder
+    # only; they are not added to the map, so the Layers panel holds just image, preview and mask.
+    return {"rgb": rgb, "mask": mask, "votes": votes}
+
+
+def load_import_layer(iface, result):
+    """Show validated imagery immediately while PPE continues processing."""
+    remove_role("rgb")
+    group = _project_group()
+    rgb_path, rgb_bands = prepare_rgb_source(result)
+    rgb = _add_raster(rgb_path, image_layer_name(result), "rgb", group, True)
+    style_rgb(rgb, rgb_bands, result.get("display_stretch") if not result.get("rgb_path") else None)
+    if rgb is not None:
+        iface.mapCanvas().setExtent(rgb.extent())
+        iface.mapCanvas().refresh()
+    return rgb
+
+
+def replace_applied_mask(result, layers):
+    old = layers.get("mask")
+    if old is not None:
+        QgsProject.instance().removeMapLayer(old.id())
+    group = _project_group()
+    mask = _add_raster(result.get("mask_qgis_path"), "PPE · Applied plant mask", "mask", group, True)
+    style_plant_mask(mask)
+    layers["mask"] = mask
+    return mask
