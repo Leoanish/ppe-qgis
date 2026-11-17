@@ -23,6 +23,37 @@ BAND_CHOICES = (("", "— not a band —"), ("blue", "Blue"), ("green", "Green")
                 ("re", "Red edge"), ("nir", "NIR"))
 BAND_NAMES = dict(BAND_CHOICES)
 
+# The dialog styles every part itself. It inherits the panel's dark text colour, so leaving the
+# table to the system palette made it dark text on a dark table when macOS is in dark mode.
+DIALOG_STYLE = """
+    QDialog#ppeBandFiles { background: #f3f6f4; }
+    QDialog#ppeBandFiles QLabel { color: #1f3a30; background: transparent; }
+    QTableWidget {
+        color: #172d25; background: #ffffff; alternate-background-color: #f4f8f6;
+        border: 1px solid #c9d6cf; border-radius: 6px; gridline-color: #e3eae6;
+    }
+    QTableWidget::item { color: #172d25; padding: 2px 8px; border: none; }
+    QHeaderView::section {
+        color: #17473a; background: #e7f0eb; font-weight: 700; padding: 5px 8px;
+        border: none; border-bottom: 1px solid #c9d6cf; border-right: 1px solid #d9e3dd;
+    }
+    QTableCornerButton::section { background: #e7f0eb; border: none; }
+    QScrollBar:horizontal { background: #eef3f0; height: 12px; margin: 0px; border: none; }
+    QScrollBar::handle:horizontal { background: #a9bfb3; min-width: 40px; border-radius: 5px; margin: 2px; }
+    QScrollBar:vertical { background: #eef3f0; width: 12px; margin: 0px; border: none; }
+    QScrollBar::handle:vertical { background: #a9bfb3; min-height: 30px; border-radius: 5px; margin: 2px; }
+    QScrollBar::add-line, QScrollBar::sub-line { width: 0px; height: 0px; border: none; background: none; }
+    QScrollBar::add-page, QScrollBar::sub-page { background: none; }
+    QToolTip { color: #172d25; background: #ffffff; border: 1px solid #b9c9c0; padding: 4px; }
+    QPushButton {
+        color: #17473a; background: #ffffff; border: 1px solid #b9c9c0; border-radius: 6px;
+        min-height: 28px; padding: 0px 14px; font-weight: 600;
+    }
+    QPushButton:hover { border-color: #2b8560; }
+    QPushButton:default, QPushButton[ppePrimary="true"] { color: #ffffff; background: #1d7550; border-color: #1d7550; }
+    QPushButton:disabled { color: #8a9a92; background: #eef2f0; border-color: #d3ddd8; }
+"""
+
 
 class BandFilesDialog(QDialog):
     """scan: the result of native_engine.scan_band_folder(folder)."""
@@ -30,6 +61,9 @@ class BandFilesDialog(QDialog):
     def __init__(self, folder, scan, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Band files in this folder")
+        self.setObjectName("ppeBandFiles")
+        self.setStyleSheet(DIALOG_STYLE)
+        self.setSizeGripEnabled(True)
         self.setMinimumWidth(640)
         self.rows = []
         layout = QVBoxLayout(self)
@@ -43,11 +77,19 @@ class BandFilesDialog(QDialog):
         table.verticalHeader().setVisible(False)
         table.setSelectionMode(QAbstractItemView.NoSelection)
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.setAlternatingRowColors(True)
+        # Full file names: columns take the width of their text and the table scrolls sideways
+        # instead of cutting names short with "...".
+        table.setWordWrap(False)
+        table.setTextElideMode(Qt.ElideNone)
+        table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         header = table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        header.setStretchLastSection(True)
         for i, entry in enumerate(scan["files"]):
             holder = QWidget(); line = QHBoxLayout(holder); line.setContentsMargins(6, 0, 6, 0); line.setAlignment(Qt.AlignCenter)
             check = QCheckBox(); check.setChecked(bool(entry["use"])); line.addWidget(check)
@@ -67,7 +109,12 @@ class BandFilesDialog(QDialog):
             self.rows.append(row)
             check.toggled.connect(self._validate)
             combo.currentIndexChanged.connect(lambda _index, r=row: self._band_changed(r))
-        table.resizeRowsToContents()
+        # Rows as tall as the band box, so the boxes do not overlap the next row.
+        row_height = max([combo.sizeHint().height() for combo in (r["combo"] for r in self.rows)] + [28]) + 8
+        table.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
+        table.verticalHeader().setDefaultSectionSize(row_height)
+        for i in range(table.rowCount()):
+            table.setRowHeight(i, row_height)
         layout.addWidget(table)
         self.table = table
         if scan.get("other_files"):
@@ -80,10 +127,14 @@ class BandFilesDialog(QDialog):
         layout.addWidget(self.status)
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.buttons.button(QDialogButtonBox.Ok).setText("Use the ticked files")
+        self.buttons.button(QDialogButtonBox.Ok).setProperty("ppePrimary", True)
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
-        self.resize(760, min(620, 230 + 34 * max(3, len(self.rows))))
+        # Wide enough for the longest file name when the screen allows; otherwise the table scrolls.
+        wanted = table.verticalHeader().width() + sum(table.columnWidth(c) for c in range(4)) + 60
+        screen = self.screen().availableGeometry().width() if hasattr(self, "screen") and self.screen() else 1400
+        self.resize(max(760, min(wanted, int(screen * 0.85))), min(680, 250 + row_height * max(3, len(self.rows))))
         self._validate()
 
     def _band_changed(self, row):

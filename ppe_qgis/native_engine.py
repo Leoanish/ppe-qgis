@@ -140,16 +140,25 @@ def infer_band(filename):
         return None
     tokens = [t for t in re.split(r"[^a-z0-9]+", base) if t]
     joined = "_" + "_".join(tokens) + "_"
-    if re.search(r"near.?infra.?red", base) or any(t in ("nir", "nir1", "nir2", "nearir") for t in tokens) or "nir" in base:
-        return "nir"
-    if "rededge" in base or "_red_edge_" in joined or any(t in ("re", "reg", "rde", "edge", "rededge") for t in tokens):
-        return "re"
-    if any(t in ("green", "grn", "gre") for t in tokens) or "green" in base or "_ms_g_" in joined:
-        return "green"
-    if any(t in ("blue", "blu") for t in tokens) or "blue" in base or "_ms_b_" in joined:
-        return "blue"
-    if any(t in ("red", "rd") for t in tokens) or "_ms_r_" in joined:
-        return "red"
+    # Every place a band word occurs, with where it ends. When a name holds several (the camera
+    # "MicaSense RedEdge-P" in "..._RedEdge-P_..._blue.tif"), the one nearest the end is the band:
+    # pipelines add the band last. Equal positions keep the order nir, re, green, blue, red.
+    patterns = (
+        ("nir", r"near_?infra_?red|_(?:nir|nir1|nir2|nearir)_|nir"),
+        ("re", r"rededge|_red_edge_|_(?:re|reg|rde|edge)_"),
+        ("green", r"_(?:green|grn|gre)_|green|_ms_g_"),
+        ("blue", r"_(?:blue|blu)_|blue|_ms_b_"),
+        ("red", r"_(?:red|rd)_|_ms_r_"),
+    )
+    found = []
+    for rank, (slot, pattern) in enumerate(patterns):
+        compiled = re.compile(pattern)
+        # try every start position, so matches that overlap (the "_" between words) all count
+        ends = [m.end() for m in (compiled.match(joined, i) for i in range(len(joined))) if m]
+        if ends:
+            found.append((max(ends), -rank, slot))
+    if found:
+        return max(found)[2]
     hit = re.search(r"(?<!\d)(\d{3,4})\s*nm", base)
     if hit:
         wl = float(hit.group(1))

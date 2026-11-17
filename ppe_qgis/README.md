@@ -37,7 +37,9 @@ When you choose a **folder of band files**, PPE lists every GeoTIFF in it:
 | Band | the band PPE recognised from the file name, the band name inside the file or its wavelength; change it if it is wrong |
 | Note | why a file starts unticked: thermal, a stacked file with several bands, band not recognised, a second file for the same band, or a different size |
 
-Untick files that are not bands of the image, choose the band of files PPE could not recognise (for example `IMG_0001_4.tif`), and press **Use the ticked files**. PPE imports exactly those files; the dialog will not accept two files for one band, a ticked file without a band, or files of different sizes. Other files in the folder (`.aux.xml`, plot files, sub-folders) are not listed. **Choose band files…** under the folder opens the list again. Cancel keeps the automatic reading by file name.
+Untick files that are not bands of the image, choose the band of files PPE could not recognise (for example `IMG_0001_4.tif`), and press **Use the ticked files**. PPE imports exactly those files; the dialog will not accept two files for one band, a ticked file without a band, or files of different sizes. Other files in the folder (`.aux.xml`, plot files, sub-folders) are not listed. **Choose band files…** under the folder opens the list again. Cancel keeps the automatic reading by file name. Long file names are shown in full (the table scrolls sideways; the dialog can be resized), and the dialog stays readable when macOS or Windows is in dark mode.
+
+When a file name holds more than one band word, the one nearest the end is the band: `Field_MicaSense_RedEdge-P_ortho_blue.tif` is blue, not red edge.
 
 ## What you see on the map
 

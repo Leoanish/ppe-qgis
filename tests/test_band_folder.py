@@ -84,3 +84,21 @@ class BandFolderTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FileNameTests(unittest.TestCase):
+    """A camera name inside a file name must not decide the band: the band word nearest the end does."""
+
+    def test_camera_name_does_not_win(self):
+        from ppe_qgis.native_engine import infer_band
+        stem = "Field_2025-08-08_MicaSense_RedEdge-P_120ft_orthomosaic_reflectance_"
+        for word, band in (("blue", "blue"), ("green", "green"), ("red", "red"), ("red edge", "re"), ("rededge", "re"), ("nir", "nir")):
+            self.assertEqual(infer_band(stem + word + ".tif"), band, word)
+        self.assertIsNone(infer_band(stem + "LWIR_thermal.tif"))
+
+    def test_common_camera_names_still_read(self):
+        from ppe_qgis.native_engine import infer_band
+        for name, band in (("DJI_0010_MS_RE.TIF", "re"), ("DJI_0010_MS_G.TIF", "green"), ("sequoia_REG.tif", "re"),
+                           ("sequoia_GRE.tif", "green"), ("ortho_Near-Infrared.tif", "nir"), ("band_717nm.tif", "re"),
+                           ("Kritis_reflectance_red edge.tif", "re"), ("IMG_0001_4.tif", None)):
+            self.assertEqual(infer_band(name), band, name)
