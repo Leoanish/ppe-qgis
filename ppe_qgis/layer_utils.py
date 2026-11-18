@@ -2,6 +2,7 @@
 
 import csv
 import os
+from xml.sax.saxutils import escape
 
 from osgeo import gdal, osr
 
@@ -477,6 +478,16 @@ def style_zoned_preview(layer, thresholds, names=None, opacity=0.62):
 def replace_preview_layer(path, layers):
     """Swap the live-preview layer's raster (the plain vote, or vote by crop area) in place."""
     old = layers.get("votes")
+    try:
+        reuse = old is not None and old.isValid() and path and os.path.isfile(path)
+    except RuntimeError:
+        reuse = False
+    if reuse:
+        # the same layer reads the new raster: no new layer appears in the Layers panel
+        old.setCustomProperty(PREVIEW_BASE_KEY, path)
+        old.setDataSource(path, old.name(), "gdal")
+        old.setCustomProperty(PREVIEW_BASE_KEY, path)
+        return old
     visible = True
     if old is not None:
         node = QgsProject.instance().layerTreeRoot().findLayer(old.id())
@@ -486,6 +497,66 @@ def replace_preview_layer(path, layers):
     layers["votes"] = layer
     for role in ("pale", "crops", "plots"):
         _raise_role(role)
+    return layer
+
+
+PREVIEW_BASE_KEY = "ppe/preview_base"
+_FINDING_FILE_NAMES = {1: "plant_parts", 2: "leaf_edges", 3: "shaded", 4: "unclear"}
+
+
+def preview_source(base_path, findings_path, clip_codes):
+    """The raster the live preview draws. With finding kinds left out it is a small VRT that
+    multiplies the vote (or vote by crop area) by 0 where a left-out kind is and by 1 elsewhere,
+    so the preview drops those pixels at every threshold. Nothing is copied; the VRT only points
+    to the two files. Without kinds left out it is the vote itself."""
+    clip = sorted({int(c) for c in (clip_codes or []) if int(c) in _FINDING_FILE_NAMES})
+    if not clip or not base_path or not findings_path or not os.path.isfile(findings_path):
+        return base_path
+    ds = gdal.Open(base_path)
+    if ds is None:
+        return base_path
+    f_ds = gdal.Open(findings_path)
+    if f_ds is None or f_ds.RasterXSize != ds.RasterXSize or f_ds.RasterYSize != ds.RasterYSize:
+        return base_path
+    nodata = ds.GetRasterBand(1).GetNoDataValue()
+    lut = ",".join("{}:{}".format(c, 0 if c in clip else 1) for c in (0, 1, 2, 3, 4, 255))
+    xml = (
+        '<VRTDataset rasterXSize="{w}" rasterYSize="{h}">\n'
+        '  <SRS>{srs}</SRS>\n  <GeoTransform>{gt}</GeoTransform>\n'
+        '  <VRTRasterBand dataType="Float32" band="1" subClass="VRTDerivedRasterBand">\n'
+        '{nd}'
+        '    <PixelFunctionType>mul</PixelFunctionType>\n'
+        '    <SimpleSource><SourceFilename relativeToVRT="0">{vote}</SourceFilename><SourceBand>1</SourceBand></SimpleSource>\n'
+        # NODATA 254 (a value findings never hold) so the no-data code 255 goes through the LUT as 1
+        '    <ComplexSource><SourceFilename relativeToVRT="0">{find}</SourceFilename><SourceBand>1</SourceBand>'
+        '<NODATA>254</NODATA><LUT>{lut}</LUT></ComplexSource>\n'
+        '  </VRTRasterBand>\n</VRTDataset>\n').format(
+            w=ds.RasterXSize, h=ds.RasterYSize, srs=escape(ds.GetProjection() or ""),
+            gt=", ".join(repr(v) for v in ds.GetGeoTransform()),
+            nd="    <NoDataValue>{}</NoDataValue>\n".format(nodata) if nodata is not None else "",
+            vote=escape(os.path.abspath(base_path)), find=escape(os.path.abspath(findings_path)), lut=lut)
+    stem = os.path.splitext(os.path.basename(base_path))[0]
+    path = os.path.join(os.path.dirname(os.path.abspath(base_path)),
+                        "{}_preview_without_{}.vrt".format(stem, "_".join(_FINDING_FILE_NAMES[c] for c in clip)))
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(xml)
+    except OSError:
+        return base_path
+    return path
+
+
+def set_preview_source(layer, base_path=None, findings_path="", clip_codes=()):
+    """Point the live-preview layer at the vote, or at the vote without the left-out kinds. The
+    layer stays the same layer (same place, same tick box); only what it reads changes."""
+    if layer is None or not layer.isValid():
+        return layer
+    base = base_path or layer.customProperty(PREVIEW_BASE_KEY, "") or layer.source()
+    layer.setCustomProperty(PREVIEW_BASE_KEY, base)
+    wanted = preview_source(base, findings_path, clip_codes)
+    if os.path.normpath(layer.source()) != os.path.normpath(wanted):
+        layer.setDataSource(wanted, layer.name(), "gdal")
+        layer.setCustomProperty(PREVIEW_BASE_KEY, base)
     return layer
 
 

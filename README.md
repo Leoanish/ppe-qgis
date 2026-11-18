@@ -152,15 +152,15 @@ After each run PPE sorts out four kinds of pixel worth a look. Each is judged fr
    Tick or untick each kind to see it alone or compare it with the others. All four layers read the same file, so this costs no disk space.
 4. Here, the tassels lie along the corn rows.
 
-**Leave a kind out of the mask, or put it back, with one click:**
+**Leave a kind out, or put it back, with one click:**
 
 ![Leaving out unclear pixels](docs/images/11_leave_out.jpg)
 
-1. Tick **Leave out of the mask**. PPE rewrites the mask at once (finalizing it if needed); you stay on the Review tab.
-2. The card reports what was taken out, counted in the new mask file, for example *919,515 pixels left out (unclear). Canopy 83.2 % → 81.8 %*.
-3. The map shows the **applied mask**, and the left-out pixels are now holes. The live preview is switched off for this, because it would fill them in; moving a slider switches it on again.
+1. Tick **Leave out of the mask**.
+2. The card says what is left out: the kinds, their share of the plant and, without crop areas, the exact number of pixels.
+3. The **live preview** drops those pixels at once; they show as holes. It is still the same live layer, and they stay out whatever you do with the slider (or the crop sliders), so you tune the threshold with them already left out.
 
-Untick, or **Put all back**, to return them. The mask is always rebuilt from the vote, so nothing is lost either way. Each choice is written to its own file (for example `ppe_plant_mask_0.45_without_unclear.tif`), and the plot export and run record say what was left out.
+**Finalize mask** writes the mask without them, then reports the pixels it left out (counted in the mask file) and the canopy before and after. Untick, or **Put all back**, to return them, then finalize again. The mask is always rebuilt from the vote, so nothing is lost either way. Each choice is written to its own file (for example `ppe_plant_mask_0.45_without_unclear.tif`), and the plot export and run record say what was left out.
 
 Nothing is judged when leaves and soil hardly differ in near-infrared light, or without red and NIR bands; the log says why.
 
@@ -172,7 +172,7 @@ Nothing is judged when leaves and soil hardly differ in near-infrared light, or 
 2. The status gives the canopy of the image and of each crop, and the mask file's path.
 3. *PPE · Applied plant mask* is added to the map.
 
-You can go back, move the slider and finalize again at any time; the vote is kept.
+Only one magenta layer is shown at a time. After Finalize the map shows the finalized mask. As soon as you move a slider or tick a kind, the live preview comes back, and the finalized mask is switched off (it stays in the Layers panel). The Export tab then tells you that its exports still use the finalized mask, until you finalize again. You can go back, change things and finalize again at any time; the vote is kept.
 
 ## 9. Tab 4 Export: plant-only rasters
 

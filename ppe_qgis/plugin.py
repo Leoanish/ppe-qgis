@@ -11,6 +11,7 @@ from qgis.core import Qgis, QgsProject
 
 from .dock import PPEDockWidget
 from .layer_utils import (
+    set_preview_source,
     arrange_layers,
     set_layer_visible,
     load_result_layers,
@@ -276,23 +277,12 @@ class PPEPlugin:
                 return
             with self._own_changes():
                 replace_applied_mask(result, self.layers)
-                # The live preview is drawn in the same colour under the mask, so it would hide what the
-                # mask leaves out. Untick it: the map now shows the mask itself. Moving a slider shows it again.
+                # One magenta layer at a time: the finalized mask is shown and the live preview (same
+                # colour) steps aside until a slider moves or a finding kind is ticked.
                 set_layer_visible(self.layers.get("votes"), False)
             self.dock.set_applied(result)
-            if getattr(self.dock, "_auto_apply", False):
-                # rebuilt because a finding was left out or put back: stay on the Review tab
-                self.dock._auto_apply = False
-                if result.get("left_out"):
-                    text = "Mask updated: {:,} pixels left out ({}). Canopy {:.1f} % → {:.1f} %.".format(
-                        int(result.get("left_out_pixels") or 0), ", ".join(result["left_out"]),
-                        float(result.get("canopy_before_clip_pct") or 0.0), float(result.get("canopy_pct") or 0.0))
-                else:
-                    text = "Mask updated: everything is back in. Canopy {:.1f} %.".format(float(result.get("canopy_pct") or 0.0))
-                self._message(text, Qgis.Info)
-            else:
-                self.dock.tabs.setCurrentIndex(3)
-                self._message("Native PPE mask exported and loaded.", Qgis.Success)
+            self.dock.tabs.setCurrentIndex(3)
+            self._message("Native PPE mask exported and loaded." + (" Left out: {}.".format(", ".join(result["left_out"])) if result.get("left_out") else ""), Qgis.Success)
             return
 
         aligned, detail = validate_aligned([result.get("rgb_path"), result.get("vote_path")])
@@ -347,15 +337,17 @@ class PPEPlugin:
     def _job_failed(self, message):
         message = str(message or "").strip() or "PPE stopped without an error message; the Log box on the Run tab has the details."
         if self.dock is not None:
-            self.dock._auto_apply = False
             self.dock.set_running(False, self.current_action)
             self.dock.show_error(message)
         self._message(message, Qgis.Critical)
 
     def _tuning(self):
-        """A slider moved: show the live preview again and redraw it."""
+        """A slider moved or a finding kind was ticked: the live preview is what the user is now
+        looking at, so it is shown and redrawn, and the finalized mask (drawn in the same colour)
+        is switched off until Finalize is pressed again. It stays in the Layers panel."""
         with self._own_changes():
             set_layer_visible(self.layers.get("votes"), True)
+            set_layer_visible(self.layers.get("mask"), False)
         self.preview_timer.start()
 
     def _refresh_preview(self):
@@ -364,6 +356,8 @@ class PPEPlugin:
         votes = self.layers.get("votes")
         if votes is None:
             return
+        # left-out finding kinds drop out of the live preview too, at every threshold
+        set_preview_source(votes, None, (self.dock.result or {}).get("findings_path", ""), self.dock.clip_codes())
         if self.dock.zone_info:
             style_zoned_preview(votes, self.dock.zone_thresholds(), self.dock.zone_names())
         else:

@@ -1374,8 +1374,9 @@ class PPEDockWidget(QDockWidget):
         self.pale_title.setToolTip("Click to open or close the details")
         box.addWidget(self.pale_title)
         self.pale_body = QWidget(); body = QVBoxLayout(self.pale_body); body.setContentsMargins(0, 2, 0, 2); body.setSpacing(8)
-        intro = QLabel("Nothing here changes the mask until you tick <b>Leave out of the mask</b>. One click rewrites "
-                       "the mask at once and shows how many pixels were taken out. Untick to put them back.")
+        intro = QLabel("Nothing here changes the mask until you tick <b>Leave out of the mask</b>. The live preview "
+                       "drops those pixels at once and keeps them out whatever the slider; <b>Finalize mask</b> writes "
+                       "them out of the mask. Untick to put them back.")
         intro.setObjectName("paleText"); intro.setWordWrap(True); intro.setTextFormat(Qt.RichText); body.addWidget(intro)
         self.finding_rows = {}
         for code in (1, 2, 3, 4):
@@ -1453,18 +1454,12 @@ class PPEDockWidget(QDockWidget):
         return sorted(set(codes))
 
     def _clip_toggled(self, code, on):
-        self._update_clip_status()
+        """A kind was ticked or unticked: the live preview drops (or takes back) those pixels at once,
+        at every threshold. Nothing is written until Finalize mask."""
         self._threshold_changed(self.threshold_slider.value())
+        self._update_clip_status()
         if self.result.get("vote_path"):
-            # Write the mask at once (finalizing it if needed), so one click leaves pixels out and unticking
-            # puts them back. Nothing is lost either way: the mask is rebuilt from the vote each time.
-            if self._busy:
-                self.clip_status.setText(self.clip_status.text() + " (PPE is busy: press Finalize mask when it is done.)")
-            else:
-                self.clip_status.setText(self.clip_status.text() + " Updating the mask…" if self.clip_status.text() else "Updating the mask…")
-                self.clip_status.setVisible(True)
-                self._auto_apply = True
-                self._emit_apply()
+            self.crop_preview_changed.emit()
 
     def _put_all_back(self):
         for row in self.finding_rows.values():
@@ -1472,32 +1467,40 @@ class PPEDockWidget(QDockWidget):
         self._clip_toggled(0, False)
 
     def _show_clip_result(self, result):
-        """After the mask is written: what was actually left out, counted in the mask file itself."""
+        """After Finalize: what was left out, counted in the mask file itself."""
         if not hasattr(self, "clip_status"):
             return
         left = result.get("left_out") or {}
         if left:
             parts = ", ".join("{} {:,}".format(name, int(px)) for name, px in left.items())
             self.clip_status.setText(
-                "✔ Mask updated at {:.2f}: {:,} pixels left out ({}).\nCanopy {:.1f} % → {:.1f} %. "
-                "The live preview is switched off so the map shows the mask itself. Untick to put them back.".format(
+                "✔ Finalized at {:.2f}: {:,} pixels left out of the mask ({}).\nCanopy {:.1f} % → {:.1f} %.".format(
                     float(result.get("threshold") or self.threshold()), int(result.get("left_out_pixels") or 0), parts,
                     float(result.get("canopy_before_clip_pct") or 0.0), float(result.get("canopy_pct") or 0.0)))
             self.clip_status.setVisible(True)
-        elif getattr(self, "_auto_apply", False):
-            self.clip_status.setText("✔ Mask updated at {:.2f}: everything is back in. Canopy {:.1f} %.".format(
-                float(result.get("threshold") or self.threshold()), float(result.get("canopy_pct") or 0.0)))
-            self.clip_status.setVisible(True)
+
+    def left_out_pixels_now(self):
+        """Exact number of plant pixels the ticked kinds take out at the current threshold
+        (None with crop areas, where each area has its own threshold)."""
+        hist = (self.result or {}).get("findings_hist")
+        if not hist or self.zone_info:
+            return None
+        import numpy as np
+        hist = np.asarray(hist); levels = hist.shape[1] - 1
+        start = int(np.ceil(max(0.0, self.threshold() - 0.05) * levels - 1e-9))
+        return int(sum(hist[c, start:].sum() for c in self.clip_codes()))
 
     def _update_clip_status(self):
         names = [self.FINDING_TEXT[c][1].lower() for c in (1, 2, 3, 4) if self.finding_rows[c]["clip"].isChecked()]
         if names:
             shares = self.finding_shares_now(); left = sum(shares.get(c, 0.0) for c in self.clip_codes())
-            text = "Leaving out: {} (about {:.1f} % of the plant at {:.2f}).".format(", ".join(names), left, self.threshold())
-            applied = (self.result or {}).get("applied_threshold")
-            if applied is not None and abs(float(applied) - self.threshold()) > 1e-6:
-                text += " The mask on the map is still at {:.2f}: press Finalize mask to write it at {:.2f}.".format(float(applied), self.threshold())
+            pixels = self.left_out_pixels_now()
+            text = "Left out of the live preview: {} ({}{:.1f} % of the plant at {:.2f}). Move the slider: they stay out. " \
+                   "Finalize mask writes them out of the mask.".format(
+                       ", ".join(names), "{:,} pixels, ".format(pixels) if pixels is not None else "about ", left, self.threshold())
             self.clip_status.setText(text)
+        else:
+            self.clip_status.setText("")
         self.clip_status.setVisible(bool(names)); self.put_back_button.setVisible(bool(names))
 
     def _update_pale_card(self):
@@ -1817,6 +1820,24 @@ class PPEDockWidget(QDockWidget):
             self._update_pale_card()
         if self.curve_dialog is not None:
             self.curve_dialog.set_threshold(threshold)
+        self._update_stale_note()
+
+    def _update_stale_note(self):
+        """The Export tab exports the finalized mask: say so when the Review tab has moved on."""
+        r = self.result or {}
+        if not r.get("mask_path") or not hasattr(self, "export_status") or not hasattr(self, "finding_rows"):
+            return
+        same = r.get("applied_threshold") is not None and abs(float(r["applied_threshold"]) - self.threshold()) < 1e-6
+        same = same and sorted(r.get("clip_codes") or []) == self.clip_codes()
+        if self.zone_info:
+            same = same and [round(t, 2) for t in (r.get("zone_thresholds") or [])[1:]] == [round(t, 2) for t in self.zone_thresholds()[1:]]
+        if same:
+            self.export_status.setText("Mask finalized. Choose what to export.")
+        else:
+            left = r.get("left_out") or {}
+            self.export_status.setText("These exports use the mask finalized at {:.2f}{}. The Review tab shows other settings now: "
+                                       "press Finalize mask there to export those.".format(
+                                           float(r.get("applied_threshold") or 0), " without " + ", ".join(left) if left else ""))
 
     def _show_curve(self):
         if not self.curve_points:
@@ -1974,7 +1995,7 @@ class PPEDockWidget(QDockWidget):
         else:
             lines = ["Mask finalized at {:.2f} · canopy {:.1f} %".format(float(result.get("threshold", self.threshold())), float(result.get("canopy_pct", 0.0)))]
         if result.get("left_out"):
-            lines.append("  left out of the mask: {} ({:.2f} % of the image; untick on this tab to put them back)".format(
+            lines.append("  left out of the mask: {} ({:.2f} % of the image; untick and finalize again to put them back)".format(
                 ", ".join(result["left_out"]), float(result.get("left_out_pct") or 0.0)))
         # a zero-width space after each / and _ lets a long path wrap instead of widening the panel
         lines.append(result.get("mask_path", "").replace("/", "/\u200b").replace("\\", "\\\u200b").replace("_", "_\u200b"))
