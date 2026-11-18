@@ -26,7 +26,7 @@ try:
 except ImportError:  # pragma: no cover
     QVariant = None
 
-from .layer_utils import ROLE_KEY, _project_group, raise_plot_layer, remove_role
+from .layer_utils import ROLE_KEY, _project_group, place_layer, raise_plot_layer, remove_role
 
 CROP_LAYER_NAME = "PPE · Crop areas"
 
@@ -157,7 +157,4 @@ def show_crop_areas(areas, crs):
     text.setBuffer(buffer); settings.setFormat(text)
     layer.setLabeling(QgsVectorLayerSimpleLabeling(settings))
     layer.setLabelsEnabled(True)
-    QgsProject.instance().addMapLayer(layer, False)
-    _project_group().insertLayer(0, layer)
-    raise_plot_layer()
-    return layer
+    return place_layer(layer, "crops")

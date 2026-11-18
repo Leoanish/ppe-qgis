@@ -10,6 +10,7 @@ from qgis.core import (
     Qgis,
     QgsColorRampShader,
     QgsFillSymbol,
+    QgsLayerTreeGroup,
     QgsPalLayerSettings,
     QgsSingleSymbolRenderer,
     QgsTextBufferSettings,
@@ -95,12 +96,66 @@ def canopy_at(points, threshold):
     return points[-1][1]
 
 
+# Where PPE's layers go in the Layers panel. The results are layers of their own at the top level;
+# only the working layers sit in the "Plant Pixel Extractor" group. From top to bottom:
+TOP_ORDER = ("plots", "pale", "mask", "__group__", "rgb")
+GROUP_ORDER = ("crops", "votes")
+
+
 def _project_group():
     root = QgsProject.instance().layerTreeRoot()
     group = root.findGroup(GROUP_NAME)
     if group is None:
         group = root.insertGroup(0, GROUP_NAME)
     return group
+
+
+def _node_role(node):
+    if isinstance(node, QgsLayerTreeGroup):
+        return "__group__" if node.name() == GROUP_NAME else None
+    layer = node.layer() if hasattr(node, "layer") else None
+    return layer.customProperty(ROLE_KEY, "") if layer is not None else None
+
+
+def _move(parent, node, index):
+    clone = node.clone(); parent.insertChildNode(index, clone); parent.removeChildNode(node)
+
+
+def arrange_layers():
+    """Put PPE's own layers in order (TOP_ORDER, then GROUP_ORDER inside the group). The user's
+    layers keep their places: PPE's top-level layers are gathered where the first of them is."""
+    root = QgsProject.instance().layerTreeRoot()
+    group = root.findGroup(GROUP_NAME)
+    if group is not None:
+        if not group.children():
+            root.removeChildNode(group); group = None
+        else:
+            ranked = sorted([n for n in group.children() if _node_role(n) in GROUP_ORDER], key=lambda n: GROUP_ORDER.index(_node_role(n)))
+            for index, node in enumerate(ranked):
+                if group.children().index(node) != index:
+                    _move(group, node, index)
+    ours = [n for n in root.children() if _node_role(n) in TOP_ORDER]
+    if not ours:
+        return
+    start = min(root.children().index(n) for n in ours)
+    for offset, role in enumerate(sorted({_node_role(n) for n in ours}, key=TOP_ORDER.index)):
+        node = next(n for n in root.children() if _node_role(n) == role)
+        target = start + offset
+        if root.children().index(node) != target:
+            _move(root, node, target)
+
+
+def place_layer(layer, role, visible=True):
+    """Add a layer PPE made to the project at its place (see TOP_ORDER)."""
+    layer.setCustomProperty(ROLE_KEY, role)
+    QgsProject.instance().addMapLayer(layer, False)
+    root = QgsProject.instance().layerTreeRoot()
+    (_project_group() if role in GROUP_ORDER else root).insertLayer(0, layer)
+    arrange_layers()
+    node = root.findLayer(layer.id())
+    if node is not None:
+        node.setItemVisibilityChecked(visible)
+    return layer
 
 
 def remove_previous_layers(keep=()):
@@ -113,6 +168,7 @@ def remove_previous_layers(keep=()):
     ]
     if layer_ids:
         project.removeMapLayers(layer_ids)
+    arrange_layers()
 
 
 def remove_role(role):
@@ -123,6 +179,7 @@ def remove_role(role):
     ]
     if layer_ids:
         project.removeMapLayers(layer_ids)
+    arrange_layers()
 
 
 def _add_raster(path, name, role, group, visible=True):
@@ -131,11 +188,7 @@ def _add_raster(path, name, role, group, visible=True):
     layer = QgsRasterLayer(path, name, "gdal")
     if not layer.isValid():
         return None
-    layer.setCustomProperty(ROLE_KEY, role)
-    QgsProject.instance().addMapLayer(layer, False)
-    node = group.insertLayer(0, layer)
-    node.setItemVisibilityChecked(visible)
-    return layer
+    return place_layer(layer, role, visible)
 
 
 def prepare_rgb_source(result):
@@ -329,20 +382,8 @@ def plot_layer():
 
 
 def raise_plot_layer():
-    """Keep the plot outlines above the image and masks in the Layers panel."""
-    layer = plot_layer()
-    if layer is None:
-        return
-    root = QgsProject.instance().layerTreeRoot()
-    node = root.findLayer(layer.id())
-    if node is None:
-        return
-    parent = node.parent()
-    if parent is None or parent.children() and parent.children()[0] is node:
-        return
-    clone = node.clone()
-    parent.insertChildNode(0, clone)
-    parent.removeChildNode(node)
+    """Keep the plot outlines above the image and masks (see TOP_ORDER)."""
+    arrange_layers()
 
 
 def load_plot_layer(uri, name, id_field="", show_labels=True):
@@ -352,14 +393,11 @@ def load_plot_layer(uri, name, id_field="", show_labels=True):
     layer = QgsVectorLayer(uri, "{} ({})".format(PLOT_LAYER_NAME, name), "ogr")
     if not layer.isValid():
         return None
-    layer.setCustomProperty(ROLE_KEY, "plots")
     symbol = QgsFillSymbol.createSimple({"style": "no", "outline_color": "255,221,0,255",
                                          "outline_width": "0.6", "outline_width_unit": "MM"})
     layer.setRenderer(QgsSingleSymbolRenderer(symbol))
     set_plot_labels(layer, id_field, show_labels)
-    QgsProject.instance().addMapLayer(layer, False)
-    _project_group().insertLayer(0, layer)
-    return layer
+    return place_layer(layer, "plots")
 
 
 def set_plot_labels(layer, id_field="", show=True):
@@ -424,18 +462,17 @@ def replace_preview_layer(path, layers):
 
 
 def _raise_role(role):
-    for layer in QgsProject.instance().mapLayers().values():
-        if layer.customProperty(ROLE_KEY, "") == role:
-            root = QgsProject.instance().layerTreeRoot(); node = root.findLayer(layer.id())
-            if node is not None and node.parent() is not None:
-                parent = node.parent(); clone = node.clone(); parent.insertChildNode(0, clone); parent.removeChildNode(node)
+    """Kept for the callers: PPE's layers are put in order by arrange_layers."""
+    arrange_layers()
 
 
-PALE_LAYER_NAME = "PPE · Pale plant (tassels, flowers…)"
+PALE_LAYER_NAME = "PPE · What PPE found"
+FINDING_COLOURS = ((1, (255, 176, 0), "Plant parts that are not green"), (2, (90, 205, 255), "Leaf edges over soil"),
+                   (3, (40, 80, 230), "Shaded leaves"), (4, (240, 50, 90), "Unclear"))
 
 
 def show_pale_plant(path, visible=True):
-    """Add (or remove) the pale-plant layer: amber where PPE found pale plant parts, clear elsewhere.
+    """Add (or remove) the 'What PPE found' layer: one colour per kind, clear elsewhere.
     Information only; it is not part of the mask."""
     remove_role("pale")
     if not visible:
@@ -445,12 +482,11 @@ def show_pale_plant(path, visible=True):
         return None
     _force_nearest(layer)
     ramp = QgsColorRampShader()
-    ramp.setColorRampType(QgsColorRampShader.Discrete)
-    ramp.setColorRampItemList([
-        QgsColorRampShader.ColorRampItem(0.999999, QColor(0, 0, 0, 0), "Not pale plant"),
-        QgsColorRampShader.ColorRampItem(1.000001, QColor(255, 176, 0, 245), "Pale plant part (tassel, flower, head…)"),
-        QgsColorRampShader.ColorRampItem(255.0, QColor(0, 0, 0, 0), "No data"),
-    ])
+    ramp.setColorRampType(QgsColorRampShader.Exact)
+    items = [QgsColorRampShader.ColorRampItem(0, QColor(0, 0, 0, 0), "Nothing to point out")]
+    items += [QgsColorRampShader.ColorRampItem(code, QColor(*rgb, 245), name) for code, rgb, name in FINDING_COLOURS]
+    items.append(QgsColorRampShader.ColorRampItem(255, QColor(0, 0, 0, 0), "No data"))
+    ramp.setColorRampItemList(items)
     shader = QgsRasterShader(); shader.setRasterShaderFunction(ramp)
     renderer = QgsSingleBandPseudoColorRenderer(layer.dataProvider(), 1, shader)
     layer.setRenderer(renderer); layer.triggerRepaint()

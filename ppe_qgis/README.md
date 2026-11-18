@@ -53,7 +53,9 @@ As soon as an image is chosen it is added to the map, before anything is analyse
 
 **True colour keeps the real colour balance.** Red, green and blue share one stretch, from zero reflectance to the 99.5th percentile of the three bands together, so soil looks brown or orange and leaves a natural green. (Stretching each band on its own, as PPE did before 3.9.0, made soil grey-white and leaves cyan-green, and made pale tassels look bright green.) The stretch is measured on a 10 × 10 grid of small windows when the image is chosen, so it appears within a second or two, and on the full fitting sample at Run, which writes the same look into `ppe_rgb_display.tif`. False-colour and single-band pictures keep a stretch per band.
 
-Run then adds the plant vote on top of the same picture (the live preview), and Finalize adds the applied plant mask. PPE adds nothing else to the Layers panel: the rasters showing which pixels each guard removed (shadows, algae, bright soil) stay in the run folder (`ppe_YYYYMMDD_HHMMSS` inside the working folder set under Folders) for anyone who wants to inspect them.
+Run then adds the plant vote on top of the same picture (the live preview), and Finalize adds the applied plant mask.
+
+**In the Layers panel** the results are layers of their own; only the working layers sit in the *Plant Pixel Extractor* group. From top to bottom: *PPE · Plots*, *PPE · What PPE found* (when shown), *PPE · Applied plant mask*, the *Plant Pixel Extractor* group (*PPE · Crop areas*, *PPE · Live threshold preview*), and the image. Your own layers keep their places. PPE adds nothing else to the Layers panel: the rasters showing which pixels each guard removed (shadows, algae, bright soil) stay in the run folder (`ppe_YYYYMMDD_HHMMSS` inside the working folder set under Folders) for anyone who wants to inspect them.
 
 On tab **5 Plots**, the chosen plot file is added as **PPE · Plots**: yellow outlines with each plot's ID, kept above the image. Untick *Show plot IDs on the map* to hide the labels, untick the layer in the Layers panel to hide the plots, or restyle it there like any QGIS layer.
 
@@ -68,15 +70,24 @@ Different crops can need different thresholds; on a corn field at tasselling, fo
 
 Only the threshold differs between areas; the vote is the same as without crop areas, so a crop slider at the same value as the main slider gives exactly the usual mask. Where outlines overlap, the crop listed first wins. Every crop slider starts at the suggested threshold of the whole image: a suggestion per crop area was tested on Kritis and was not reliable on closed canopy (it gave 0.95 for soybean, which would drop shaded leaves). Preparing the areas takes a few seconds (7 s on a 9371 × 10056 field) and moving a slider is instant.
 
-## Pale plant parts: tassels, flowers, heads
+## What PPE found: four kinds of pixel, each can be left out and put back
 
-Some plant parts are not leaf-green: corn tassels, flowers, seed heads, pods, yellowing leaves. They are plant (they reflect plant-level near-infrared light, far more than soil), but they get fewer plant votes than green leaves, so they drop out of the mask as the slider goes up. PPE finds them in every run and tells you; it never changes the mask because of them.
+Every run sorts out four kinds of pixel worth pointing out. Nothing is guessed from the crop: each is decided from the image's own references (its typical green leaf and its bare soil in sun) and from where the pixel sits.
 
-- **How they are found** (from the image alone, no crop list): a pixel counts when it reflects more near-infrared light than this image's bare soil does (1.4 times) and at least half as much as its green leaves, has a plant-level NDVI (0.50–0.82) but not a green leaf's colour (green less than 1.5 times red), PPE votes it at least partly plant, and no soil lies within 15 cm. That last rule matters: at drone resolution a pixel that is about 70 % leaf and 30 % soil looks just like a tassel, but it sits beside soil, while tassels and flowers sit inside the canopy. Needs NIR, red and green bands.
-- **What you see.** From 0.2 % of the plant (0.5 % of a crop area) on, a small note says that a few pale plant parts were seen and what they probably are, so you know nothing was missed; there is nothing to change. Both start closed, showing only their header (for example *✿ Pale plant parts: 2.0 % of the plant*); click the header to open or close the details. When at least 1.5 % of the plant (or 2 % of one crop area) is pale, a highlighted card on the Review tab says how much there is and what it probably is. The guess uses the crop names you give under *Crops in this image* and the growth stage under *About this field*: corn at flowering → tassels (and silks), peanut → yellow flowers, wheat → heads, soybean late → yellowing leaves and pods, and so on; without them it lists the usual candidates. With crop areas drawn it gives each crop's share. **Show them on the map** adds *PPE · Pale plant (tassels, flowers…)* in amber.
-- **Outputs.** `pale_plant.tif` in the run folder (1 pale plant, 0 not, 255 no data), `pale_plant_pct` per plot in `ppe_plot_canopy.csv` (percent of the plot area, whatever the threshold), and the image's share in `ppe_run_record.json`.
-- **Tested.** Kritis corn at tasselling: 6.6 % of the dense corn (plots 4.9–7.5 %), soybean 0.0 %, bare soil 0; Tifton 0.0 %; IH 1.1 % (no card).
-- **Teaching PPE new crops.** The wording lives in `plant_parts.py`: add a crop's names and what its pale parts are at each stage.
+| Kind | How PPE tells | What it means |
+|---|---|---|
+| ✿ Plant parts that are not green | as much near-infrared light as plant, a plant-level NDVI but not a leaf's green, inside closed canopy (90 % plant within 0.5 m, no soil within 15 cm) | tassels, flowers, heads, pods, yellowing leaves (named from the crop and stage you give) |
+| ◌ Leaf edges over soil | the same colour, but beside soil or in open canopy | a little soil in the pixel makes a leaf edge look pale (what an earlier pale-plant note mistook for flowers in young corn) |
+| ● Shaded leaves | less than half as bright as a typical leaf, but more near-infrared light than bare soil in full sun can reflect | leaves under the top of the canopy: plant |
+| ? Unclear | as dark, but no more near-infrared light than soil in sun | could be a leaf in deep shade or soil in shade |
+
+On tab **3 Review** a closed card, *What PPE found: n things to look at*, opens to one short note per kind present (from 0.2 % of the plant). Each has **Leave out of the mask**: ticked, those pixels are left out (the canopy readout follows; if the mask is already finalized it is written again at once and you stay on the Review tab); unticked, or **Put all back**, they return. The mask is always rebuilt from the vote, so leaving out and putting back loses nothing. **Show them on the map** adds *PPE · What PPE found* with one colour per kind.
+
+- The plot export gives each kind's share of every plot (`plant_parts_pct`, `leaf_edges_pct`, `shaded_leaves_pct`, `unclear_pct`, percent of the plot whatever the threshold) and `left_out_of_mask`; the run record keeps the shares and what was left out.
+- Early in the season (*Early / vegetative* under *About this field*) pale spots are counted as leaf edges.
+- Nothing is judged when leaves reflect less than 1.3 times the near-infrared light of sunlit soil (an uncalibrated band), or without red and NIR bands; shaded/unclear also need RGB and some bare soil.
+- Tested (percent of the plant at 0.45): Kritis plant parts 1.6, leaf edges 1.8, shaded leaves 3.3, unclear 1.7 (dense corn plots 4–5 % plant parts, soybean plots ~0); IH corn at V6 plant parts 0.07, leaf edges 8.1, shaded 0.2, unclear 0.01; Tifton not judged; Midville not judged (no blue band). The vote is the same as 3.9.0 bit for bit on all four fields.
+- Wording for each crop and stage lives in `plant_parts.py`.
 
 ## About this field (optional) and the run record
 

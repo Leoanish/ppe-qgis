@@ -3,7 +3,7 @@
 import os
 from statistics import median
 
-from qgis.PyQt.QtCore import QSettings, QStandardPaths, Qt, QTimer, pyqtSignal
+from qgis.PyQt.QtCore import QEvent, QObject, QSettings, QStandardPaths, Qt, QTimer, pyqtSignal
 from qgis.PyQt.QtWidgets import (
     QAbstractSpinBox,
     QCheckBox,
@@ -39,10 +39,31 @@ from osgeo import gdal
 from .curve_widget import ThresholdCurveDialog
 from .band_dialog import BandFilesDialog
 from .plant_parts import likely_parts
+from .native_engine import finding_shares
 from .crop_tools import PolygonDrawTool, show_crop_areas, to_crs
 from .layer_utils import canopy_at, load_plot_layer, plot_layer, remove_role, set_plot_labels
 from .native_engine import (BAND_LABELS, PLOT_FILE_FILTER, dataset_wavelengths, describe_image, display_channels,
                             guess_plot_id_field, open_plot_file, plots_over_image, scan_band_folder)
+
+
+class _TextHeightKeeper(QObject):
+    """Event filter: on resize (and when asked) set a word-wrapped label's minimum height to the
+    height its text needs at its width."""
+    def eventFilter(self, obj, event):
+        if event.type() in (QEvent.Resize, QEvent.Show):
+            self.fit(obj)
+        return False
+
+    @staticmethod
+    def fit(label):
+        width = label.width() if label.width() > 20 else max(120, label.sizeHint().width())
+        # measured from the text alone (heightForWidth would otherwise include the minimum set before)
+        margins = label.contentsMargins()
+        inner = max(1, width - margins.left() - margins.right())
+        rect = label.fontMetrics().boundingRect(0, 0, inner, 100000, int(Qt.TextWordWrap), label.text())
+        needed = rect.height() + margins.top() + margins.bottom() + 2
+        if label.minimumHeight() != needed:
+            label.setMinimumHeight(needed)
 
 
 class HSIWavelengthDialog(QDialog):
@@ -195,6 +216,15 @@ class PPEDockWidget(QDockWidget):
         form.setVerticalSpacing(6)
         return form
 
+    def _keep_text_height(self, label):
+        """A word-wrapped label in a form layout keeps the height Qt first gave it: when its text or the
+        panel width changes it can end up shorter than one line (the clipped green box after an image
+        was removed). This keeps its minimum height at what the text needs at its current width."""
+        if not hasattr(self, "_height_keeper"):
+            self._height_keeper = _TextHeightKeeper(self)
+        label.installEventFilter(self._height_keeper)
+        self._height_keeper.fit(label)
+
     def _note(self, label, kind="note"):
         """Put a message label in a box that grows with its text. (Padding set on a word-wrapped
         QLabel itself makes Qt miscount its height, which cut off the first and last lines.)"""
@@ -206,6 +236,7 @@ class PPEDockWidget(QDockWidget):
         label.setWordWrap(True)
         label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         box.addWidget(label)
+        self._keep_text_height(label)
         return frame
 
     @staticmethod
@@ -794,7 +825,7 @@ class PPEDockWidget(QDockWidget):
         if found.get("bands") and kind in ("ms", "limited"):
             auto_text += " · {} bands".format(len(found["bands"]))
         self.ortho_type.setItemText(0, auto_text)
-        self.ortho_type.setToolTip(auto_text if not found.get("bands") else auto_text + ": " + self._band_list(found["bands"]))
+        self.ortho_type.setToolTip("" if not found.get("bands") else "Bands found: " + self._band_list(found["bands"]))
         unnamed3 = kind == "unnamed3" or (chosen == "rgb" and found.get("count") == 3 and not found.get("named"))
         self.rgb_box.setVisible(unnamed3)
         self.hsi_box.setVisible(chosen == "hsi" or kind == "hsi")
@@ -827,6 +858,7 @@ class PPEDockWidget(QDockWidget):
         if chosen not in ("auto", None) and kind in ("rgb", "ms", "hsi") and chosen != kind:
             text += "\nYou chose {}; band names in the file still take precedence.".format(self.KIND_NAMES[chosen])
         self.imagery_detection.setText(text)
+        self._height_keeper.fit(self.imagery_detection)
 
     def _detect_config(self):
         return {"source_mode": self.source_mode.currentData(), "stacked_path": self.stacked_path.text().strip(),
@@ -1219,6 +1251,9 @@ class PPEDockWidget(QDockWidget):
                 "suggestion": self.result.get("suggestion") or {},
                 "chosen_layers": self.result.get("chosen_layers") or [],
                 "pale_plant_pct": self.result.get("pale_plant_pct"),
+                "findings_path": self.result.get("findings_path", ""),
+                "clip_codes": self.clip_codes(),
+                "findings_shares": {self.FINDING_TEXT[k][1]: round(v, 3) for k, v in self.finding_shares_now().items()},
                 "pale_path": self.result.get("pale_plant_path", ""),
             })
             if self.zone_info:
@@ -1231,7 +1266,8 @@ class PPEDockWidget(QDockWidget):
                            "zone_path": self.result.get("zone_path", "") if self.result.get("crops") else "",
                            "zone_names": [c["crop"] for c in (self.result.get("crops") or [])],
                            "zone_thresholds": self.result.get("zone_thresholds") or [],
-                           "pale_path": self.result.get("pale_plant_path", "")})
+                           "pale_path": self.result.get("pale_plant_path", ""),
+                           "left_out": list((self.result.get("left_out") or {}).keys())})
         return config
 
     def validate_config(self, config):
@@ -1317,9 +1353,14 @@ class PPEDockWidget(QDockWidget):
             self.stage_tip.setVisible(False)
 
     # ---- pale plant parts (tassels, flowers, heads...): information only (Review tab) ----------
-    PALE_SHOW_IMAGE = 1.5      # the full card when this percent of the plant is pale...
-    PALE_SHOW_CROP = 2.0       # ...or this percent of one crop area
-    PALE_NOTE = 0.2            # below the card, a short calm note from this percent on (0.5 % for a crop)
+    # ---- What PPE found (4.1): simple notes, each can be left out of the mask and put back -------
+    FINDING_SHOW = 0.2         # a category is listed from this percent of the plant on
+    FINDING_TEXT = {
+        1: ("✿", "Plant parts that are not green", "Probably {parts}. They are plant; they drop out if you raise the slider."),
+        2: ("◌", "Leaf edges over soil", "Edges of leaves where a little soil shows through, so they look paler. They are plant."),
+        3: ("●", "Shaded leaves", "Darker leaves under the top of the canopy. They are plant: they reflect more near-infrared light than bare soil can."),
+        4: ("?", "Unclear", "Too dark to tell soil from leaf. You can leave them out of the mask."),
+    }
 
     def _pale_card(self):
         frame = QFrame(); frame.setObjectName("paleCard")
@@ -1331,14 +1372,29 @@ class PPEDockWidget(QDockWidget):
         self.pale_title.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.pale_title.setToolTip("Click to open or close the details")
         box.addWidget(self.pale_title)
-        self.pale_body = QWidget(); body = QVBoxLayout(self.pale_body); body.setContentsMargins(0, 2, 0, 2); body.setSpacing(6)
-        self.pale_text = QLabel(""); self.pale_text.setObjectName("paleText"); self.pale_text.setWordWrap(True)
-        self.pale_text.setTextFormat(Qt.RichText); self.pale_text.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        body.addWidget(self.pale_text)
+        self.pale_body = QWidget(); body = QVBoxLayout(self.pale_body); body.setContentsMargins(0, 2, 0, 2); body.setSpacing(8)
+        intro = QLabel("Information only: nothing here changes the mask unless you tick <b>Leave out of the mask</b>. "
+                       "Untick to put them back.")
+        intro.setObjectName("paleText"); intro.setWordWrap(True); intro.setTextFormat(Qt.RichText); body.addWidget(intro)
+        self.finding_rows = {}
+        for code in (1, 2, 3, 4):
+            holder = QWidget(); line = QVBoxLayout(holder); line.setContentsMargins(0, 0, 0, 0); line.setSpacing(2)
+            title = QLabel(""); title.setObjectName("findingTitle"); title.setWordWrap(True)
+            note = QLabel(""); note.setObjectName("paleText"); note.setWordWrap(True)
+            clip = QCheckBox("Leave out of the mask")
+            clip.toggled.connect(lambda on, code=code: self._clip_toggled(code, on))
+            line.addWidget(title); line.addWidget(note); line.addWidget(clip)
+            body.addWidget(holder); holder.setVisible(False)
+            self.finding_rows[code] = {"holder": holder, "title": title, "note": note, "clip": clip}
+        self.clip_status = QLabel(""); self.clip_status.setObjectName("paleText"); self.clip_status.setWordWrap(True); self.clip_status.setVisible(False)
+        body.addWidget(self.clip_status)
+        buttons = QHBoxLayout()
         self.pale_button = QPushButton("Show them on the map"); self.pale_button.setCheckable(True)
         self.pale_button.setProperty("secondary", True)
         self.pale_button.toggled.connect(self._pale_button_toggled)
-        body.addWidget(self.pale_button)
+        self.put_back_button = QPushButton("Put all back"); self.put_back_button.setProperty("secondary", True); self.put_back_button.setVisible(False)
+        self.put_back_button.clicked.connect(self._put_all_back)
+        buttons.addWidget(self.pale_button); buttons.addWidget(self.put_back_button); body.addLayout(buttons)
         box.addWidget(self.pale_body); self.pale_body.setVisible(False)
         self.pale_title.toggled.connect(self._pale_opened)
         frame.setVisible(False); self.pale_frame = frame
@@ -1361,74 +1417,81 @@ class PPEDockWidget(QDockWidget):
         self.pale_layer_toggled.emit(bool(on))
 
     def pale_layer_removed(self):
-        """The pale-plant layer was deleted in the Layers panel (or by a new run)."""
+        """The findings layer was deleted in the Layers panel (or by a new run)."""
         self.pale_button.blockSignals(True); self.pale_button.setChecked(False); self.pale_button.blockSignals(False)
         self.pale_button.setText("Show them on the map")
 
+    def _early_stage(self):
+        return self.field_stage.currentIndex() > 0 and "Early" in self.field_stage.currentText()
+
+    def finding_shares_now(self):
+        """Percent of the plant in each finding at the current threshold ({} without findings). Early in
+        the season nothing pale is a flower or tassel, so plant parts count as leaf edges."""
+        hist = (self.result or {}).get("findings_hist")
+        if not hist:
+            return {}
+        shares = finding_shares(hist, self.threshold())
+        if self._early_stage():
+            shares[2] += shares[1]; shares[1] = 0.0
+        return shares
+
+    def clip_codes(self):
+        """Finding codes left out of the mask (leaf edges include plant parts early in the season)."""
+        codes = [code for code, row in self.finding_rows.items() if row["clip"].isChecked()]
+        if 2 in codes and self._early_stage(): codes.append(1)
+        return sorted(set(codes))
+
+    def _clip_toggled(self, code, on):
+        self._update_clip_status()
+        self._threshold_changed(self.threshold_slider.value())
+        if self.result.get("mask_path") and not getattr(self, "_restoring_clips", False):
+            # The mask is already finalized: write it again at once, so ticking leaves pixels out and
+            # unticking puts them back. Nothing is lost either way: the mask is rebuilt from the vote.
+            if self._busy:
+                self.clip_status.setText(self.clip_status.text() + " (PPE is busy: press Finalize mask when it is done.)")
+            else:
+                self._auto_apply = True
+                self._emit_apply()
+
+    def _put_all_back(self):
+        for row in self.finding_rows.values():
+            row["clip"].blockSignals(True); row["clip"].setChecked(False); row["clip"].blockSignals(False)
+        self._clip_toggled(0, False)
+
+    def _update_clip_status(self):
+        names = [self.FINDING_TEXT[c][1].lower() for c in (1, 2, 3, 4) if self.finding_rows[c]["clip"].isChecked()]
+        if names:
+            shares = self.finding_shares_now(); left = sum(shares.get(c, 0.0) for c in self.clip_codes())
+            self.clip_status.setText("Left out of the mask: {} ({:.1f} % of the plant at {:.2f}). Untick to put them back.".format(
+                ", ".join(names), left, self.threshold()))
+        self.clip_status.setVisible(bool(names)); self.put_back_button.setVisible(bool(names))
+
     def _update_pale_card(self):
-        """Tell the user, in plain words, that part of the plant is pale and what it probably is
-        (from the crop names and the growth stage when given). The mask is not changed."""
-        result = self.result or {}
-        pct = result.get("pale_plant_pct"); path = result.get("pale_plant_path")
-        if not path or pct is None:
+        """The 'What PPE found' card: one short note per kind of pixel worth pointing out."""
+        shares = self.finding_shares_now()
+        if not shares:
             self.pale_frame.setVisible(False); return
         stage = self.field_stage.currentText() if self.field_stage.currentIndex() > 0 else ""
-        zone_pct = (self.zone_info or {}).get("zone_pale_pct") or []
-        rows = (self.zone_info or {}).get("rows") or []
         crops = [row["name"].text().strip() for row in self.crop_rows if row["name"].text().strip()]
-        crop_hit = any(p is not None and p >= self.PALE_SHOW_CROP for p in zone_pct[1:])
-        some = pct >= self.PALE_NOTE or any(p is not None and p >= 0.5 for p in zone_pct[1:])
-        if not some:
+        parts = likely_parts(crops[0] if len(crops) == 1 else None, stage)[0]
+        shown = []
+        for code, row in self.finding_rows.items():
+            share = shares.get(code, 0.0)
+            visible = share >= self.FINDING_SHOW or row["clip"].isChecked()
+            row["holder"].setVisible(visible)
+            if visible:
+                mark, name, note = self.FINDING_TEXT[code]
+                row["title"].setText("{}  {} — {:.1f} % of the plant".format(mark, name, share))
+                row["note"].setText(note.format(parts=parts))
+                shown.append(name)
+        if not shown:
             self.pale_frame.setVisible(False)
             if self.pale_button.isChecked(): self.pale_button.setChecked(False)
             return
-        if pct < self.PALE_SHOW_IMAGE and not crop_hit:
-            # A little: just an indication, so nobody wonders whether plant was missed.
-            parts, _tip, _known = likely_parts(crops[0] if len(crops) == 1 else None, stage)
-            self._set_pale_style(False)
-            self.pale_title.setText("✿  A few pale plant parts ({:.1f} % of the plant)".format(pct))
-            self.pale_text.setText("Bright spots inside the canopy that are plant but not leaf-green, probably {}. "
-                                   "A small amount, nothing to change; they are shown here so you know they were "
-                                   "seen.".format(parts))
-            self.pale_frame.setVisible(True)
-            return
         self._set_pale_style(True)
-        self.pale_title.setText("✿  Pale plant parts: {:.1f} % of the plant".format(pct))
-        at_stage = " at {}".format(stage.split(" / ")[0].lower()) if stage else ""
-        lines = ["About <b>{:.1f} %</b> of the plant in this image is <b>pale</b>: inside the canopy, reflecting "
-                 "plant-level near-infrared light, but not leaf-green.".format(pct)]
-        tips = []
-        if zone_pct and len(zone_pct) == len(rows) + 1:
-            items = []
-            for k, row in enumerate(rows, start=1):
-                name = row["name"].text().strip() or "crop {}".format(k); share = zone_pct[k]
-                if share is None: continue
-                parts, tip, _known = likely_parts(name, stage)
-                if share >= 0.5:
-                    items.append("<b>{}</b>{}: {:.1f} % of its plant, probably {}".format(name, at_stage, share, parts))
-                    if tip and tip not in tips: tips.append(tip)
-                else:
-                    items.append("<b>{}</b>: hardly any ({:.1f} %)".format(name, share))
-            if zone_pct[0] is not None and zone_pct[0] >= 0.5:
-                items.append("rest of the image: {:.1f} %".format(zone_pct[0]))
-            lines.append("<br>".join("• " + item for item in items))
-        else:
-            name = crops[0] if len(crops) == 1 else None
-            parts, tip, known = likely_parts(name, stage)
-            if name and known:
-                lines.append("In <b>{}</b>{} these are probably <b>{}</b>.".format(name, at_stage, parts))
-            else:
-                lines.append("These are probably <b>{}</b>{}.".format(parts, " ({})".format(stage.lower()) if stage else ""))
-            if tip: tips.append(tip)
-            if not (name and known) or not stage:
-                lines.append("<i>For a better guess, name the crop under <b>Crops in this image</b> and set the growth stage "
-                             "under <b>About this field</b> (tab 1).</i>")
-        lines.append("They are plant, but they get fewer plant votes than green leaves, so they drop out of the mask as "
-                     "the slider goes up ({:.0f} % of them are gone at 0.60). To keep them, keep the threshold (or that crop's "
-                     "slider) low and check on the map. The mask itself is not changed by this note.".format(
-                         float(result.get("pale_plant_lost_pct") or 0.0)))
-        lines.extend(tips)
-        self.pale_text.setText("<br><br>".join(lines))
+        self.pale_title.setText("✿  What PPE found: {} thing{} to look at".format(len(shown), "" if len(shown) == 1 else "s"))
+        self.pale_title.setToolTip("; ".join(shown) + ". Click to open or close.")
+        self._update_clip_status()
         self.pale_frame.setVisible(True)
 
     # ---- crops in this image: one outline and one slider per crop (Review tab) ------------------
@@ -1709,7 +1772,12 @@ class PPEDockWidget(QDockWidget):
                 row["value"].setText("{:.2f}".format(threshold))
         self._update_crop_labels()
         canopy = self._whole_canopy(threshold) if self.zone_info else canopy_at(self.curve_points, threshold)
+        left = sum(self.finding_shares_now().get(c, 0.0) for c in self.clip_codes()) if hasattr(self, "finding_rows") else 0.0
+        if canopy is not None and left:
+            canopy = canopy * (1.0 - left / 100.0)          # the left-out share is a share of the plant
         self.canopy_value.setText("—" if canopy is None else "{:.1f}%".format(canopy))
+        if hasattr(self, "finding_rows") and self.pale_frame.isVisible():
+            self._update_pale_card()
         if self.curve_dialog is not None:
             self.curve_dialog.set_threshold(threshold)
 
@@ -1762,8 +1830,10 @@ class PPEDockWidget(QDockWidget):
             self.log_view.appendPlainText(message)
 
     def set_results(self, result, curve_points):
-        self.pale_layer_removed()                 # a new run removes the old pale-plant layer
+        self.pale_layer_removed()                 # a new run removes the old findings layer
         self._close_pale_card()
+        for row in self.finding_rows.values():
+            row["clip"].blockSignals(True); row["clip"].setChecked(False); row["clip"].blockSignals(False)
         self.result = dict(result)
         self.curve_points = list(curve_points)
         threshold = float(result.get("threshold", 0.5))
@@ -1866,6 +1936,9 @@ class PPEDockWidget(QDockWidget):
                 lines.append("  rest of the image at {:.2f}: {:.1f} % canopy".format(float(result.get("threshold", 0.5)), result["rest_canopy_pct"]))
         else:
             lines = ["Mask finalized at {:.2f} · canopy {:.1f} %".format(float(result.get("threshold", self.threshold())), float(result.get("canopy_pct", 0.0)))]
+        if result.get("left_out"):
+            lines.append("  left out of the mask: {} ({:.2f} % of the image; untick on this tab to put them back)".format(
+                ", ".join(result["left_out"]), float(result.get("left_out_pct") or 0.0)))
         lines.append(result.get("mask_path", ""))
         self.applied_status.setText("\n".join(lines))
         for button in (self.export_bands_button, self.export_vis_button, self.export_all_button, self.aoi_export_button): button.setEnabled(True)
@@ -1961,6 +2034,7 @@ class PPEDockWidget(QDockWidget):
             QFrame#paleCard[compact="true"] { background: #fffaf0; border: 1px solid #f1dcae; border-left: 3px solid #e9c46a; }
             QFrame#paleCard[compact="true"] QToolButton#paleTitle { font-size: 12px; }
             QLabel#paleText { color: #4a3a12; }
+            QLabel#findingTitle { color: #6b4500; font-weight: 700; }
 
             QToolButton#sectionToggle { text-align: left; padding: 7px 10px; border: 1px solid #d9e3dd; border-radius: 8px; background: #ffffff; color: #17473a; font-weight: 700; }
             QToolButton#sectionToggle:hover { border-color: #2b8560; }
