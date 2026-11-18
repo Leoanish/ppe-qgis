@@ -18,7 +18,7 @@ The screenshots below are from a real run in QGIS 3.34 on a five-band multispect
 4. [Tab 2 Run: build the plant vote](#4-tab-2-run-build-the-plant-vote)
 5. [Tab 3 Review: choose the threshold](#5-tab-3-review-choose-the-threshold)
 6. [Several crops in one image (optional)](#6-several-crops-in-one-image-optional)
-7. [What PPE found: tassels, leaf edges, shade](#7-what-ppe-found-tassels-leaf-edges-shade)
+7. [What PPE found: tassels, leaf edges, shade, dry leaves, sparse spots](#7-what-ppe-found-tassels-leaf-edges-shade-dry-leaves-sparse-spots)
 8. [Finalize the mask](#8-finalize-the-mask)
 9. [Tab 4 Export: plant-only rasters](#9-tab-4-export-plant-only-rasters)
 10. [Tab 5 Plots: canopy and statistics per plot](#10-tab-5-plots-canopy-and-statistics-per-plot)
@@ -39,7 +39,7 @@ You need **QGIS 3.28 or newer** (Windows, macOS or Linux).
 ![Install from ZIP](docs/images/00_install_from_zip.png)
 
 1. **Plugins → Manage and Install Plugins**, then **Install from ZIP** on the left.
-2. Choose `ppe_qgis-3.9.0.zip` with the **…** button.
+2. Choose `ppe_qgis-4.0.0.zip` with the **…** button.
 3. **Install Plugin**.
 
 When you update to a newer version, quit QGIS and open it again afterwards, so the new code is loaded.
@@ -128,9 +128,9 @@ Different crops, or the same crop at a different stage, can need different thres
 
 Only the threshold differs between areas; the vote itself is the same, so a crop slider at the main slider's value gives exactly the usual mask.
 
-## 7. What PPE found: tassels, leaf edges, shade
+## 7. What PPE found: tassels, leaf edges, shade, dry leaves, sparse spots
 
-After each run PPE sorts out four kinds of pixel worth a look. Each is judged from the image's own typical green leaf and its bare soil in sun, and from where the pixel sits; nothing is guessed from the crop name.
+After each run PPE sorts out six kinds of pixel worth a look: five you can leave out of the mask, and one you can add to it. Each is judged from the image's own typical green leaf and its bare soil in sun, and from where the pixel sits; nothing is guessed from the crop name. The NDVI levels used for leaves follow the image: they scale with how green the leaves the voters agree on are, so a field whose leaves only reach NDVI 0.66 is judged as fairly as one at 0.88.
 
 | Kind | What it is |
 |---|---|
@@ -138,6 +138,8 @@ After each run PPE sorts out four kinds of pixel worth a look. Each is judged fr
 | ◌ **Leaf edges over soil** | the same colour, but next to soil: a little soil in the pixel makes a leaf edge look pale |
 | ● **Shaded leaves** | darker than half a typical leaf, but more near-infrared light than sunlit soil can reflect: leaves under the top of the canopy |
 | ? **Unclear** | as dark, but no more near-infrared light than soil: could be deep shade on a leaf or on soil |
+| ❧ **Dry or yellowing plant parts** | inside the canopy (no bare soil close by), red about as bright as green and a lower NDVI than green leaves, but more near-infrared light than sunlit soil: leaves drying or turning yellow-brown. Only pixels that can be in a mask are marked |
+| ✚ **Faint plants in sparse spots** | where the canopy is thin (under 25 % plant in 3 m squares at the suggested threshold), the pixels a threshold 0.20 lower would add there: small, pale plants that get fewer votes. These are **added** to the mask when you tick them |
 
 ![What PPE found](docs/images/10_what_ppe_found.jpg)
 
@@ -147,9 +149,11 @@ After each run PPE sorts out four kinds of pixel worth a look. Each is judged fr
    - *Plant parts that are not green (amber)*;
    - *Leaf edges over soil (light blue)*;
    - *Shaded leaves (blue)*;
-   - *Unclear (red)*.
+   - *Unclear (red)*;
+   - *Dry or yellowing plant parts (brown)*;
+   - *Faint plants in sparse spots (light green)*.
 
-   Tick or untick each kind to see it alone or compare it with the others. All four layers read the same file, so this costs no disk space.
+   Tick or untick each kind to see it alone or compare it with the others. All the layers read the same file, so this costs no disk space.
 4. Here, the tassels lie along the corn rows.
 
 **Leave a kind out, or put it back, with one click:**
@@ -162,7 +166,17 @@ After each run PPE sorts out four kinds of pixel worth a look. Each is judged fr
 
 **Finalize mask** writes the mask without them, then reports the pixels it left out (counted in the mask file) and the canopy before and after. Untick, or **Put all back**, to return them, then finalize again. The mask is always rebuilt from the vote, so nothing is lost either way. Each choice is written to its own file (for example `ppe_plant_mask_0.45_without_unclear.tif`), and the plot export and run record say what was left out.
 
-Nothing is judged when leaves and soil hardly differ in near-infrared light, or without red and NIR bands; the log says why.
+Nothing is judged when leaves and soil hardly differ in near-infrared light, or without red and NIR bands; the log says why. Faint plants in sparse spots are marked even then: they only need the vote.
+
+**Add faint plants in sparse spots:**
+
+![Adding faint plants in sparse spots on Tifton](docs/images/12_sparse_spots.jpg)
+
+1. If the field has thin patches, the card lists **Faint plants in sparse spots** and how much more plant they would add.
+2. Tick **Add to the mask**. The live preview shows them at once, and the canopy on the panel goes up; they stay in whatever the slider.
+3. **Finalize mask** writes them into the mask (for example `ppe_plant_mask_0.80_with_sparse.tif`) and reports the pixels added.
+
+On Tifton, compared with a reference mask over 354 cells of 3 m × 3 m, adding them at the suggested threshold raised the pixel match (IoU) from 91.3 to 91.9 %, cut the canopy error per cell from 3.4 to 2.9 points, and raised the agreement of the plant NDVI mean from R² 0.83 to 0.92 and of the median from 0.86 to 0.93. In the thin patches alone the match rose from 78 to 87 %. Bringing back faint pixels along the crop rows was also tried and did less, so rows are not used. It is not available with crop areas: lower that crop's slider instead.
 
 ## 8. Finalize the mask
 
@@ -205,7 +219,7 @@ The export writes two CSV files into the export folder.
 - `crop` and `threshold` used there;
 - `plot_pixels`, `plant_pixels` and `canopy_pct`;
 - `plot_area_m2` and `plant_area_m2`;
-- the What PPE found shares (`plant_parts_pct`, `leaf_edges_pct`, `shaded_leaves_pct`, `unclear_pct`) and `left_out_of_mask`;
+- the What PPE found shares (`plant_parts_pct`, `leaf_edges_pct`, `shaded_leaves_pct`, `unclear_pct`, `dry_parts_pct`, `sparse_faint_pct`), `left_out_of_mask` and `added_to_mask`;
 - the field information from tab 1.
 
 ```

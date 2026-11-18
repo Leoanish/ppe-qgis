@@ -1254,6 +1254,7 @@ class PPEDockWidget(QDockWidget):
                 "pale_plant_pct": self.result.get("pale_plant_pct"),
                 "findings_path": self.result.get("findings_path", ""),
                 "clip_codes": self.clip_codes(),
+                "add_codes": self.add_codes(),
                 "findings_shares": {self.FINDING_TEXT[k][1]: round(v, 3) for k, v in self.finding_shares_now().items()},
                 "pale_path": self.result.get("pale_plant_path", ""),
             })
@@ -1268,7 +1269,8 @@ class PPEDockWidget(QDockWidget):
                            "zone_names": [c["crop"] for c in (self.result.get("crops") or [])],
                            "zone_thresholds": self.result.get("zone_thresholds") or [],
                            "pale_path": self.result.get("pale_plant_path", ""),
-                           "left_out": list((self.result.get("left_out") or {}).keys())})
+                           "left_out": list((self.result.get("left_out") or {}).keys()),
+                           "added": list((self.result.get("added") or {}).keys()) if self.result.get("added_pixels") else []})
         return config
 
     def validate_config(self, config):
@@ -1361,7 +1363,13 @@ class PPEDockWidget(QDockWidget):
         2: ("◌", "Leaf edges over soil", "Edges of leaves where a little soil shows through, so they look paler. They are plant."),
         3: ("●", "Shaded leaves", "Darker leaves under the top of the canopy. They are plant: they reflect more near-infrared light than bare soil can."),
         4: ("?", "Unclear", "Too dark to tell soil from leaf. You can leave them out of the mask."),
+        5: ("❧", "Dry or yellowing plant parts", "Leaves inside the canopy that are drying or turning yellow-brown. They are plant; "
+            "leave them out if you want only green plant."),
+        6: ("✚", "Faint plants in sparse spots", "Where the canopy is thin (under 25 % plant in 3 m squares at the suggested threshold), "
+            "small and pale plants get fewer votes. These are the pixels a threshold 0.20 lower adds there. On a field with a "
+            "reference mask, adding them matched it better in the thin parts and over the whole field."),
     }
+    ADD_CODES = (6,)            # kinds the user can add to the mask (the others can be left out)
 
     def _pale_card(self):
         frame = QFrame(); frame.setObjectName("paleCard")
@@ -1374,16 +1382,16 @@ class PPEDockWidget(QDockWidget):
         self.pale_title.setToolTip("Click to open or close the details")
         box.addWidget(self.pale_title)
         self.pale_body = QWidget(); body = QVBoxLayout(self.pale_body); body.setContentsMargins(0, 2, 0, 2); body.setSpacing(8)
-        intro = QLabel("Nothing here changes the mask until you tick <b>Leave out of the mask</b>. The live preview "
-                       "drops those pixels at once and keeps them out whatever the slider; <b>Finalize mask</b> writes "
-                       "them out of the mask. Untick to put them back.")
+        intro = QLabel("Nothing here changes the mask until you tick <b>Leave out of the mask</b> (or, for faint plants "
+                       "in sparse spots, <b>Add to the mask</b>). The live preview drops (or adds) those pixels at once and "
+                       "keeps them so whatever the slider; <b>Finalize mask</b> writes the mask that way. Untick to undo.")
         intro.setObjectName("paleText"); intro.setWordWrap(True); intro.setTextFormat(Qt.RichText); body.addWidget(intro)
         self.finding_rows = {}
-        for code in (1, 2, 3, 4):
+        for code in sorted(self.FINDING_TEXT):
             holder = QWidget(); line = QVBoxLayout(holder); line.setContentsMargins(0, 0, 0, 0); line.setSpacing(2)
             title = QLabel(""); title.setObjectName("findingTitle"); title.setWordWrap(True); title.setTextFormat(Qt.RichText)
             note = QLabel(""); note.setObjectName("paleText"); note.setWordWrap(True)
-            clip = QCheckBox("Leave out of the mask")
+            clip = QCheckBox("Add to the mask" if code in self.ADD_CODES else "Leave out of the mask")
             clip.toggled.connect(lambda on, code=code: self._clip_toggled(code, on))
             line.addWidget(title); line.addWidget(note); line.addWidget(clip)
             body.addWidget(holder); holder.setVisible(False)
@@ -1433,6 +1441,11 @@ class PPEDockWidget(QDockWidget):
         if not hist:
             return {}
         shares = finding_shares(hist, self.threshold())
+        import numpy as np
+        h = np.asarray(hist); levels = h.shape[1] - 1; start = int(np.ceil(max(0.0, self.threshold() - 0.05) * levels - 1e-9))
+        plant = h[:, start:].sum()
+        for code in self.ADD_CODES:       # what adding would bring in, as a share of the plant now
+            shares[code] = 100.0 * h[code, :start].sum() / plant if code < h.shape[0] and plant else 0.0
         if self._early_stage():
             shares[2] += shares[1]; shares[1] = 0.0
         return shares
@@ -1449,9 +1462,25 @@ class PPEDockWidget(QDockWidget):
 
     def clip_codes(self):
         """Finding codes left out of the mask (leaf edges include plant parts early in the season)."""
-        codes = [code for code, row in self.finding_rows.items() if row["clip"].isChecked()]
+        codes = [code for code, row in self.finding_rows.items() if row["clip"].isChecked() and code not in self.ADD_CODES]
         if 2 in codes and self._early_stage(): codes.append(1)
         return sorted(set(codes))
+
+    def add_codes(self):
+        """Kinds added to the mask (faint plants in sparse spots). Not with crop areas, which set
+        their own thresholds."""
+        if not hasattr(self, "finding_rows") or self.zone_info:
+            return []
+        return [code for code in self.ADD_CODES if code in self.finding_rows and self.finding_rows[code]["clip"].isChecked()]
+
+    def added_pixels_now(self):
+        hist = (self.result or {}).get("findings_hist")
+        if not hist or not self.add_codes():
+            return 0
+        import numpy as np
+        hist = np.asarray(hist); levels = hist.shape[1] - 1
+        start = int(np.ceil(max(0.0, self.threshold() - 0.05) * levels - 1e-9))
+        return int(sum(hist[c, :start].sum() for c in self.add_codes() if c < hist.shape[0]))
 
     def _clip_toggled(self, code, on):
         """A kind was ticked or unticked: the live preview drops (or takes back) those pixels at once,
@@ -1470,13 +1499,17 @@ class PPEDockWidget(QDockWidget):
         """After Finalize: what was left out, counted in the mask file itself."""
         if not hasattr(self, "clip_status"):
             return
-        left = result.get("left_out") or {}
-        if left:
-            parts = ", ".join("{} {:,}".format(name, int(px)) for name, px in left.items())
-            self.clip_status.setText(
-                "✔ Finalized at {:.2f}: {:,} pixels left out of the mask ({}).\nCanopy {:.1f} % → {:.1f} %.".format(
-                    float(result.get("threshold") or self.threshold()), int(result.get("left_out_pixels") or 0), parts,
-                    float(result.get("canopy_before_clip_pct") or 0.0), float(result.get("canopy_pct") or 0.0)))
+        left = result.get("left_out") or {}; added = int(result.get("added_pixels") or 0)
+        if left or added:
+            parts = []
+            if added:
+                parts.append("{:,} pixels added ({})".format(added, ", ".join(result.get("added") or {})))
+            if left:
+                parts.append("{:,} pixels left out ({})".format(int(result.get("left_out_pixels") or 0),
+                                                              ", ".join("{} {:,}".format(name, int(px)) for name, px in left.items())))
+            self.clip_status.setText("✔ Finalized at {:.2f}: {}.\nCanopy {:.1f} % → {:.1f} %.".format(
+                float(result.get("threshold") or self.threshold()), "; ".join(parts),
+                float(result.get("canopy_before_clip_pct") or 0.0), float(result.get("canopy_pct") or 0.0)))
             self.clip_status.setVisible(True)
 
     def left_out_pixels_now(self):
@@ -1488,20 +1521,26 @@ class PPEDockWidget(QDockWidget):
         import numpy as np
         hist = np.asarray(hist); levels = hist.shape[1] - 1
         start = int(np.ceil(max(0.0, self.threshold() - 0.05) * levels - 1e-9))
-        return int(sum(hist[c, start:].sum() for c in self.clip_codes()))
+        return int(sum(hist[c, start:].sum() for c in self.clip_codes() if c < hist.shape[0]))
 
     def _update_clip_status(self):
-        names = [self.FINDING_TEXT[c][1].lower() for c in (1, 2, 3, 4) if self.finding_rows[c]["clip"].isChecked()]
+        names = [self.FINDING_TEXT[c][1].lower() for c in self.clip_codes() if c in self.FINDING_TEXT]
+        added = [self.FINDING_TEXT[c][1].lower() for c in self.add_codes()]
+        lines = []
+        if added:
+            shares = self.finding_shares_now()
+            lines.append("Added to the live preview: {} ({:,} pixels, {:.1f} % more plant at {:.2f}). They stay in whatever the slider; "
+                         "Finalize mask writes them into the mask.".format(", ".join(added), self.added_pixels_now(),
+                                                                           sum(shares.get(c, 0.0) for c in self.add_codes()), self.threshold()))
         if names:
             shares = self.finding_shares_now(); left = sum(shares.get(c, 0.0) for c in self.clip_codes())
             pixels = self.left_out_pixels_now()
             text = "Left out of the live preview: {} ({}{:.1f} % of the plant at {:.2f}). Move the slider: they stay out. " \
                    "Finalize mask writes them out of the mask.".format(
                        ", ".join(names), "{:,} pixels, ".format(pixels) if pixels is not None else "about ", left, self.threshold())
-            self.clip_status.setText(text)
-        else:
-            self.clip_status.setText("")
-        self.clip_status.setVisible(bool(names)); self.put_back_button.setVisible(bool(names))
+            lines.append(text)
+        self.clip_status.setText("\n".join(lines))
+        self.clip_status.setVisible(bool(lines)); self.put_back_button.setVisible(bool(lines))
 
     def _update_pale_card(self):
         """The 'What PPE found' card: one short note per kind of pixel worth pointing out."""
@@ -1520,8 +1559,12 @@ class PPEDockWidget(QDockWidget):
                 mark, name, note = self.FINDING_TEXT[code]
                 rgb = {c: col for c, col, _n in FINDING_COLOURS}[code]
                 # the square has the colour of this kind on the map (Show them on the map)
-                row["title"].setText('<span style="color:#{:02x}{:02x}{:02x}; font-size:15px;">■</span>&nbsp;{}&nbsp;&nbsp;{} — {:.1f} % of the plant'.format(
-                    rgb[0], rgb[1], rgb[2], mark, name, share))
+                row["title"].setText('<span style="color:#{:02x}{:02x}{:02x}; font-size:15px;">■</span>&nbsp;{}&nbsp;&nbsp;{} — {}'.format(
+                    rgb[0], rgb[1], rgb[2], mark, name,
+                    "adds {:.1f} % more plant".format(share) if code in self.ADD_CODES else "{:.1f} % of the plant".format(share)))
+                if code in self.ADD_CODES and self.zone_info:
+                    note = note + " Not available with crop areas: lower that crop's slider instead."
+                row["clip"].setEnabled(not (code in self.ADD_CODES and self.zone_info))
                 row["note"].setText(note.format(parts=parts))
                 shown.append(name)
         if not shown:
@@ -1812,9 +1855,11 @@ class PPEDockWidget(QDockWidget):
                 row["value"].setText("{:.2f}".format(threshold))
         self._update_crop_labels()
         canopy = self._whole_canopy(threshold) if self.zone_info else canopy_at(self.curve_points, threshold)
-        left = sum(self.finding_shares_now().get(c, 0.0) for c in self.clip_codes()) if hasattr(self, "finding_rows") else 0.0
-        if canopy is not None and left:
-            canopy = canopy * (1.0 - left / 100.0)          # the left-out share is a share of the plant
+        shares_now = self.finding_shares_now() if hasattr(self, "finding_rows") else {}
+        left = sum(shares_now.get(c, 0.0) for c in self.clip_codes()) if hasattr(self, "finding_rows") else 0.0
+        more = sum(shares_now.get(c, 0.0) for c in self.add_codes()) if hasattr(self, "finding_rows") else 0.0
+        if canopy is not None and (left or more):
+            canopy = canopy * (1.0 - left / 100.0 + more / 100.0)   # both shares are shares of the plant
         self.canopy_value.setText("—" if canopy is None else "{:.1f}%".format(canopy))
         if hasattr(self, "finding_rows") and self.pale_frame.isVisible():
             self._update_pale_card()
@@ -1828,16 +1873,17 @@ class PPEDockWidget(QDockWidget):
         if not r.get("mask_path") or not hasattr(self, "export_status") or not hasattr(self, "finding_rows"):
             return
         same = r.get("applied_threshold") is not None and abs(float(r["applied_threshold"]) - self.threshold()) < 1e-6
-        same = same and sorted(r.get("clip_codes") or []) == self.clip_codes()
+        same = same and sorted(r.get("clip_codes") or []) == self.clip_codes() and sorted(r.get("add_codes") or []) == self.add_codes()
         if self.zone_info:
             same = same and [round(t, 2) for t in (r.get("zone_thresholds") or [])[1:]] == [round(t, 2) for t in self.zone_thresholds()[1:]]
         if same:
             self.export_status.setText("Mask finalized. Choose what to export.")
         else:
-            left = r.get("left_out") or {}
-            self.export_status.setText("These exports use the mask finalized at {:.2f}{}. The Review tab shows other settings now: "
+            left = r.get("left_out") or {}; added = r.get("added") or {} if r.get("added_pixels") else {}
+            self.export_status.setText("These exports use the mask finalized at {:.2f}{}{}. The Review tab shows other settings now: "
                                        "press Finalize mask there to export those.".format(
-                                           float(r.get("applied_threshold") or 0), " without " + ", ".join(left) if left else ""))
+                                           float(r.get("applied_threshold") or 0), " without " + ", ".join(left) if left else "",
+                                           " with " + ", ".join(added) if added else ""))
 
     def _show_curve(self):
         if not self.curve_points:
@@ -1981,7 +2027,7 @@ class PPEDockWidget(QDockWidget):
             self.threshold_slider.setValue(round(float(suggestion["threshold"]) * 100))
 
     def set_applied(self, result):
-        for key in ("zone_path", "zone_thresholds", "crops", "rest_canopy_pct", "run_record"):
+        for key in ("zone_path", "zone_thresholds", "crops", "rest_canopy_pct", "run_record", "added", "add_codes", "left_out", "clip_codes"):
             self.result.pop(key, None)
         self.result.update(result)
         self.result["applied_threshold"] = result.get("threshold")
@@ -1997,6 +2043,9 @@ class PPEDockWidget(QDockWidget):
         if result.get("left_out"):
             lines.append("  left out of the mask: {} ({:.2f} % of the image; untick and finalize again to put them back)".format(
                 ", ".join(result["left_out"]), float(result.get("left_out_pct") or 0.0)))
+        if result.get("added_pixels"):
+            lines.append("  added to the mask: {} ({:,} pixels; untick and finalize again to take them out)".format(
+                ", ".join(result.get("added") or {}), int(result["added_pixels"])))
         # a zero-width space after each / and _ lets a long path wrap instead of widening the panel
         lines.append(result.get("mask_path", "").replace("/", "/\u200b").replace("\\", "\\\u200b").replace("_", "_\u200b"))
         self.applied_status.setText("\n".join(lines))

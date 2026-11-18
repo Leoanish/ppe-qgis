@@ -501,16 +501,22 @@ def replace_preview_layer(path, layers):
 
 
 PREVIEW_BASE_KEY = "ppe/preview_base"
-_FINDING_FILE_NAMES = {1: "plant_parts", 2: "leaf_edges", 3: "shaded", 4: "unclear"}
+_FINDING_FILE_NAMES = {1: "plant_parts", 2: "leaf_edges", 3: "shaded", 4: "unclear", 5: "dry", 6: "sparse"}
+_ADD_CODES = (6,)
 
 
-def preview_source(base_path, findings_path, clip_codes):
+def preview_source(base_path, findings_path, clip_codes, add_codes=(), add_vote_from=None):
     """The raster the live preview draws. With finding kinds left out it is a small VRT that
     multiplies the vote (or vote by crop area) by 0 where a left-out kind is and by 1 elsewhere,
     so the preview drops those pixels at every threshold. Nothing is copied; the VRT only points
-    to the two files. Without kinds left out it is the vote itself."""
-    clip = sorted({int(c) for c in (clip_codes or []) if int(c) in _FINDING_FILE_NAMES})
-    if not clip or not base_path or not findings_path or not os.path.isfile(findings_path):
+    to the two files. Without kinds left out it is the vote itself.
+    Added kinds (faint plants in sparse spots) multiply the vote by 1 / add_vote_from, the lowest vote
+    they hold, so they reach 1 and show at every threshold. Not with crop areas: their preview holds
+    vote + 10 x crop number, which a factor would break."""
+    clip = sorted({int(c) for c in (clip_codes or []) if int(c) in _FINDING_FILE_NAMES and int(c) not in _ADD_CODES})
+    zoned = os.path.basename(str(base_path or "")).startswith("ppe_vote_by_crop")
+    add = [] if zoned or not add_vote_from else sorted({int(c) for c in (add_codes or []) if int(c) in _ADD_CODES})
+    if not (clip or add) or not base_path or not findings_path or not os.path.isfile(findings_path):
         return base_path
     ds = gdal.Open(base_path)
     if ds is None:
@@ -519,7 +525,8 @@ def preview_source(base_path, findings_path, clip_codes):
     if f_ds is None or f_ds.RasterXSize != ds.RasterXSize or f_ds.RasterYSize != ds.RasterYSize:
         return base_path
     nodata = ds.GetRasterBand(1).GetNoDataValue()
-    lut = ",".join("{}:{}".format(c, 0 if c in clip else 1) for c in (0, 1, 2, 3, 4, 255))
+    factor = 1.0 / max(0.05, float(add_vote_from or 1.0))
+    lut = ",".join("{}:{}".format(c, 0 if c in clip else (repr(factor) if c in add else 1)) for c in (0,) + tuple(sorted(_FINDING_FILE_NAMES)) + (255,))
     xml = (
         '<VRTDataset rasterXSize="{w}" rasterYSize="{h}">\n'
         '  <SRS>{srs}</SRS>\n  <GeoTransform>{gt}</GeoTransform>\n'
@@ -537,7 +544,8 @@ def preview_source(base_path, findings_path, clip_codes):
             vote=escape(os.path.abspath(base_path)), find=escape(os.path.abspath(findings_path)), lut=lut)
     stem = os.path.splitext(os.path.basename(base_path))[0]
     path = os.path.join(os.path.dirname(os.path.abspath(base_path)),
-                        "{}_preview_without_{}.vrt".format(stem, "_".join(_FINDING_FILE_NAMES[c] for c in clip)))
+                        "{}_preview{}{}.vrt".format(stem, "_without_" + "_".join(_FINDING_FILE_NAMES[c] for c in clip) if clip else "",
+                                                     "_with_" + "_".join(_FINDING_FILE_NAMES[c] for c in add) if add else ""))
     try:
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(xml)
@@ -546,14 +554,14 @@ def preview_source(base_path, findings_path, clip_codes):
     return path
 
 
-def set_preview_source(layer, base_path=None, findings_path="", clip_codes=()):
+def set_preview_source(layer, base_path=None, findings_path="", clip_codes=(), add_codes=(), add_vote_from=None):
     """Point the live-preview layer at the vote, or at the vote without the left-out kinds. The
     layer stays the same layer (same place, same tick box); only what it reads changes."""
     if layer is None or not layer.isValid():
         return layer
     base = base_path or layer.customProperty(PREVIEW_BASE_KEY, "") or layer.source()
     layer.setCustomProperty(PREVIEW_BASE_KEY, base)
-    wanted = preview_source(base, findings_path, clip_codes)
+    wanted = preview_source(base, findings_path, clip_codes, add_codes, add_vote_from)
     if os.path.normpath(layer.source()) != os.path.normpath(wanted):
         layer.setDataSource(wanted, layer.name(), "gdal")
         layer.setCustomProperty(PREVIEW_BASE_KEY, base)
@@ -567,8 +575,9 @@ def _raise_role(role):
 
 PALE_LAYER_NAME = "PPE · What PPE found"
 FINDING_COLOURS = ((1, (255, 176, 0), "Plant parts that are not green"), (2, (90, 205, 255), "Leaf edges over soil"),
-                   (3, (40, 80, 230), "Shaded leaves"), (4, (240, 50, 90), "Unclear"))
-FINDING_COLOUR_NAMES = {1: "amber", 2: "light blue", 3: "blue", 4: "red"}
+                   (3, (40, 80, 230), "Shaded leaves"), (4, (240, 50, 90), "Unclear"),
+                   (5, (150, 90, 40), "Dry or yellowing plant parts"), (6, (150, 230, 60), "Faint plants in sparse spots"))
+FINDING_COLOUR_NAMES = {1: "amber", 2: "light blue", 3: "blue", 4: "red", 5: "brown", 6: "light green"}
 
 
 def _pale_group(create=True):

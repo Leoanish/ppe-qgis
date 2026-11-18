@@ -642,9 +642,11 @@ PALE_NIR_OVER_SOIL = 1.4         # NIR well above this image's bare soil...
 PALE_NIR_OF_LEAF = 0.5           # ...and at least half of this image's green leaves
 
 
-def fit_pale_plant(sample):
+def fit_pale_plant(sample, levels=None):
     """Reference levels for pale plant parts, measured on this image's own soil and leaves.
-    Needs NIR, red and green; returns None when the image has no clear green leaves to compare with."""
+    Needs NIR, red and green; returns None when the image has no clear green leaves to compare with.
+    With `levels` (fit_levels) every NDVI and green/red cut-off follows this image; without, the
+    fixed values tuned on Kritis are used."""
     if not all(k in sample for k in ("nir", "red", "green")):
         return None
     nir, red, green = (np.asarray(sample[k], np.float64) for k in ("nir", "red", "green"))
@@ -653,17 +655,64 @@ def fit_pale_plant(sample):
     if nir.size < 500:
         return None
     ndvi = (nir - red) / (nir + red)
-    leaf = (ndvi >= 0.8) & (green / red >= 2.0)
+    lv = levels or {}
+    leaf = (ndvi >= level_cut(lv, "leaf", 0.8)) & (green / red >= 2.0)
     if leaf.sum() < 200:
         return None
     leaf_nir = float(np.median(nir[leaf]))
-    soil = ndvi < 0.25
+    soil = ndvi < level_cut(lv, "soil", 0.25)
     soil_nir = float(np.median(nir[soil])) if soil.sum() >= 200 else None
     floor = PALE_NIR_OF_LEAF * leaf_nir
     if soil_nir is not None:
         floor = max(floor, PALE_NIR_OVER_SOIL * soil_nir)
     return {"nir_floor": floor, "leaf_nir": leaf_nir, "soil_nir": soil_nir,
-            "ndvi_low": PALE_NDVI[0], "ndvi_high": PALE_NDVI[1], "green_red_max": PALE_GREEN_RED}
+            "ndvi_low": level_cut(lv, "pale_low", PALE_NDVI[0]), "ndvi_high": level_cut(lv, "pale_high", PALE_NDVI[1]),
+            "green_red_max": PALE_GREEN_RED}
+
+
+# Image levels (4.2). The leaf-side NDVI cut-offs of "What PPE found" were fixed numbers tuned on
+# Kritis, whose green leaves sit at NDVI 0.88; Tifton's sit at 0.66, so almost none of its leaves
+# reached the fixed "green leaf" cut-off of 0.8. Each leaf-side cut-off now scales with this image's
+# green-leaf level: the median NDVI of the pixels nearly every voter calls plant (vote 0.9 or more).
+# Soil-side cut-offs (bare soil, dark) stay fixed: bare soil looks alike in every image, and anchoring
+# them to the vote broke IH, where almost no ground is bare (the soil between rows is at NDVI 0.45).
+LEVEL_SURE = 0.9
+REFERENCE_LEAF_NDVI = 0.88       # Kritis, where the fixed cut-offs were tuned
+LEAF_SIDE = ("pale_low", "pale_high", "shaded", "plant", "canopy", "leaf")
+# Colour rules (green/red) stay fixed: the benchmarks gave no reason to move them.
+DRY_MIN_VOTE = 0.10              # only where the vote can reach a mask (the slider starts at 0.15: vote 0.10)
+DRY_GREEN_RED = 1.1              # dry or yellowing parts: red about as bright as green (green leaves 2.0 or more)
+
+
+def fit_levels(ndvi, vote, green_red=None, nir=None, min_pixels=200):
+    """The image's own soil and green-leaf NDVI levels, from the pixels the voters agree on.
+    `ndvi`, `vote` (and `green_red`) are matching 1-D samples. None when either group is too small
+    or the two levels are too close to place cut-offs between them."""
+    ndvi = np.asarray(ndvi, np.float64); vote = np.asarray(vote, np.float64)
+    ok = np.isfinite(ndvi) & np.isfinite(vote)
+    plant = ok & (vote >= LEVEL_SURE); soil = ok & (vote <= 1.0 - LEVEL_SURE)
+    if plant.sum() < min_pixels or soil.sum() < min_pixels:
+        return None
+    leaf, ground = float(np.median(ndvi[plant])), float(np.median(ndvi[soil]))
+    if not (leaf >= 0.45 and leaf - ground >= 0.15):
+        return None
+    out = {"soil_ndvi": ground, "leaf_ndvi": leaf, "plant_pixels": int(plant.sum()), "soil_pixels": int(soil.sum())}
+    if nir is not None:
+        nir = np.asarray(nir, np.float64)
+        out["leaf_nir"] = float(np.nanmedian(nir[plant])); out["soil_nir"] = float(np.nanmedian(nir[soil]))
+    if green_red is not None:
+        gr = np.asarray(green_red, np.float64)[plant]; gr = gr[np.isfinite(gr)]
+        if gr.size >= min_pixels:
+            out["leaf_green_red"] = float(np.median(gr))
+    return out
+
+
+def level_cut(levels, name, fixed):
+    """NDVI cut-off `name` for this image: the fixed value, scaled for leaf-side cut-offs by this
+    image's green-leaf NDVI over Kritis's (by 0.6 to 1.1 at most)."""
+    if not levels or "leaf_ndvi" not in levels or name not in LEAF_SIDE:
+        return fixed
+    return fixed * min(1.1, max(0.6, levels["leaf_ndvi"] / REFERENCE_LEAF_NDVI))
 
 
 PALE_SOIL_NDVI = 0.60            # a pixel this low is bare soil or a leaf-soil mix
@@ -712,12 +761,16 @@ def display_stretch(channel_names, values):
     return out
 
 
-# "What PPE found" (4.1): four kinds of pixel worth pointing out, decided by the image's own
+# "What PPE found" (4.1, 4.2): five kinds of pixel worth pointing out, decided by the image's own
 # references (its green leaves and its sunlit bare soil) and by where the pixel sits. They never change
 # the vote; the user may leave any of them out of the mask, and put them back.
-FINDING_NAMES = {1: "plant parts that are not green", 2: "leaf edges over soil", 3: "shaded leaves", 4: "unclear"}
-FINDING_FILE_NAMES = {1: "plant_parts", 2: "leaf_edges", 3: "shaded", 4: "unclear"}
-FINDING_COLUMNS = {1: "plant_parts_pct", 2: "leaf_edges_pct", 3: "shaded_leaves_pct", 4: "unclear_pct"}
+FINDING_NAMES = {1: "plant parts that are not green", 2: "leaf edges over soil", 3: "shaded leaves", 4: "unclear",
+                 5: "dry or yellowing plant parts", 6: "faint plants in sparse spots"}
+FINDING_FILE_NAMES = {1: "plant_parts", 2: "leaf_edges", 3: "shaded", 4: "unclear", 5: "dry", 6: "sparse"}
+FINDING_COLUMNS = {1: "plant_parts_pct", 2: "leaf_edges_pct", 3: "shaded_leaves_pct", 4: "unclear_pct", 5: "dry_parts_pct",
+                   6: "sparse_faint_pct"}
+ADD_CODES = (6,)                 # kinds that can be added to the mask (the others can be left out)
+FINDING_CODES = tuple(sorted(FINDING_NAMES))
 FINDING_CLEAR_CANOPY = 0.90      # plant parts sit in closed canopy: at least 90 percent plant within 0.5 m
 FINDING_CANOPY_M = 0.5
 FINDING_PLANT_NDVI = 0.6         # below this a neighbour is soil or a leaf-soil mix
@@ -727,7 +780,7 @@ FINDING_DARK_SHARE = 0.5         # dark = less than half as bright as this image
                                  # (a fixed share, not a percentile: a percentile would call some pixels dark in every image)
 
 
-def fit_findings(sample, pixel_m=None):
+def fit_findings(sample, pixel_m=None, levels=None):
     """References for the findings, from the fitting sample (valid pixels only).
     Returns None when the image lacks NIR and red. Each part may be missing:
     `pale` (no clear green leaves or no green band) and `dark_threshold`/`soil_nir` (no RGB or no bare soil)."""
@@ -736,34 +789,49 @@ def fit_findings(sample, pixel_m=None):
     nir = np.asarray(sample["nir"], np.float64); red = np.asarray(sample["red"], np.float64)
     with np.errstate(divide="ignore", invalid="ignore"):
         ndvi = (nir - red) / (nir + red)
-    fit = {"pale": fit_pale_plant(sample), "soil_nir": None, "dark_threshold": None}
+    fit = {"pale": fit_pale_plant(sample, levels), "soil_nir": None, "dark_threshold": None, "levels": levels,
+           "ndvi_soil": level_cut(levels, "soil", 0.25), "ndvi_dark": level_cut(levels, "dark", 0.3),
+           "ndvi_shaded": level_cut(levels, "shaded", 0.5), "ndvi_plant": level_cut(levels, "plant", FINDING_PLANT_NDVI),
+           "ndvi_canopy": level_cut(levels, "canopy", FINDING_CANOPY_NDVI)}
     if all(k in sample for k in ("green", "blue")):
         bright = (red + np.asarray(sample["green"], np.float64) + np.asarray(sample["blue"], np.float64)) / 3.0
-        soil = np.isfinite(ndvi) & (ndvi < 0.25)
+        soil = np.isfinite(ndvi) & (ndvi < fit["ndvi_soil"])
         if soil.sum() >= 200:
             sunlit = soil & (bright >= np.median(bright[soil]))      # the brighter half of bare soil: soil in sun
             fit["soil_nir"] = float(np.median(nir[sunlit]))
-        plantish = np.isfinite(ndvi) & (ndvi >= FINDING_PLANT_NDVI)
+        plantish = np.isfinite(ndvi) & (ndvi >= fit["ndvi_plant"])
         if plantish.sum() >= 200:
             fit["dark_threshold"] = float(FINDING_DARK_SHARE * np.median(bright[plantish]))
     # Without a clear NIR difference between leaves and bare soil (an uncalibrated or rescaled band:
     # Tifton's "NIR" is 0.066 on leaves and 0.055 on soil) none of these checks means anything.
     leaf_nir = (fit["pale"] or {}).get("leaf_nir")
-    soil_ref = fit["soil_nir"] or (fit["pale"] or {}).get("soil_nir")
+    if not leaf_nir and levels and "soil_ndvi" in levels:
+        # no green band (or no clear green leaves): the leaves are the pixels the voters agree are plant
+        leaf_nir = levels.get("leaf_nir")
+    soil_ref = fit["soil_nir"] or (fit["pale"] or {}).get("soil_nir") or (levels or {}).get("soil_nir")
     if not leaf_nir or (soil_ref and leaf_nir < FINDING_MIN_CONTRAST * soil_ref):
         return {"skipped": "leaves reflect {} NIR and sunlit soil {}: too little difference to tell these apart".format(
             "{:.3f}".format(leaf_nir) if leaf_nir else "no clear", "{:.3f}".format(soil_ref) if soil_ref else "unknown")}
+    if not fit["pale"] and fit["dark_threshold"] is None:
+        return {"skipped": "these checks need green and blue bands as well as red and NIR"}
     step = pixel_m or 0.02
     fit["soil_radius_px"] = int(min(20, max(2, round(PALE_CLEAR_OF_SOIL_M / step))))
     fit["canopy_radius_px"] = int(min(60, max(3, round(FINDING_CANOPY_M / step))))
+    # Dry or yellowing plant parts: below the pale band, red about as bright as green, but more NIR
+    # than bare soil in full sun, and inside the canopy (no bare soil close by). Needs RGB and NIR.
+    if fit["pale"] and fit["soil_nir"] is not None:
+        fit["dry"] = {"ndvi_low": fit["ndvi_dark"], "ndvi_high": fit["pale"]["ndvi_low"],
+                      "green_red_max": DRY_GREEN_RED, "nir_min": fit["soil_nir"]}
     return fit
 
 
-def classify_findings(bands, ok, fit, ndvi_halo, offset):
+def classify_findings(bands, ok, fit, ndvi_halo, offset, vote=None):
     """Codes for one block: 0 nothing to point out, 1 plant parts that are not green (tassels,
-    flowers, heads), 2 leaf edges over soil, 3 shaded leaves, 4 unclear (dark, could be soil in shade).
+    flowers, heads), 2 leaf edges over soil, 3 shaded leaves, 4 unclear (dark, could be soil in shade),
+    5 dry or yellowing plant parts inside the canopy.
     `ndvi_halo` is the NDVI of the block plus `offset` rows above and enough rows below for the
-    neighbourhood checks."""
+    neighbourhood checks. `vote` (the block's vote fraction) limits code 5 to pixels that can be in
+    a mask: dry material the voters call soil is ground, not part of the plant."""
     h = next(iter(bands.values())).shape[0]
     code = np.zeros(ok.shape, np.uint8)
     nir, red = bands["nir"], bands["red"]
@@ -772,10 +840,10 @@ def classify_findings(bands, ok, fit, ndvi_halo, offset):
     pale = np.zeros(ok.shape, bool)
     if fit.get("pale") and "green" in bands:
         pale = pale_plant_mask(bands, fit["pale"]) & ok
-        soilish = np.isfinite(ndvi_halo) & (ndvi_halo < FINDING_PLANT_NDVI)
+        soilish = np.isfinite(ndvi_halo) & (ndvi_halo < fit.get("ndvi_plant", FINDING_PLANT_NDVI))
         near_soil = _near(soilish, fit["soil_radius_px"])[offset:offset + h]
         r = fit["canopy_radius_px"]
-        plantish = (np.isfinite(ndvi_halo) & (ndvi_halo >= FINDING_CANOPY_NDVI)).astype(np.float64)
+        plantish = (np.isfinite(ndvi_halo) & (ndvi_halo >= fit.get("ndvi_canopy", FINDING_CANOPY_NDVI))).astype(np.float64)
         m = np.pad(plantish, r, mode="edge"); c = np.pad(m.cumsum(0).cumsum(1), ((1, 0), (1, 0))); k = 2 * r + 1; hh, ww = plantish.shape
         cover = ((c[k:k + hh, k:k + ww] - c[0:hh, k:k + ww] - c[k:k + hh, 0:ww] + c[0:hh, 0:ww]) / float(k * k))[offset:offset + h]
         parts = pale & ~near_soil & (cover >= FINDING_CLEAR_CANOPY)
@@ -783,12 +851,64 @@ def classify_findings(bands, ok, fit, ndvi_halo, offset):
         code[pale & ~parts] = 2
     if fit.get("dark_threshold") is not None and fit.get("soil_nir") is not None and all(b in bands for b in ("green", "blue")):
         bright = (red + bands["green"] + bands["blue"]) / 3.0
-        dark = ok & ~pale & (bright < fit["dark_threshold"]) & np.isfinite(ndvi) & (ndvi >= 0.3)
-        shaded = dark & (nir > fit["soil_nir"]) & (ndvi >= 0.5)        # more NIR than soil in full sun: a leaf
+        dark = ok & ~pale & (bright < fit["dark_threshold"]) & np.isfinite(ndvi) & (ndvi >= fit.get("ndvi_dark", 0.3))
+        shaded = dark & (nir > fit["soil_nir"]) & (ndvi >= fit.get("ndvi_shaded", 0.5))   # more NIR than soil in full sun: a leaf
         code[shaded] = 3
         code[dark & ~shaded] = 4
+        dry_fit = fit.get("dry")
+        if dry_fit:
+            with np.errstate(divide="ignore", invalid="ignore"):
+                green_red = bands["green"] / red
+            dryish = (ok & ~pale & ~dark & np.isfinite(ndvi) & (ndvi >= dry_fit["ndvi_low"]) & (ndvi < dry_fit["ndvi_high"])
+                      & (green_red < dry_fit["green_red_max"]) & (nir > dry_fit["nir_min"]))
+            if vote is not None:
+                dryish &= np.isfinite(vote) & (vote >= DRY_MIN_VOTE)
+            if dryish.any():
+                bare = np.isfinite(ndvi_halo) & (ndvi_halo < fit.get("ndvi_soil", 0.25))
+                near_bare = _near(bare, fit["soil_radius_px"])[offset:offset + h]
+                code[dryish & ~near_bare] = 5     # beside bare soil it is more likely a leaf-soil mix: not flagged
     code[~ok] = 255
     return code
+
+
+# Faint plants in sparse spots (4.0). Where the canopy is thin, plants are small and pale and many of
+# their pixels get fewer votes than the threshold. Tested on Tifton against its reference mask: in 3 m
+# squares where PPE's own canopy at the suggested threshold is under 25 percent, a threshold 0.20 lower
+# raised the match with the reference there from 77.9 to 86.7 (IoU; canopy bias -4.7 to -0.3 points)
+# and on the whole field from 91.5 to 92.2, with the rule chosen on one half of the squares and checked
+# on the other. Bringing back faint pixels along the crop rows instead did less (82.9), so rows are not
+# used. PPE marks these pixels; the user decides whether to add them.
+SPARSE_BLOCK_M = 3.0
+SPARSE_COVER_MAX = 25.0          # percent plant in a 3 m square at the suggested threshold
+SPARSE_DROP = 0.20               # the lower threshold used inside sparse squares
+SPARSE_MIN_VOTE = 0.10           # never below the lowest mask the slider can make
+
+
+def mark_sparse_spots(vote_path, findings_path, threshold, block_px):
+    """Mark code 6 in the findings raster: pixels in sparse squares (canopy under SPARSE_COVER_MAX
+    percent at `threshold`) that a threshold SPARSE_DROP lower would add. Returns a summary dict."""
+    v_ds = safe_gdal_open(vote_path); f_ds = gdal.Open(findings_path, gdal.GA_Update)
+    width, height = v_ds.RasterXSize, v_ds.RasterYSize; b = max(8, int(block_px))
+    cut = max(0.0, threshold - 0.05); low = max(SPARSE_MIN_VOTE, threshold - SPARSE_DROP - 0.05)
+    squares = sparse = marked = valid_all = 0
+    for y in range(0, height, b):
+        h = min(b, height - y)
+        v = v_ds.GetRasterBand(1).ReadAsArray(0, y, width, h); f = f_ds.GetRasterBand(1).ReadAsArray(0, y, width, h)
+        valid = (v != NODATA) & np.isfinite(v) & (v >= 0) & (v <= 1); valid_all += int(valid.sum())
+        nb = (width + b - 1) // b; pad = nb * b - width
+        vv = np.pad(valid, ((0, 0), (0, pad))); pp = np.pad(valid & (v >= cut), ((0, 0), (0, pad)))
+        n = vv.reshape(h, nb, b).sum(axis=(0, 2)); plant = pp.reshape(h, nb, b).sum(axis=(0, 2))
+        full = n >= 0.5 * h * b; thin = full & (100.0 * plant < SPARSE_COVER_MAX * np.maximum(n, 1))
+        squares += int(full.sum()); sparse += int(thin.sum())
+        if thin.any():
+            in_thin = np.repeat(thin, b)[:width][None, :]
+            add = valid & in_thin & (v >= low) & (v < cut)
+            if add.any():
+                f = np.where(add, 6, f).astype(np.uint8); f_ds.GetRasterBand(1).WriteArray(f, 0, y); marked += int(add.sum())
+    f_ds.FlushCache(); f_ds = None
+    return {"threshold": float(threshold), "lower_threshold": float(low + 0.05), "squares_pct": 100.0 * sparse / max(1, squares),
+            "pixels": int(marked), "pixels_pct": 100.0 * marked / max(1, valid_all), "square_m": SPARSE_BLOCK_M,
+            "vote_from": float(low)}
 
 
 def findings_histograms(findings_path, vote_path, levels=1200):
@@ -796,21 +916,23 @@ def findings_histograms(findings_path, vote_path, levels=1200):
     from these the share of the plant in every category follows for any threshold."""
     f_ds = safe_gdal_open(findings_path); v_ds = safe_gdal_open(vote_path)
     width, height = v_ds.RasterXSize, v_ds.RasterYSize
-    hist = np.zeros((5, levels + 1), np.int64)
+    n = max(FINDING_CODES) + 1
+    hist = np.zeros((n, levels + 1), np.int64)
     for y in range(0, height, 512):
         h = min(512, height - y)
         v = v_ds.GetRasterBand(1).ReadAsArray(0, y, width, h); f = f_ds.GetRasterBand(1).ReadAsArray(0, y, width, h)
         valid = (v != NODATA) & np.isfinite(v) & (v >= 0) & (v <= 1) & (f != 255)
-        q = np.rint(v[valid] * levels).astype(np.intp); code = np.clip(f[valid].astype(np.intp), 0, 4)
-        hist += np.bincount(code * (levels + 1) + q, minlength=5 * (levels + 1)).reshape(5, levels + 1)
+        q = np.rint(v[valid] * levels).astype(np.intp); code = np.clip(f[valid].astype(np.intp), 0, n - 1)
+        hist += np.bincount(code * (levels + 1) + q, minlength=n * (levels + 1)).reshape(n, levels + 1)
     return hist.tolist()
 
 
 def finding_shares(hist, threshold, levels=1200):
-    """Percent of the plant (vote >= threshold - 0.05) in each finding code 1-4."""
+    """Percent of the plant (vote >= threshold - 0.05) in each finding code (0 for codes an older
+    run did not have)."""
     hist = np.asarray(hist); start = int(np.ceil(max(0.0, threshold - 0.05) * levels - 1e-9))
     plant = hist[:, start:].sum(axis=1); total = plant.sum()
-    return {k: (100.0 * plant[k] / total if total else 0.0) for k in range(1, 5)}
+    return {k: (100.0 * plant[k] / total if total and k < plant.size else 0.0) for k in FINDING_CODES}
 
 
 def physical_memory_bytes():
@@ -1416,19 +1538,6 @@ class NativePPEEngine:
         if cfg.get("biofilm_guard", True):
             algae_guard = self._fit_algae_guard(sample)
         area_m2 = _pixel_area_m2(self.template)
-        finding_fit = fit_findings(sample, math.sqrt(area_m2) if area_m2 else None)
-        if finding_fit and finding_fit.get("skipped"):
-            self.log_cb("What PPE found: not judged on this image ({}).".format(finding_fit["skipped"])); finding_fit = None
-        pale_fit = (finding_fit or {}).get("pale")
-        if finding_fit:
-            self.log_cb("What PPE found, references: sunlit bare soil NIR {}; dark plant pixels below brightness {}; neighbourhood {} px (soil) and {} px (canopy).".format(
-                "{:.3f}".format(finding_fit["soil_nir"]) if finding_fit["soil_nir"] is not None else "not found",
-                "{:.4f}".format(finding_fit["dark_threshold"]) if finding_fit["dark_threshold"] is not None else "not available",
-                finding_fit["soil_radius_px"], finding_fit["canopy_radius_px"]))
-        if pale_fit:
-            self.log_cb("Pale plant parts (tassels, flowers, heads, yellowing leaves): NIR above {:.3f} (leaves {:.3f}, soil {}), NDVI {:.2f}-{:.2f}, green/red below {:.1f}. Reported only; the mask is not changed.".format(
-                pale_fit["nir_floor"], pale_fit["leaf_nir"], "{:.3f}".format(pale_fit["soil_nir"]) if pale_fit["soil_nir"] is not None else "not found",
-                pale_fit["ndvi_low"], pale_fit["ndvi_high"], pale_fit["green_red_max"]))
         clean = {}
         for name in available:
             if name in NON_VOTING: continue
@@ -1500,6 +1609,42 @@ class NativePPEEngine:
                 name, spreads[name], o, "{:.4g} / {:.4g}".format(*c) if isinstance(c, tuple) else "{:.4g}".format(c), methods[2][1],
                 "{:.4g} / {:.4g}".format(mo[0], mo[1]) if mo else "not used", shift_range[0], shift_range[1]))
 
+        # What PPE found: its cut-offs follow this image's own levels, measured on the sample pixels
+        # the voters agree on (fit_levels).
+        levels = None
+        if all(k in sample for k in ("nir", "red")):
+            total_s = np.zeros(next(iter(clean.values())).shape, np.float32); n_s = 0
+            for name, polarity, methods in models:
+                x = clean[name]
+                for method, param in methods:
+                    vote = (np.where(x > param[1], 1.0, np.where(x > param[0], 0.5, 0.0)) if isinstance(param, tuple) else (x >= param)).astype(np.float32)
+                    total_s += (1.0 - vote) if polarity < 0 else vote; n_s += 1
+            with np.errstate(divide="ignore", invalid="ignore"):
+                s_ndvi = (sample["nir"] - sample["red"]) / (sample["nir"] + sample["red"])
+                s_gr = sample["green"] / sample["red"] if "green" in sample else None
+            levels = fit_levels(s_ndvi, total_s / max(1, n_s), s_gr, sample["nir"])
+        finding_fit = fit_findings(sample, math.sqrt(area_m2) if area_m2 else None, levels)
+        if finding_fit and finding_fit.get("skipped"):
+            self.log_cb("What PPE found: not judged on this image ({}).".format(finding_fit["skipped"])); finding_fit = None
+        pale_fit = (finding_fit or {}).get("pale")
+        if finding_fit:
+            self.log_cb("What PPE found, image levels: {}.".format(
+                "green leaves NDVI {:.2f} (Kritis 0.88), so leaf-side cut-offs x {:.2f}: plant from {:.2f}, canopy from {:.2f}, green leaf from {:.2f}".format(
+                    levels["leaf_ndvi"], level_cut(levels, "leaf", 1.0), finding_fit["ndvi_plant"], finding_fit["ndvi_canopy"], level_cut(levels, "leaf", 0.8))
+                if levels else "not measured (too few pixels the voters agree on), fixed cut-offs used"))
+            self.log_cb("What PPE found, references: sunlit bare soil NIR {}; dark plant pixels below brightness {}; neighbourhood {} px (soil) and {} px (canopy).".format(
+                "{:.3f}".format(finding_fit["soil_nir"]) if finding_fit["soil_nir"] is not None else "not found",
+                "{:.4f}".format(finding_fit["dark_threshold"]) if finding_fit["dark_threshold"] is not None else "not available",
+                finding_fit["soil_radius_px"], finding_fit["canopy_radius_px"]))
+            if finding_fit.get("dry"):
+                d = finding_fit["dry"]
+                self.log_cb("Dry or yellowing plant parts: NDVI {:.2f}-{:.2f}, green/red below {:.2f}, NIR above {:.3f}, no bare soil within {} px. Reported only; the mask is not changed.".format(
+                    d["ndvi_low"], d["ndvi_high"], d["green_red_max"], d["nir_min"], finding_fit["soil_radius_px"]))
+        if pale_fit:
+            self.log_cb("Pale plant parts (tassels, flowers, heads, yellowing leaves): NIR above {:.3f} (leaves {:.3f}, soil {}), NDVI {:.2f}-{:.2f}, green/red below {:.2f}. Reported only; the mask is not changed.".format(
+                pale_fit["nir_floor"], pale_fit["leaf_nir"], "{:.3f}".format(pale_fit["soil_nir"]) if pale_fit["soil_nir"] is not None else "not found",
+                pale_fit["ndvi_low"], pale_fit["ndvi_high"], pale_fit["green_red_max"]))
+
         # Colour guard (camera images with no NIR band): a pixel can only stay plant if it is
         # greener than the soil's own colour. Grey, white and black objects (vehicles, tarps,
         # residue, deep shade) can pass a visible index on brightness alone.
@@ -1526,8 +1671,8 @@ class NativePPEEngine:
         # What PPE found (4.1). A pale pixel is a plant part (tassel, flower, head) only inside closed
         # canopy; beside soil it is a leaf edge with a little soil in the pixel (IH corn at V6). Shaded
         # leaves keep more NIR than bare soil in full sun; dark pixels that do not are unclear.
-        findings_path = os.path.join(run_dir, "ppe_findings.tif") if finding_fit else ""
-        findings_out = self._create_output(findings_path, gdal.GDT_Byte, 255) if finding_fit else None
+        findings_path = os.path.join(run_dir, "ppe_findings.tif")       # always: it also holds the sparse spots (code 6)
+        findings_out = self._create_output(findings_path, gdal.GDT_Byte, 255)
         pale_path = findings_path                      # code 1 = plant parts (the 3.9/4.0 pale-plant layer)
         rejected_count = shadow_rejected_count = biofilm_rejected_count = colour_rejected_count = valid_count = 0
         block_rows = 512
@@ -1566,12 +1711,14 @@ class NativePPEEngine:
                     counts[key] = int((masks[key] & (result >= 0.45)).sum()); result[masks[key]] = 0.0
             nvalid = int(ok.sum())
             findings = None
-            if finding_fit:
+            if not finding_fit:
+                findings = np.where(ok, 0, 255).astype(np.uint8)
+            else:
                 r = max(finding_fit["soil_radius_px"], finding_fit["canopy_radius_px"]); top = max(0, y - r); bottom = min(self.height, y + h + r)
                 nir_h = self._read_band("nir", y=top, h=bottom - top); red_h = self._read_band("red", y=top, h=bottom - top)
                 with np.errstate(divide="ignore", invalid="ignore"):
                     ndvi_h = (nir_h - red_h) / (nir_h + red_h)
-                findings = classify_findings(raw, ok, finding_fit, ndvi_h, y - top)
+                findings = classify_findings(raw, ok, finding_fit, ndvi_h, y - top, result)
             result[~ok] = NODATA
             return y, h, result, ok, masks, counts, nvalid, rgb, findings
 
@@ -1605,8 +1752,6 @@ class NativePPEEngine:
         if shadow_rejection_out is not None: shadow_rejection_out.FlushCache(); shadow_rejection_out = None
         if biofilm_rejection_out is not None: biofilm_rejection_out.FlushCache(); biofilm_rejection_out = None
         if findings_out is not None: findings_out.FlushCache(); findings_out = None
-        findings_hist = findings_histograms(findings_path, vote_path) if finding_fit else None
-        pale_pct, pale_lost_pct = self._log_findings(findings_hist)
         rejected_pct = 100.0*rejected_count/max(1, valid_count) if guard else 0.0
         shadow_rejected_pct = 100.0*shadow_rejected_count/max(1, valid_count) if shadow_guard else 0.0
         biofilm_rejected_pct = 100.0*biofilm_rejected_count/max(1, valid_count) if algae_guard else 0.0
@@ -1634,7 +1779,14 @@ class NativePPEEngine:
         else:
             self.log_cb("No threshold suggestion ({}); starting at 0.50.".format(no_suggestion_reason))
         start_threshold = suggestion["threshold"] if suggestion else 0.5
-        result = dict(imported, vote_path=vote_path, curve_path=curve_path, threshold=start_threshold, suggestion=suggestion or {}, suggestion_note="" if suggestion else no_suggestion_reason, selected_layers=chosen, chosen_layers=chosen, layer_details=layer_details, n_voters=n_masks, n_method_masks=n_masks, canopy_regime="classic", adaptation_mode="adaptive" if adaptive else "global", half_mixture=half_mixture, spread_ranking=[{"layer": name, "group": group, "spread": spread} for spread, name, group in leaders], mixed_class_vote=.5, bright_guard=bool(guard), bright_rejection_path=rejection_path, bright_rejected_pct=rejected_pct, shadow_guard=bool(shadow_guard), shadow_rejection_path=shadow_rejection_path, shadow_rejected_pct=shadow_rejected_pct, biofilm_guard=bool(algae_guard), algae_guard_fit=algae_guard or {}, biofilm_rejection_path=biofilm_rejection_path, biofilm_rejected_pct=biofilm_rejected_pct, colour_guard=bool(colour_guard), colour_rejected_pct=colour_rejected_pct, weak_green_warning=bool(colour_guard and colour_guard["plant_excess"] < WEAK_GREEN), single_class="", one_class_warning=one_class or "", pale_plant_path=pale_path, pale_plant_pct=pale_pct, pale_plant_lost_pct=pale_lost_pct, pale_plant_fit=pale_fit or {}, findings_path=findings_path, findings_hist=findings_hist, findings_fit={k: v for k, v in (finding_fit or {}).items() if k != "pale"}, ppe_version="native-3.9.0", processing_threads=self.thread_count, output_dir=cfg["output_dir"], timings={"total": time.time()-started})
+        sparse_spots = {}
+        if cfg.get("sparse_spots", True) and area_m2:
+            sparse_spots = mark_sparse_spots(vote_path, findings_path, start_threshold, round(SPARSE_BLOCK_M / math.sqrt(area_m2)))
+            self.log_cb("Faint plants in sparse spots: {:.1f}% of the {:.0f} m squares have under {:.0f}% plant at {:.2f}; {:,} pixels there reach {:.2f} ({:.2f}% of the image). They can be added to the mask.".format(
+                sparse_spots["squares_pct"], SPARSE_BLOCK_M, SPARSE_COVER_MAX, start_threshold, sparse_spots["pixels"], sparse_spots["lower_threshold"], sparse_spots["pixels_pct"]))
+        findings_hist = findings_histograms(findings_path, vote_path)
+        pale_pct, pale_lost_pct = self._log_findings(findings_hist if finding_fit else None)
+        result = dict(imported, vote_path=vote_path, curve_path=curve_path, threshold=start_threshold, suggestion=suggestion or {}, suggestion_note="" if suggestion else no_suggestion_reason, selected_layers=chosen, chosen_layers=chosen, layer_details=layer_details, n_voters=n_masks, n_method_masks=n_masks, canopy_regime="classic", adaptation_mode="adaptive" if adaptive else "global", half_mixture=half_mixture, spread_ranking=[{"layer": name, "group": group, "spread": spread} for spread, name, group in leaders], mixed_class_vote=.5, bright_guard=bool(guard), bright_rejection_path=rejection_path, bright_rejected_pct=rejected_pct, shadow_guard=bool(shadow_guard), shadow_rejection_path=shadow_rejection_path, shadow_rejected_pct=shadow_rejected_pct, biofilm_guard=bool(algae_guard), algae_guard_fit=algae_guard or {}, biofilm_rejection_path=biofilm_rejection_path, biofilm_rejected_pct=biofilm_rejected_pct, colour_guard=bool(colour_guard), colour_rejected_pct=colour_rejected_pct, weak_green_warning=bool(colour_guard and colour_guard["plant_excess"] < WEAK_GREEN), single_class="", one_class_warning=one_class or "", pale_plant_path=pale_path, pale_plant_pct=pale_pct, pale_plant_lost_pct=pale_lost_pct, pale_plant_fit=pale_fit or {}, findings_path=findings_path, findings_hist=findings_hist, findings_judged=bool(finding_fit), sparse_spots=sparse_spots, findings_fit={k: v for k, v in (finding_fit or {}).items() if k != "pale"}, ppe_version="native-4.0.0", processing_threads=self.thread_count, output_dir=cfg["output_dir"], timings={"total": time.time()-started})
         with open(os.path.join(run_dir, "run_summary.json"), "w", encoding="utf-8") as handle: json.dump(result, handle, indent=2)
         self.progress(100, "Plant vote raster and threshold curve are ready"); return result
 
@@ -1864,22 +2016,28 @@ class NativePPEEngine:
         if zones is not None and (zones.RasterXSize != self.width or zones.RasterYSize != self.height): zones=None
         if zones is not None: zone_t[0]=threshold
         cut=np.maximum(0, np.array(zone_t if zones is not None else [threshold], dtype=float)-.05)
-        clip=sorted({int(c) for c in (cfg.get("clip_codes") or []) if int(c) in FINDING_NAMES})
+        clip=sorted({int(c) for c in (cfg.get("clip_codes") or []) if int(c) in FINDING_NAMES and int(c) not in ADD_CODES})
+        add=sorted({int(c) for c in (cfg.get("add_codes") or []) if int(c) in ADD_CODES})
         # Each choice of left-out findings gets its own file, so QGIS can never show an older copy of the mask.
         mask_path=os.path.join(out_dir,("ppe_plant_mask_by_crop" if zones is not None else "ppe_plant_mask_{:.2f}".format(threshold))
-                               +("_without_"+"_".join(FINDING_FILE_NAMES[k] for k in clip) if clip else "")+".tif")
+                               +("_without_"+"_".join(FINDING_FILE_NAMES[k] for k in clip) if clip else "")
+                               +("_with_"+"_".join(FINDING_FILE_NAMES[k] for k in add) if add else "")+".tif")
         out=self._create_output(mask_path,gdal.GDT_Byte,255); n=len(cut); count=np.zeros(n,np.int64); valid_count=np.zeros(n,np.int64)
-        findings=safe_gdal_open(cfg["findings_path"]) if clip and cfg.get("findings_path") and os.path.isfile(cfg["findings_path"]) else None
+        findings=safe_gdal_open(cfg["findings_path"]) if (clip or add) and cfg.get("findings_path") and os.path.isfile(cfg["findings_path"]) else None
         if findings is not None and (findings.RasterXSize != self.width or findings.RasterYSize != self.height): findings=None
-        if clip and findings is None: raise ValueError("The findings layer of this run is missing, so nothing can be left out of the mask. Run PPE again.")
-        removed=np.zeros(5,np.int64)
+        if (clip or add) and findings is None: raise ValueError("The findings layer of this run is missing, so nothing can be left out of or added to the mask. Run PPE again.")
+        added=0
+        removed=np.zeros(max(FINDING_CODES)+1,np.int64)
         for y in range(0,self.height,512):
             h=min(512,self.height-y); x=ds.GetRasterBand(1).ReadAsArray(0,y,self.width,h); valid=(x != NODATA)&np.isfinite(x)
             z=zones.GetRasterBand(1).ReadAsArray(0,y,self.width,h).astype(np.intp) if zones is not None else np.zeros(x.shape,np.intp)
             z=np.clip(z,0,n-1); plant=valid&(x >= cut[z])
             if findings is not None:
-                f=findings.GetRasterBand(1).ReadAsArray(0,y,self.width,h); out_of_mask=plant&np.isin(f,clip)
-                removed += np.bincount(f[out_of_mask].astype(np.intp),minlength=5)[:5]; plant &= ~out_of_mask
+                f=findings.GetRasterBand(1).ReadAsArray(0,y,self.width,h)
+                if add:
+                    extra=valid&~plant&np.isin(f,add); added += int(extra.sum()); plant |= extra
+                out_of_mask=plant&np.isin(f,clip)
+                removed += np.bincount(np.clip(f[out_of_mask].astype(np.intp),0,removed.size-1),minlength=removed.size)[:removed.size]; plant &= ~out_of_mask
             m=np.where(valid,plant.astype(np.uint8),255).astype(np.uint8); out.GetRasterBand(1).WriteArray(m,0,y)
             count += np.bincount(z[plant],minlength=n)[:n]; valid_count += np.bincount(z[valid],minlength=n)[:n]
             self.progress(int(100*(y+h)/self.height),"Writing native-resolution plant mask")
@@ -1887,7 +2045,10 @@ class NativePPEEngine:
         result={"mask_path":mask_path,"mask_qgis_path":mask_path,"threshold":threshold,"canopy_pct":100*count.sum()/max(1,valid_count.sum()),
                 "clip_codes":clip,"left_out":{FINDING_NAMES[k]:int(removed[k]) for k in clip},
                 "left_out_pct":100.0*removed.sum()/max(1,valid_count.sum()),
-                "left_out_pixels":int(removed.sum()),"canopy_before_clip_pct":100*(count.sum()+removed.sum())/max(1,valid_count.sum())}
+                "left_out_pixels":int(removed.sum()),"canopy_before_clip_pct":100*(count.sum()+removed.sum()-added)/max(1,valid_count.sum()),
+                "add_codes":add,"added_pixels":added,"added":{FINDING_NAMES[k]:added for k in add}}
+        if add:
+            self.log_cb("Added to the mask: {} ({:,} pixels).".format(", ".join(FINDING_NAMES[k] for k in add), added))
         if clip:
             self.log_cb("Left out of the mask: " + ", ".join("{} ({:,} pixels)".format(FINDING_NAMES[k], int(removed[k])) for k in clip) + ".")
         if zones is not None:
@@ -1906,7 +2067,7 @@ class NativePPEEngine:
         if hist is None:
             return 0.0, 0.0
         shares = finding_shares(hist, 0.30)
-        self.log_cb("What PPE found (percent of the plant at 0.30): " + "; ".join("{} {:.2f}%".format(FINDING_NAMES[k], shares[k]) for k in range(1, 5)) +
+        self.log_cb("What PPE found (percent of the plant at 0.30): " + "; ".join("{} {:.2f}%".format(FINDING_NAMES[k], shares[k]) for k in FINDING_CODES if k not in ADD_CODES) +
                     ". Information only; the mask is not changed unless you leave them out.")
         h = np.asarray(hist[1]); levels = h.size - 1
         low = h[int(np.ceil(0.25 * levels - 1e-9)):].sum(); high = h[int(np.ceil(0.55 * levels - 1e-9)):].sum()
@@ -1964,14 +2125,14 @@ class NativePPEEngine:
     def write_run_record(self, cfg, result, out_dir):
         """Save what was run and chosen as ppe_run_record.json (the start of a data catalogue)."""
         try:
-            record={"plugin_version":"3.9.0","written":datetime.now().isoformat(timespec="seconds"),
+            record={"plugin_version":"4.0.0","written":datetime.now().isoformat(timespec="seconds"),
                     "source_mode":cfg.get("source_mode"),"source":cfg.get("stacked_path") or cfg.get("folder_path") or cfg.get("bands"),
                     "field_info":cfg.get("field_info") or {},"suggestion":cfg.get("suggestion") or {},
                     "final_threshold":result.get("threshold"),"canopy_pct":result.get("canopy_pct"),
                     "crops":result.get("crops") or [],"rest_of_image_canopy_pct":result.get("rest_canopy_pct"),
                     "chosen_layers":cfg.get("chosen_layers") or [],"mask_path":result.get("mask_path"),
                     "pale_plant_pct":cfg.get("pale_plant_pct"),"pale_plant_path":cfg.get("pale_path") or "",
-                    "findings_at_threshold_pct":cfg.get("findings_shares") or {},"left_out_of_mask":list(result.get("left_out") or {}),
+                    "findings_at_threshold_pct":cfg.get("findings_shares") or {},"left_out_of_mask":list(result.get("left_out") or {}),"added_to_mask":list(result.get("added") or {}) if result.get("added_pixels") else [],
                     "left_out_pct":result.get("left_out_pct")}
             if self.template is not None:
                 gt=self.template.GetGeoTransform(); record["image"]={"width":self.width,"height":self.height,"pixel_size":[gt[1],abs(gt[5])],
@@ -2154,6 +2315,7 @@ class NativePPEEngine:
                 for code,column in FINDING_COLUMNS.items():
                     base[column]=100.0*int(((f==code)&valid).sum())/n_valid if n_valid else None
             base["left_out_of_mask"]="; ".join(cfg.get("left_out") or [])
+            base["added_to_mask"]="; ".join(cfg.get("added") or [])
             base.update(plot_pixels=n_valid, plant_pixels=n_plant, canopy_pct=(100.0*n_plant/n_valid if n_valid else None),
                         plot_area_m2=(n_valid*pixel_area if pixel_area else None), plant_area_m2=(n_plant*pixel_area if pixel_area else None))
             canopy_rows.append(base); plots += 1
@@ -2172,7 +2334,7 @@ class NativePPEEngine:
                              "right coordinate system (for a Shapefile, its .prj file).".format(position))
         export_root=os.path.abspath(os.path.expanduser(cfg["export_dir"])); os.makedirs(export_root,exist_ok=True)
         for row in canopy_rows: row.update(info_columns)
-        canopy_fields=("plot_id","feature_id","crop","threshold","plot_pixels","plant_pixels","canopy_pct","plot_area_m2","plant_area_m2")+(tuple(FINDING_COLUMNS.values()) if pale is not None else ())+("left_out_of_mask",)+tuple(info_columns)
+        canopy_fields=("plot_id","feature_id","crop","threshold","plot_pixels","plant_pixels","canopy_pct","plot_area_m2","plant_area_m2")+(tuple(FINDING_COLUMNS.values()) if pale is not None else ())+("left_out_of_mask","added_to_mask")+tuple(info_columns)
         canopy_path=os.path.join(export_root,"ppe_plot_canopy.csv")
         with open(canopy_path,"w",newline="",encoding="utf-8") as handle:
             writer=csv.DictWriter(handle,fieldnames=canopy_fields); writer.writeheader(); writer.writerows(canopy_rows)

@@ -357,7 +357,9 @@ class PPEPlugin:
         if votes is None:
             return
         # left-out finding kinds drop out of the live preview too, at every threshold
-        set_preview_source(votes, None, (self.dock.result or {}).get("findings_path", ""), self.dock.clip_codes())
+        r = self.dock.result or {}
+        set_preview_source(votes, None, r.get("findings_path", ""), self.dock.clip_codes(), self.dock.add_codes(),
+                           (r.get("sparse_spots") or {}).get("vote_from"))
         if self.dock.zone_info:
             style_zoned_preview(votes, self.dock.zone_thresholds(), self.dock.zone_names())
         else:
