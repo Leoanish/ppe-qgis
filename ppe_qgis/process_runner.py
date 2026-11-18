@@ -40,7 +40,7 @@ class _Worker(QObject):
             elif action=="zones": result=engine.prepare_crop_areas(self.config)
             elif action=="export_aoi": result=engine.export_aoi_statistics(self.config)
             elif str(action).startswith("export"): result=engine.export_plant_only(self.config)
-            else: result=engine.run(self.config)
+            else: result=engine.run_by_area(self.config)
             self.succeeded.emit(result)
         except Cancelled as exc: self.failed.emit(str(exc).strip() or "Cancelled.")
         except Exception as exc:

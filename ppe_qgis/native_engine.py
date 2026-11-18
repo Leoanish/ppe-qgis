@@ -971,6 +971,13 @@ def _pixel_area_m2(dataset):
 class Cancelled(RuntimeError): pass
 
 
+class _NoDisplay:
+    """Stands in for the display writer when a run needs no display image."""
+    def convert(self, raw): return None
+    def write(self, planes, y): pass
+    def close(self): pass
+
+
 class NativePPEEngine:
     def __init__(self, progress=None, log=None, import_ready=None, cancelled=None):
         self.progress_cb = progress or (lambda p, m: None)
@@ -1088,6 +1095,8 @@ class NativePPEEngine:
             self.scale = 255.0
         else:
             self.scale = 1.0
+        if getattr(self, "_fixed_scale", None):
+            self.scale = float(self._fixed_scale)
         self._sample_cache = {k: v / self.scale for k, v in values.items()}
 
     def preview(self, cfg):
@@ -1291,6 +1300,7 @@ class NativePPEEngine:
 
     def run(self, cfg):
         started = time.time(); stamp = datetime.now().strftime("%Y%m%d_%H%M%S"); run_dir = os.path.join(cfg["work_dir"], "ppe_"+stamp); os.makedirs(run_dir, exist_ok=True)
+        self._fixed_scale = cfg.get("fixed_scale")
         self.progress(3, "Validating and opening imagery"); self._resolve(cfg, sample_n=max(4000, int(cfg.get("sample_size", 100000))*3))
         bands = list(self.sources); available = [name for name, meta in VI_META.items() if all(x in bands for x in meta[0])]
         self.log_cb("Detected bands: {}".format(", ".join(bands)))
@@ -1427,7 +1437,7 @@ class NativePPEEngine:
 
         # Step 3: every layer x method result is one equal vote.
         columns = {name: _interp_columns(offsets[name], self.width, grid_w) for name in offsets}
-        display = self._display_writer(display_path, channels, display_sample)
+        display = _NoDisplay() if cfg.get("skip_display") else self._display_writer(display_path, channels, display_sample)
 
         def block_votes(y):
             h = min(block_rows, self.height-y); raw = {n: self._read_band(n, y=y, h=h) for n in self.sources}; ok = self._valid(raw); total = np.zeros((h,self.width), np.float32); wsum = 0.
@@ -1534,7 +1544,7 @@ class NativePPEEngine:
         else:
             self.log_cb("No threshold suggestion ({}); starting at 0.50.".format(no_suggestion_reason))
         start_threshold = suggestion["threshold"] if suggestion else 0.5
-        result = dict(imported, vote_path=vote_path, curve_path=curve_path, threshold=start_threshold, suggestion=suggestion or {}, suggestion_note="" if suggestion else no_suggestion_reason, selected_layers=chosen, chosen_layers=chosen, layer_details=layer_details, n_voters=n_masks, n_method_masks=n_masks, canopy_regime="classic", adaptation_mode="adaptive" if adaptive else "global", half_mixture=half_mixture, spread_ranking=[{"layer": name, "group": group, "spread": spread} for spread, name, group in leaders], mixed_class_vote=.5, bright_guard=bool(guard), bright_rejection_path=rejection_path, bright_rejected_pct=rejected_pct, shadow_guard=bool(shadow_guard), shadow_rejection_path=shadow_rejection_path, shadow_rejected_pct=shadow_rejected_pct, biofilm_guard=bool(algae_guard), algae_guard_fit=algae_guard or {}, biofilm_rejection_path=biofilm_rejection_path, biofilm_rejected_pct=biofilm_rejected_pct, colour_guard=bool(colour_guard), colour_rejected_pct=colour_rejected_pct, weak_green_warning=bool(colour_guard and colour_guard["plant_excess"] < WEAK_GREEN), single_class="", one_class_warning=one_class or "", pale_plant_path=pale_path, pale_plant_pct=pale_pct, pale_plant_lost_pct=pale_lost_pct, pale_plant_fit=pale_fit or {}, ppe_version="native-3.9.0", processing_threads=self.thread_count, output_dir=cfg["output_dir"], timings={"total": time.time()-started})
+        result = dict(imported, vote_path=vote_path, curve_path=curve_path, threshold=start_threshold, suggestion=suggestion or {}, suggestion_note="" if suggestion else no_suggestion_reason, selected_layers=chosen, chosen_layers=chosen, layer_details=layer_details, n_voters=n_masks, n_method_masks=n_masks, canopy_regime="classic", adaptation_mode="adaptive" if adaptive else "global", half_mixture=half_mixture, spread_ranking=[{"layer": name, "group": group, "spread": spread} for spread, name, group in leaders], mixed_class_vote=.5, bright_guard=bool(guard), bright_rejection_path=rejection_path, bright_rejected_pct=rejected_pct, shadow_guard=bool(shadow_guard), shadow_rejection_path=shadow_rejection_path, shadow_rejected_pct=shadow_rejected_pct, biofilm_guard=bool(algae_guard), algae_guard_fit=algae_guard or {}, biofilm_rejection_path=biofilm_rejection_path, biofilm_rejected_pct=biofilm_rejected_pct, colour_guard=bool(colour_guard), colour_rejected_pct=colour_rejected_pct, weak_green_warning=bool(colour_guard and colour_guard["plant_excess"] < WEAK_GREEN), single_class="", one_class_warning=one_class or "", pale_plant_path=pale_path, pale_plant_pct=pale_pct, pale_plant_lost_pct=pale_lost_pct, pale_plant_fit=pale_fit or {}, ppe_version="native-4.0.0", processing_threads=self.thread_count, output_dir=cfg["output_dir"], timings={"total": time.time()-started})
         with open(os.path.join(run_dir, "run_summary.json"), "w", encoding="utf-8") as handle: json.dump(result, handle, indent=2)
         self.progress(100, "Plant vote raster and threshold curve are ready"); return result
 
@@ -1785,6 +1795,107 @@ class NativePPEEngine:
         if record: result["run_record"]=record
         return result
 
+    def run_by_area(self, cfg):
+        """PPE 4.0 test: with crop areas drawn before Run and `separate_areas` on, fit the thresholds
+        inside each crop area on its own.
+
+        1. The whole field is run as usual (it gives the rest of the image, the display, the pale-plant
+           layer and the field's own suggestion).
+        2. For every crop outline, the same framework (ranking, four methods, vote, guards) runs again
+           on the pixels inside the outline only, on the same pixel grid.
+        3. One vote raster is put together: inside each outline the vote of its own run (the crop
+           listed first wins overlaps), elsewhere the whole-field vote. Everything after that (preview,
+           crop sliders, finalize, exports) works on it unchanged.
+        Without crop areas, or with `separate_areas` off, this is exactly run()."""
+        areas = [a for a in (cfg.get("crop_areas") or []) if a.get("wkt")]
+        if not cfg.get("separate_areas") or not areas:
+            return self.run(cfg)
+        outer = self.progress_cb
+        self.progress_cb = lambda p, m: outer(int(p * 0.5), m)
+        try:
+            whole = self.run(dict(cfg, crop_areas=None, separate_areas=False))
+        finally:
+            self.progress_cb = outer
+        gt = self.template.GetGeoTransform()
+        if abs(gt[2]) > 1e-12 or abs(gt[4]) > 1e-12:
+            raise ValueError("Separate runs per crop area need a north-up image (no rotation in the geotransform).")
+        run_dir = whole["run_dir"]; area_dir = os.path.join(run_dir, "crop_area_runs"); os.makedirs(area_dir, exist_ok=True)
+        srs = osr.SpatialReference(); wkt = self.template.GetProjection()
+        if wkt: srs.ImportFromWkt(wkt)
+        runs = []; n = len(areas)
+        for k, area in enumerate(areas):
+            name = area.get("name") or "crop {}".format(k + 1); tag = "{:02d}_{}".format(k + 1, self._safe_filename(name) or "crop")
+            folder = os.path.join(area_dir, tag); os.makedirs(folder, exist_ok=True)
+            geometry = ogr.CreateGeometryFromWkt(area["wkt"])
+            if geometry is None or geometry.IsEmpty():
+                continue
+            cut = os.path.join(folder, "outline.gpkg")
+            ds = ogr.GetDriverByName("GPKG").CreateDataSource(cut); layer = ds.CreateLayer("outline", srs=srs if wkt else None, geom_type=ogr.wkbUnknown)
+            feature = ogr.Feature(layer.GetLayerDefn()); feature.SetGeometry(geometry); layer.CreateFeature(feature); feature = None; ds = None
+            # the outline's bounding box, snapped outwards to the image's own pixel grid
+            x_min, x_max, y_min, y_max = geometry.GetEnvelope()
+            c0 = max(0, int(math.floor((x_min - gt[0]) / gt[1]))); c1 = min(self.width, int(math.ceil((x_max - gt[0]) / gt[1])))
+            r0 = max(0, int(math.floor((y_max - gt[3]) / gt[5]))); r1 = min(self.height, int(math.ceil((y_min - gt[3]) / gt[5])))
+            if c1 - c0 < 8 or r1 - r0 < 8:
+                self.log_cb("Crop area {} lies outside the image or is too small; it uses the whole-field run.".format(name)); continue
+            bounds = (gt[0] + c0 * gt[1], gt[3] + r1 * gt[5], gt[0] + c1 * gt[1], gt[3] + r0 * gt[5])
+            bands = {}
+            for band_name, (path, index) in self.sources.items():
+                single = os.path.join(folder, "{}_band.vrt".format(band_name))
+                gdal.Translate(single, path, format="VRT", bandList=[index])
+                clipped = os.path.join(folder, "{}.vrt".format(band_name))
+                gdal.Warp(clipped, single, format="VRT", cutlineDSName=cut, outputBounds=bounds, xRes=gt[1], yRes=abs(gt[5]),
+                          dstNodata=-9999.0, resampleAlg="near", outputType=gdal.GDT_Float32)
+                bands[band_name] = clipped
+            started = time.time()
+            sub = NativePPEEngine(progress=lambda p, m, k=k, name=name: outer(50 + int(45 * (k + p / 100.0) / n), "{}: {}".format(name, m)),
+                                  log=lambda m, name=name: self.log_cb("[{}] {}".format(name, m)), cancelled=self.cancelled)
+            sub.thread_count = self.thread_count
+            sub_cfg = dict(cfg, source_mode="bands", bands=bands, ortho_type="ms", stacked_path="", folder_path="", folder_bands=None,
+                           output_dir=folder, work_dir=folder, skip_display=True, fixed_scale=self.scale,
+                           crop_areas=None, separate_areas=False)
+            self.log_cb("Fitting the thresholds inside crop area {} ({} x {} pixels).".format(name, c1 - c0, r1 - r0))
+            result = sub.run(sub_cfg)
+            sample = {key: value[sub._valid(sub._sample_cache)] for key, value in sub._sample_cache.items()}
+            soil_pct = None
+            if "nir" in sample and "red" in sample and sample["nir"].size:
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    ndvi = (sample["nir"] - sample["red"]) / (sample["nir"] + sample["red"])
+                soil_pct = float(100.0 * np.mean(ndvi < 0.3))
+            runs.append({"crop": name, "vote_path": result["vote_path"], "window": [c0, r0, c1 - c0, r1 - r0], "outline": cut,
+                         "suggestion": (result.get("suggestion") or {}).get("threshold"), "chosen_layers": result.get("chosen_layers"),
+                         "layer_details": result.get("layer_details"), "soil_pct": soil_pct, "seconds": round(time.time() - started, 1)})
+            self.log_cb("Crop area {}: layers {}; suggested threshold {}; bare soil in the outline {}; {:.1f} s.".format(
+                name, ", ".join(result.get("chosen_layers") or []), runs[-1]["suggestion"] if runs[-1]["suggestion"] is not None else "none",
+                "{:.1f} %".format(soil_pct) if soil_pct is not None else "unknown", runs[-1]["seconds"]))
+            if soil_pct is not None and soil_pct < 10:
+                self.log_cb("WARNING: the {} outline holds only {:.1f} % bare soil. The four methods need both soil and plant; with "
+                            "almost no soil they can split leaves from leaves. Draw it wider (include bare ground) or switch the separate "
+                            "runs off and compare.".format(name, soil_pct))
+        # one vote raster: each outline from its own run (the crop listed first wins), the rest from the whole field
+        self.progress(96, "Putting the crop-area votes together")
+        vote_path = os.path.join(run_dir, "vote_fraction_by_area.tif")
+        source = safe_gdal_open(whole["vote_path"])
+        opts = ["TILED=YES", "COMPRESS=DEFLATE", "BIGTIFF=IF_SAFER", "NUM_THREADS={}".format(self.thread_count)]
+        out = gdal.GetDriverByName("GTiff").CreateCopy(vote_path, source, options=opts); source = None
+        for run in reversed(runs):
+            c0, r0, w, h = run["window"]
+            area_ds = safe_gdal_open(run["vote_path"]); area_vote = area_ds.GetRasterBand(1).ReadAsArray().astype(np.float32); area_ds = None
+            inside = gdal.GetDriverByName("MEM").Create("", w, h, 1, gdal.GDT_Byte)
+            inside.SetGeoTransform((gt[0] + c0 * gt[1], gt[1], 0, gt[3] + r0 * gt[5], 0, gt[5])); inside.SetProjection(wkt)
+            ds = ogr.Open(run["outline"]); gdal.RasterizeLayer(inside, [1], ds.GetLayer(0), burn_values=[1]); ds = None
+            mask = inside.ReadAsArray() == 1
+            band = out.GetRasterBand(1); block = band.ReadAsArray(c0, r0, w, h)
+            block[mask] = area_vote[mask]
+            band.WriteArray(block, c0, r0)
+        out.FlushCache(); out = None
+        curve_path = os.path.join(run_dir, "threshold_curve_by_area.csv"); self._write_curve(vote_path, curve_path)
+        result = dict(whole, vote_path=vote_path, curve_path=curve_path, whole_vote_path=whole["vote_path"], whole_curve_path=whole["curve_path"],
+                      separate_areas=True, area_runs=runs)
+        with open(os.path.join(run_dir, "run_summary_by_area.json"), "w", encoding="utf-8") as handle: json.dump(result, handle, indent=2, default=str)
+        self.progress(100, "Plant vote ready: each crop area fitted on its own")
+        return result
+
     def prepare_crop_areas(self, cfg):
         """Turn the crop outlines into (1) a crop-area raster on the image grid (0 = outside every
         outline, 1..n = the crops in the order listed; where outlines overlap the crop listed first
@@ -1837,7 +1948,7 @@ class NativePPEEngine:
     def write_run_record(self, cfg, result, out_dir):
         """Save what was run and chosen as ppe_run_record.json (the start of a data catalogue)."""
         try:
-            record={"plugin_version":"3.9.0","written":datetime.now().isoformat(timespec="seconds"),
+            record={"plugin_version":"4.0.0","separate_areas":bool(cfg.get("separate_areas")),"area_runs":[{k: v for k, v in run.items() if k in ("crop", "suggestion", "chosen_layers", "soil_pct", "seconds")} for run in (cfg.get("area_runs") or [])],"written":datetime.now().isoformat(timespec="seconds"),
                     "source_mode":cfg.get("source_mode"),"source":cfg.get("stacked_path") or cfg.get("folder_path") or cfg.get("bands"),
                     "field_info":cfg.get("field_info") or {},"suggestion":cfg.get("suggestion") or {},
                     "final_threshold":result.get("threshold"),"canopy_pct":result.get("canopy_pct"),

@@ -57,16 +57,18 @@ Run then adds the plant vote on top of the same picture (the live preview), and 
 
 On tab **5 Plots**, the chosen plot file is added as **PPE · Plots**: yellow outlines with each plot's ID, kept above the image. Untick *Show plot IDs on the map* to hide the labels, untick the layer in the Layers panel to hide the plots, or restyle it there like any QGIS layer.
 
-## Several crops in one image
+## Several crops in one image (4.0: draw before Run, fit each area on its own)
 
-Different crops can need different thresholds; on a corn field at tasselling, for example, a lower threshold keeps the tassels. On the **Review** tab, under *Crops in this image*:
+Different crops can need different thresholds; on a corn field at tasselling, for example, a lower threshold keeps the tassels.
 
-1. **+ Add crop** and type its name (any number of crops).
-2. **Draw area**: click the corners of a rough outline around that crop on the map, right-click to finish (Esc cancels, Backspace removes the last corner). While you draw, that crop's button turns grey and reads **✎ Drawing…**, the other crops cannot start drawing, the note above the crops and a message on the map say what to do, and choosing another map tool (Pan, Identify…) ends the drawing. A ✓ appears and the outline is shown as **PPE · Crop areas**. **Redraw** replaces it, ✕ removes the crop.
-3. Each drawn crop gets its own slider and canopy; the slider above sets the rest of the image (headlands, roads). *Use the slider above for every crop* moves them all together. The live preview shows every area at its own threshold.
-4. **Finalize** writes one mask, `ppe_plant_mask_by_crop.tif`, and reports the canopy of each crop.
-
-Only the threshold differs between areas; the vote is the same as without crop areas, so a crop slider at the same value as the main slider gives exactly the usual mask. Where outlines overlap, the crop listed first wins. Every crop slider starts at the suggested threshold of the whole image: a suggestion per crop area was tested on Kritis and was not reliable on closed canopy (it gave 0.95 for soybean, which would drop shaded leaves). Preparing the areas takes a few seconds (7 s on a 9371 × 10056 field) and moving a slider is instant.
+1. On tab **1 Image**, under *Crops in this image*, press **+ Add crop**, type its name and press **Draw area**: click the corners of its outline on the map, right-click to finish (Esc cancels, Backspace removes the last corner). This works as soon as the image is on the map, before Run. **Draw each outline wide**: take in the crop and some bare soil around it (an alley, a headland, a bare strip), so PPE finds both plant and soil inside it. While you draw, the button reads **✎ Drawing…** and the other crops wait.
+2. **Fit the thresholds inside each crop area on its own** (ticked by default once an outline is drawn). Run then
+   - runs the whole field exactly as before (it gives the rest of the image, the picture, the pale-plant layer and the field's suggestion), and
+   - runs the same PPE process again inside each outline: its own spread ranking, its own four methods, vote and guards, on the same pixel grid (a few seconds per area).
+   The vote inside each outline comes from its own run (the crop listed first wins overlaps), the rest of the image from the whole-field run. `vote_fraction_by_area.tif` and the per-area runs (`crop_area_runs/`) are kept in the run folder.
+   Untick it for one run of the whole field (PPE 3.9 behaviour); the crop sliders still apply. **Run both ways and compare.**
+3. On tab **3 Review** every drawn crop has its own slider and canopy; with separate fits each starts at its own area's suggestion, and the card lists each area's layers and the bare soil inside its outline. **When an outline holds less than 10 % bare soil it warns you**: the four methods split each layer into two groups, and with almost no soil they can split leaves from leaves (on Kritis in August the soybean outline held 0.5 % soil; its own fit gave 94.8 % canopy at 0.45 against 97.7 % from the whole-field run). If the outlines change after Run, the card asks you to Run again.
+4. **Finalize** writes one mask, `ppe_plant_mask_by_crop.tif`; the run record notes whether areas were fitted on their own, with each area's layers, suggestion and bare-soil share.
 
 ## Pale plant parts: tassels, flowers, heads
 
@@ -107,7 +109,7 @@ PPE suggests the plot identifier (a field called plot_id, plot, id or name) and 
 - Deleting the PPE image layer in the QGIS Layers panel resets PPE as well. Deleting only the live-preview layer switches the slider off until PPE is run again.
 - While PPE is running the image cannot be changed; cancel the run first.
 
-## How the mask is made (version 3.9.0)
+## How the mask is made (version 4.0.0)
 
 PPE follows three steps: pick the layers with the widest spread, split each one four ways, and count the votes.
 

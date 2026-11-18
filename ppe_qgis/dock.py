@@ -408,6 +408,7 @@ class PPEDockWidget(QDockWidget):
         self._update_imagery_options()
         layout.addWidget(options_box)
 
+        layout.addWidget(self._crop_draw_box())
         layout.addWidget(self._collapsible("About this field (optional)", self._field_info_box()))
 
         output_box = QWidget()
@@ -1001,7 +1002,9 @@ class PPEDockWidget(QDockWidget):
         self.progress.setValue(0); self.progress.setFormat("Ready")
         self.export_progress.setValue(0); self.export_progress.setFormat("Ready")
         self.aoi_progress.setValue(0); self.aoi_progress.setFormat("Ready")
+        self._image_grid_path = None              # drawing waits until the new image is on the map
         self._clear_crops(remove_layer=True)
+        self._update_review_crops_note()
         self._reset_field_info()
         self.run_summary.setText("No mask generated yet.")
         self.applied_status.setText("Run PPE first; the mask can then be reviewed here.")
@@ -1057,6 +1060,7 @@ class PPEDockWidget(QDockWidget):
         mode = result.get("display_mode", "true colour")
         hint = {"true colour": "", "false colour (NIR, red, green)": " Plants look red, soil grey-blue."}.get(mode, " Plants look bright, soil darker.")
         self.preview_status.setText("On the map now: {}.{}\nBands found: {}.".format(mode, hint, found))
+        self.add_crop_button.setEnabled(not self._busy); self.crops_note.setText(self._crops_hint()); self._refresh_draw_buttons()
 
     def set_preview_failed(self, message):
         self._preview_key = None
@@ -1211,6 +1215,11 @@ class PPEDockWidget(QDockWidget):
             "biofilm_guard": True,
         }
         config["field_info"] = self.field_info()
+        if action == "run":
+            drawn = self._drawn_rows()
+            config["crop_areas"] = [{"name": row["name"].text().strip() or "crop {}".format(i + 1), "wkt": row["geometry"].asWkt()}
+                                    for i, row in enumerate(drawn)]
+            config["separate_areas"] = bool(drawn) and self.separate_areas.isChecked()
         if action == "apply":
             config.update({
                 "vote_path": self.result.get("vote_path", ""),
@@ -1219,6 +1228,8 @@ class PPEDockWidget(QDockWidget):
                 "suggestion": self.result.get("suggestion") or {},
                 "chosen_layers": self.result.get("chosen_layers") or [],
                 "pale_plant_pct": self.result.get("pale_plant_pct"),
+                "separate_areas": bool(self.result.get("area_runs")),
+                "area_runs": self.result.get("area_runs") or [],
                 "pale_path": self.result.get("pale_plant_path", ""),
             })
             if self.zone_info:
@@ -1432,30 +1443,86 @@ class PPEDockWidget(QDockWidget):
         self.pale_frame.setVisible(True)
 
     # ---- crops in this image: one outline and one slider per crop (Review tab) ------------------
-    def _crops_hint(self):
-        if not self.result.get("vote_path"):
-            return "Run PPE first. Then, for an image with more than one crop, add each crop and draw a rough outline around it."
-        return ("More than one crop in the image? Add each crop and draw a rough outline around it on the map "
-                "(click the corners, right-click to finish, Esc to cancel). Each crop then gets its own slider; "
-                "the slider above sets the rest of the image.")
+    WIDE_OUTLINE = ("Draw each outline wide: take in the crop and some bare soil around it (an alley, a headland, "
+                    "a bare strip), so PPE finds both plant and soil inside it.")
 
-    def _crops_box(self):
+    def _image_ready(self):
+        return bool(self.result.get("vote_path") or getattr(self, "_image_grid_path", None))
+
+    def _crops_hint(self):
+        if not self._image_ready():
+            return "Choose an image first. Then, for an image with more than one crop, add each crop and draw its outline on the map."
+        return ("More than one crop in the image? Add each crop and draw its outline on the map before Run (click the corners, "
+                "right-click to finish, Esc to cancel). " + self.WIDE_OUTLINE + " Each crop gets its own slider on tab 3 (Review).")
+
+    def _crop_draw_box(self):
+        """Tab 1: add the crops and draw their outlines before Run (PPE 4.0)."""
         frame = QFrame(); frame.setObjectName("card")
         box = QVBoxLayout(frame); box.setContentsMargins(14, 12, 14, 12); box.setSpacing(6)
         title = QLabel("Crops in this image (optional)"); title.setObjectName("cardTitle"); box.addWidget(title)
         self.crops_note = QLabel(self._crops_hint()); self.crops_note.setWordWrap(True); self.crops_note.setObjectName("ppeHint")
         box.addWidget(self.crops_note)
-        self.stage_tip = QLabel(""); self.stage_tip.setWordWrap(True); self.stage_tip.setObjectName("ppeHint"); self.stage_tip.setVisible(False)
-        box.addWidget(self.stage_tip)
         self.crop_list = QVBoxLayout(); self.crop_list.setSpacing(8); box.addLayout(self.crop_list)
         buttons = QHBoxLayout()
         self.add_crop_button = QPushButton("+ Add crop"); self.add_crop_button.setProperty("secondary", True); self.add_crop_button.setEnabled(False)
         buttons.addWidget(self.add_crop_button); buttons.addStretch(); box.addLayout(buttons)
+        self.separate_areas = QCheckBox("Fit the thresholds inside each crop area on its own")
+        self.separate_areas.setChecked(True)
+        self.separate_areas.setToolTip("On: Run fits the whole PPE process again inside each outline (each crop gets its own layers and "
+                                       "thresholds). Off: one run for the whole field, as in PPE 3.9; the crop sliders still apply.")
+        self.separate_areas.setVisible(False)
+        box.addWidget(self.separate_areas)
+        self.separate_hint = QLabel("On: each crop area gets its own layers and thresholds (takes a few seconds per area). "
+                                    "Off: one run for the whole field, as in PPE 3.9. Run both ways to compare.")
+        self.separate_hint.setWordWrap(True); self.separate_hint.setObjectName("ppeHint"); self.separate_hint.setVisible(False)
+        box.addWidget(self.separate_hint)
+        return frame
+
+    def _crops_box(self):
+        """Tab 3: one slider per drawn crop."""
+        frame = QFrame(); frame.setObjectName("card")
+        box = QVBoxLayout(frame); box.setContentsMargins(14, 12, 14, 12); box.setSpacing(6)
+        title = QLabel("Crops in this image"); title.setObjectName("cardTitle"); box.addWidget(title)
+        self.review_crops_note = QLabel("Crops are added and drawn on tab 1 (Image), before Run. Each drawn crop then gets its own slider here.")
+        self.review_crops_note.setWordWrap(True); self.review_crops_note.setObjectName("ppeHint")
+        self.review_crops_note.setTextFormat(Qt.RichText); box.addWidget(self.review_crops_note)
+        self.stage_tip = QLabel(""); self.stage_tip.setWordWrap(True); self.stage_tip.setObjectName("ppeHint"); self.stage_tip.setVisible(False)
+        box.addWidget(self.stage_tip)
+        self.crop_slider_list = QVBoxLayout(); self.crop_slider_list.setSpacing(8); box.addLayout(self.crop_slider_list)
         self.same_threshold = QCheckBox("Use the slider above for every crop"); self.same_threshold.setVisible(False)
         box.addWidget(self.same_threshold)
         self.crop_progress = QProgressBar(); self.crop_progress.setRange(0, 100); self.crop_progress.setValue(0); self.crop_progress.setFormat("Ready")
         self.crop_progress.setVisible(False); box.addWidget(self.crop_progress)
         return frame
+
+    def _update_crop_options(self):
+        drawn = bool(self._drawn_rows())
+        self.separate_areas.setVisible(drawn); self.separate_hint.setVisible(drawn)
+
+    def _update_review_crops_note(self):
+        """Tab 3: how the crop areas were processed in the last run, and whether the outlines changed since."""
+        runs = self.result.get("area_runs") or []
+        if not self.result.get("vote_path"):
+            text = "Crops are added and drawn on tab 1 (Image), before Run. Each drawn crop then gets its own slider here."
+        elif runs:
+            lines = ["<b>Each crop area was fitted on its own</b> (PPE 4.0):"]
+            for run in runs:
+                soil = run.get("soil_pct")
+                warn = (" ⚠ only {:.1f} % bare soil inside: draw it wider, or run again with the separate fit off and compare".format(soil)
+                        if soil is not None and soil < 10 else (" · bare soil {:.1f} %".format(soil) if soil is not None else ""))
+                lines.append("• <b>{}</b>: layers {}; slider starts at its own suggestion {}{}".format(
+                    run["crop"], ", ".join(run.get("chosen_layers") or []),
+                    "{:.2f}".format(run["suggestion"]) if run.get("suggestion") is not None else "(none: 0.50)", warn))
+            lines.append("The rest of the image keeps the whole-field run (slider above).")
+            if getattr(self, "_outlines_changed", False):
+                lines.append("<b>⚠ The outlines changed after Run: press Run again so the thresholds are fitted inside the new outlines.</b>")
+            text = "<br>".join(lines)
+        elif self._drawn_rows():
+            text = ("One run for the whole field; each crop slider sets the threshold inside its outline. "
+                    "To fit each area on its own, tick the option on tab 1 and Run again.")
+        else:
+            text = "No crop areas. To give crops their own threshold, add and draw them on tab 1 (Image) and Run again."
+        self.review_crops_note.setText(text)
 
     def _add_crop_row(self, name=""):
         frame = QFrame(); grid = QGridLayout(frame); grid.setContentsMargins(0, 0, 0, 0); grid.setHorizontalSpacing(6); grid.setVerticalSpacing(2)
@@ -1463,14 +1530,19 @@ class PPEDockWidget(QDockWidget):
         draw = QPushButton("Draw area"); draw.setProperty("secondary", True); draw.setEnabled(self._draw_allowed())
         status = QLabel("not drawn"); status.setObjectName("ppeHint")
         remove = QToolButton(); remove.setText("✕"); remove.setToolTip("Remove this crop and its outline")
+        grid.addWidget(edit, 0, 0); grid.addWidget(draw, 0, 1); grid.addWidget(status, 0, 2); grid.addWidget(remove, 0, 3)
+        grid.setColumnStretch(0, 1)
+        slider_frame = QFrame(); sgrid = QGridLayout(slider_frame); sgrid.setContentsMargins(0, 0, 0, 0); sgrid.setHorizontalSpacing(6); sgrid.setVerticalSpacing(2)
+        name_label = QLabel(name or "crop"); name_label.setObjectName("cardTitle")
         slider = QSlider(Qt.Horizontal); slider.setRange(15, 95); slider.setValue(self.threshold_slider.value()); slider.setEnabled(False)
         value = QLabel("{:.2f}".format(slider.value() / 100.0)); canopy = QLabel("—"); canopy.setObjectName("ppeHint")
-        grid.addWidget(edit, 0, 0); grid.addWidget(draw, 0, 1); grid.addWidget(status, 0, 2); grid.addWidget(remove, 0, 3)
-        grid.addWidget(slider, 1, 0, 1, 2); grid.addWidget(value, 1, 2); grid.addWidget(canopy, 1, 3)
-        grid.setColumnStretch(0, 1)
-        row = {"frame": frame, "name": edit, "draw": draw, "status": status, "remove": remove, "slider": slider,
-               "value": value, "canopy": canopy, "geometry": None}
-        self.crop_rows.append(row); self.crop_list.addWidget(frame)
+        sgrid.addWidget(name_label, 0, 0, 1, 3); sgrid.addWidget(slider, 1, 0); sgrid.addWidget(value, 1, 1); sgrid.addWidget(canopy, 1, 2)
+        sgrid.setColumnStretch(0, 1)
+        slider_frame.setVisible(False)
+        row = {"frame": frame, "slider_frame": slider_frame, "name_label": name_label, "name": edit, "draw": draw, "status": status,
+               "remove": remove, "slider": slider, "value": value, "canopy": canopy, "geometry": None}
+        edit.textChanged.connect(lambda text, label=name_label: label.setText(text.strip() or "crop"))
+        self.crop_rows.append(row); self.crop_list.addWidget(frame); self.crop_slider_list.addWidget(slider_frame)
         draw.clicked.connect(lambda: self._draw_crop(row))
         remove.clicked.connect(lambda: self._remove_crop(row))
         edit.editingFinished.connect(self._crop_names_changed)
@@ -1488,11 +1560,12 @@ class PPEDockWidget(QDockWidget):
         return [row for row in self.crop_rows if row["geometry"] is not None]
 
     def _image_wkt(self):
-        ds = gdal.Open(self.result.get("vote_path", "")) if self.result.get("vote_path") else None
+        path = self.result.get("vote_path") or getattr(self, "_image_grid_path", None) or ""
+        ds = gdal.Open(path) if path else None
         return ds.GetProjection() if ds is not None else ""
 
     def _draw_allowed(self):
-        return bool(self.result.get("vote_path")) and not self._busy and self._drawing_row is None
+        return self._image_ready() and not self._busy and self._drawing_row is None
 
     def _refresh_draw_buttons(self):
         """While an outline is being drawn its button is greyed out and says so, and the other
@@ -1526,11 +1599,12 @@ class PPEDockWidget(QDockWidget):
         name = row["name"].text().strip() or "this crop"
         row["status"].setText("● drawing")
         self.crops_note.setText("✎ Drawing the area of {}: click its corners on the map, right-click (or double-click) to finish. "
-                                "Esc cancels, Backspace undoes the last corner.".format(name))
+                                "Esc cancels, Backspace undoes the last corner. Draw it wide: take in the crop and some bare soil "
+                                "around it, so PPE finds both plant and soil inside.".format(name))
         self._refresh_draw_buttons()
         bar = self.iface.messageBar()
         self._draw_message = bar.createMessage("Plant Pixel Extractor", "Drawing the area of {}: click its corners on the map, "
-                                               "right-click to finish, Esc to cancel.".format(name))
+                                               "right-click to finish, Esc to cancel. Draw it wide, with some bare soil around the crop.".format(name))
         bar.pushWidget(self._draw_message, Qgis.Info)
         canvas.setFocus()
 
@@ -1558,14 +1632,24 @@ class PPEDockWidget(QDockWidget):
         row["status"].setText("✓ drawn")
         self._drawing_done(row)
         self._show_crop_layer()
+        self._update_crop_options(); self._mark_outlines_changed()
         self._request_zones()
+
+    def _mark_outlines_changed(self):
+        if self.result.get("area_runs"):
+            self._outlines_changed = True
+            self.crops_note.setText("⚠ The outlines changed after Run: press Run again so PPE fits the thresholds inside them. " + self.WIDE_OUTLINE)
+        self._update_review_crops_note()
 
     def _remove_crop(self, row):
         if self._busy:
             self._busy_warning(); return
         had_area = row["geometry"] is not None
-        self.crop_rows.remove(row); row["frame"].setParent(None); row["frame"].deleteLater()
+        self.crop_rows.remove(row)
+        for key in ("frame", "slider_frame"):
+            row[key].setParent(None); row[key].deleteLater()
         self.same_threshold.setVisible(len(self.crop_rows) > 1)
+        self._update_crop_options(); self._mark_outlines_changed()
         self._show_crop_layer()
         if had_area:
             if self._drawn_rows(): self._request_zones()
@@ -1606,7 +1690,8 @@ class PPEDockWidget(QDockWidget):
         if len(rows) != len(result.get("zone_curves", [])) - 1:
             self._request_zones(); return                    # the outlines changed while preparing
         self.zone_info = dict(result); self.zone_info["rows"] = rows
-        for row in rows: row["slider"].setEnabled(not self.same_threshold.isChecked())
+        for row in rows:
+            row["slider"].setEnabled(not self.same_threshold.isChecked()); row["slider_frame"].setVisible(True)
         self.crop_progress.setValue(100); self.crop_progress.setFormat("Crop areas ready")
         self._threshold_changed(self.threshold_slider.value())
         self._update_stage_tip()
@@ -1622,8 +1707,11 @@ class PPEDockWidget(QDockWidget):
         if self._draw_tool is not None:
             self._drawing_done(None)
         for row in list(self.crop_rows):
-            row["frame"].setParent(None); row["frame"].deleteLater()
+            for key in ("frame", "slider_frame"):
+                row[key].setParent(None); row[key].deleteLater()
         self.crop_rows = []; self.zone_info = None
+        self._outlines_changed = False
+        self._update_crop_options()
         self.same_threshold.setChecked(False); self.same_threshold.setVisible(False)
         self.crop_progress.setVisible(False); self.add_crop_button.setEnabled(False)
         self.crops_note.setText(self._crops_hint())
@@ -1734,7 +1822,7 @@ class PPEDockWidget(QDockWidget):
         for button in (self.export_bands_button, self.export_vis_button, self.export_all_button, self.aoi_export_button):
             button.setEnabled(not running and bool(self.result.get("mask_path")))
         self._refresh_draw_buttons()
-        self.add_crop_button.setEnabled(not running and bool(self.result.get("vote_path")))
+        self.add_crop_button.setEnabled(not running and self._image_ready())
         if running and (action == "zones" or str(action).startswith("export")):
             bar = self._bar_for(action)
             bar.setValue(0)
@@ -1837,10 +1925,15 @@ class PPEDockWidget(QDockWidget):
         self.zone_info = None
         self.add_crop_button.setEnabled(True)
         self._refresh_draw_buttons()
+        own = {run["crop"]: run.get("suggestion") for run in (result.get("area_runs") or [])}
+        self._outlines_changed = False
         for row in self.crop_rows:
-            row["slider"].blockSignals(True); row["slider"].setValue(round(threshold * 100)); row["slider"].blockSignals(False)
-            row["value"].setText("{:.2f}".format(threshold))
+            start = own.get(row["name"].text().strip()) or threshold
+            row["slider"].blockSignals(True); row["slider"].setValue(round(start * 100)); row["slider"].blockSignals(False)
+            row["value"].setText("{:.2f}".format(start))
+            row["slider_frame"].setVisible(row["geometry"] is not None)
         self.crops_note.setText(self._crops_hint())
+        self._update_review_crops_note()
         self._update_stage_tip()
         if self._drawn_rows():
             QTimer.singleShot(300, self._request_zones)      # the vote changed: rebuild the crop preview
