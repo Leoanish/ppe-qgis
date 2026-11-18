@@ -272,8 +272,13 @@ class PPEPlugin:
             with self._own_changes():
                 replace_applied_mask(result, self.layers)
             self.dock.set_applied(result)
-            self.dock.tabs.setCurrentIndex(3)
-            self._message("Native PPE mask exported and loaded.", Qgis.Success)
+            if getattr(self.dock, "_auto_apply", False):
+                # rebuilt because a finding was left out or put back: stay on the Review tab
+                self.dock._auto_apply = False
+                self._message("Mask updated: " + ("left out: " + ", ".join(result.get("left_out") or {}) if result.get("left_out") else "everything is back in") + ".", Qgis.Info)
+            else:
+                self.dock.tabs.setCurrentIndex(3)
+                self._message("Native PPE mask exported and loaded.", Qgis.Success)
             return
 
         aligned, detail = validate_aligned([result.get("rgb_path"), result.get("vote_path")])
@@ -328,6 +333,7 @@ class PPEPlugin:
     def _job_failed(self, message):
         message = str(message or "").strip() or "PPE stopped without an error message; the Log box on the Run tab has the details."
         if self.dock is not None:
+            self.dock._auto_apply = False
             self.dock.set_running(False, self.current_action)
             self.dock.show_error(message)
         self._message(message, Qgis.Critical)

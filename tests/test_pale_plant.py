@@ -94,3 +94,60 @@ class PaleEngineTests(unittest.TestCase):
         self.assertGreater(self.result["pale_plant_pct"], 0.5)
         self.assertLess(self.result["pale_plant_pct"], 10)
         self.assertTrue(self.result["pale_plant_fit"])
+
+
+class FindingsTests(unittest.TestCase):
+    """4.1: the four kinds of finding, and leaving them out of the mask and putting them back."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.dir = tempfile.mkdtemp(prefix="ppe_findings_"); folder = os.path.join(cls.dir, "bands"); os.makedirs(folder)
+        rng = np.random.default_rng(5)
+        kind = np.zeros((SIZE, SIZE), np.uint8)          # 0 leaf, 1 soil, 2 tassel, 3 leaf-soil mix, 4 shaded leaf
+        kind[:, :60] = 1; kind[:, 60:63] = 3
+        cls.tassels = np.zeros((SIZE, SIZE), bool)
+        for r in range(10, SIZE - 10, 15):
+            for c in range(110, SIZE - 10, 15):
+                cls.tassels[r:r + 3, c:c + 3] = True
+        kind[cls.tassels] = 2
+        cls.shaded = np.zeros((SIZE, SIZE), bool); cls.shaded[100:130, 80:100] = True; kind[cls.shaded] = 4
+        cls.kind = kind
+        SHADED = {k: LEAF[k] * 0.45 for k in ORDER}       # under half the light: NIR 0.24, still above sunlit soil (0.21)
+        srs = osr.SpatialReference(); srs.ImportFromEPSG(32617)
+        for k in ORDER:
+            values = np.choose(kind, [LEAF[k], SOIL[k], TASSEL[k], MIX[k], SHADED[k]]).astype(np.float32)
+            values *= rng.normal(1.0, 0.04, values.shape).astype(np.float32)
+            ds = gdal.GetDriverByName("GTiff").Create(os.path.join(folder, "field_{}.tif".format(k)), SIZE, SIZE, 1, gdal.GDT_Float32)
+            ds.SetGeoTransform((300000.0, PIX, 0, 3500000.0, 0, -PIX)); ds.SetProjection(srs.ExportToWkt())
+            ds.GetRasterBand(1).WriteArray(values); ds = None
+        cls.out = os.path.join(cls.dir, "out")
+        cls.result = NativePPEEngine().run({"source_mode": "folder", "folder_path": folder, "ortho_type": "ms",
+                                            "output_dir": cls.out, "work_dir": os.path.join(cls.dir, "work")})
+        cls.codes = gdal.Open(cls.result["findings_path"]).ReadAsArray()
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.dir, ignore_errors=True)
+
+    def test_kinds(self):
+        self.assertGreater((self.codes[self.tassels] == 1).mean(), 0.8)      # plant parts in closed canopy
+        self.assertGreater((self.codes[self.kind == 3] == 2).mean(), 0.5)    # leaf edges beside soil
+        self.assertGreater((self.codes[self.shaded] == 3).mean(), 0.8)       # shaded leaves
+        self.assertLess((self.codes[self.kind == 0] != 0).mean(), 0.05)      # plain green leaves: nothing
+        self.assertEqual(int((self.codes[self.kind == 1] == 1).sum()), 0)
+
+    def test_shares_add_up(self):
+        from ppe_qgis.native_engine import finding_shares
+        shares = finding_shares(self.result["findings_hist"], 0.45)
+        self.assertGreater(shares[3], 1.0); self.assertLess(sum(shares.values()), 100.0)
+
+    def test_leave_out_and_put_back(self):
+        base = {"vote_path": self.result["vote_path"], "threshold": 0.45, "output_dir": self.out, "findings_path": self.result["findings_path"]}
+        plain = gdal.Open(NativePPEEngine().apply(dict(base))["mask_path"]).ReadAsArray().copy()
+        clipped_result = NativePPEEngine().apply(dict(base, clip_codes=[3]))
+        clipped = gdal.Open(clipped_result["mask_path"]).ReadAsArray().copy()
+        expected = plain.copy(); expected[(plain == 1) & (self.codes == 3)] = 0
+        self.assertTrue(np.array_equal(clipped, expected))                     # exactly those pixels, nothing else
+        self.assertEqual(clipped_result["left_out"]["shaded leaves"], int(((plain == 1) & (self.codes == 3)).sum()))
+        back = gdal.Open(NativePPEEngine().apply(dict(base, clip_codes=[]))["mask_path"]).ReadAsArray()
+        self.assertTrue(np.array_equal(back, plain))                           # put back: identical to before

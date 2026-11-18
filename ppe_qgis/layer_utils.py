@@ -431,11 +431,13 @@ def _raise_role(role):
                 parent = node.parent(); clone = node.clone(); parent.insertChildNode(0, clone); parent.removeChildNode(node)
 
 
-PALE_LAYER_NAME = "PPE · Pale plant (tassels, flowers…)"
+PALE_LAYER_NAME = "PPE · What PPE found"
+FINDING_COLOURS = ((1, (255, 176, 0), "Plant parts that are not green"), (2, (90, 205, 255), "Leaf edges over soil"),
+                   (3, (40, 80, 230), "Shaded leaves"), (4, (240, 50, 90), "Unclear"))
 
 
 def show_pale_plant(path, visible=True):
-    """Add (or remove) the pale-plant layer: amber where PPE found pale plant parts, clear elsewhere.
+    """Add (or remove) the 'What PPE found' layer: one colour per kind, clear elsewhere.
     Information only; it is not part of the mask."""
     remove_role("pale")
     if not visible:
@@ -445,12 +447,11 @@ def show_pale_plant(path, visible=True):
         return None
     _force_nearest(layer)
     ramp = QgsColorRampShader()
-    ramp.setColorRampType(QgsColorRampShader.Discrete)
-    ramp.setColorRampItemList([
-        QgsColorRampShader.ColorRampItem(0.999999, QColor(0, 0, 0, 0), "Not pale plant"),
-        QgsColorRampShader.ColorRampItem(1.000001, QColor(255, 176, 0, 245), "Pale plant part (tassel, flower, head…)"),
-        QgsColorRampShader.ColorRampItem(255.0, QColor(0, 0, 0, 0), "No data"),
-    ])
+    ramp.setColorRampType(QgsColorRampShader.Exact)
+    items = [QgsColorRampShader.ColorRampItem(0, QColor(0, 0, 0, 0), "Nothing to point out")]
+    items += [QgsColorRampShader.ColorRampItem(code, QColor(*rgb, 245), name) for code, rgb, name in FINDING_COLOURS]
+    items.append(QgsColorRampShader.ColorRampItem(255, QColor(0, 0, 0, 0), "No data"))
+    ramp.setColorRampItemList(items)
     shader = QgsRasterShader(); shader.setRasterShaderFunction(ramp)
     renderer = QgsSingleBandPseudoColorRenderer(layer.dataProvider(), 1, shader)
     layer.setRenderer(renderer); layer.triggerRepaint()
