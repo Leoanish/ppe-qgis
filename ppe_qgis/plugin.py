@@ -11,6 +11,7 @@ from qgis.core import Qgis, QgsProject
 
 from .dock import PPEDockWidget
 from .layer_utils import (
+    set_layer_visible,
     load_result_layers,
     load_import_layer,
     read_curve,
@@ -90,13 +91,13 @@ class PPEPlugin:
         self.dock.zones_requested.connect(self._start_zones)
         self.dock.zones_cleared.connect(self._zones_cleared)
         self.dock.pale_layer_toggled.connect(self._pale_layer_toggled)
-        self.dock.crop_preview_changed.connect(lambda: self.preview_timer.start())
+        self.dock.crop_preview_changed.connect(self._tuning)
         QgsProject.instance().layersWillBeRemoved.connect(self._layers_will_be_removed)
         QgsProject.instance().layersRemoved.connect(self._layers_removed)
         self._project_hooked = True
         self.previewer.ready.connect(self._preview_ready)
         self.previewer.failed.connect(self._preview_failed)
-        self.dock.threshold_slider.valueChanged.connect(lambda _value: self.preview_timer.start())
+        self.dock.threshold_slider.valueChanged.connect(lambda _value: self._tuning())
         self.runner.progress.connect(self.dock.set_progress)
         self.runner.import_ready.connect(self._import_ready)
         self.runner.log.connect(self.dock.append_log)
@@ -271,11 +272,20 @@ class PPEPlugin:
                 return
             with self._own_changes():
                 replace_applied_mask(result, self.layers)
+                # The live preview is drawn in the same colour under the mask, so it would hide what the
+                # mask leaves out. Untick it: the map now shows the mask itself. Moving a slider shows it again.
+                set_layer_visible(self.layers.get("votes"), False)
             self.dock.set_applied(result)
             if getattr(self.dock, "_auto_apply", False):
                 # rebuilt because a finding was left out or put back: stay on the Review tab
                 self.dock._auto_apply = False
-                self._message("Mask updated: " + ("left out: " + ", ".join(result.get("left_out") or {}) if result.get("left_out") else "everything is back in") + ".", Qgis.Info)
+                if result.get("left_out"):
+                    text = "Mask updated: {:,} pixels left out ({}). Canopy {:.1f} % → {:.1f} %.".format(
+                        int(result.get("left_out_pixels") or 0), ", ".join(result["left_out"]),
+                        float(result.get("canopy_before_clip_pct") or 0.0), float(result.get("canopy_pct") or 0.0))
+                else:
+                    text = "Mask updated: everything is back in. Canopy {:.1f} %.".format(float(result.get("canopy_pct") or 0.0))
+                self._message(text, Qgis.Info)
             else:
                 self.dock.tabs.setCurrentIndex(3)
                 self._message("Native PPE mask exported and loaded.", Qgis.Success)
@@ -337,6 +347,12 @@ class PPEPlugin:
             self.dock.set_running(False, self.current_action)
             self.dock.show_error(message)
         self._message(message, Qgis.Critical)
+
+    def _tuning(self):
+        """A slider moved: show the live preview again and redraw it."""
+        with self._own_changes():
+            set_layer_visible(self.layers.get("votes"), True)
+        self.preview_timer.start()
 
     def _refresh_preview(self):
         if self.dock is None:

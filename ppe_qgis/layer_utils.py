@@ -158,6 +158,18 @@ def place_layer(layer, role, visible=True):
     return layer
 
 
+def set_layer_visible(layer, visible):
+    """Tick or untick a layer in the Layers panel."""
+    if layer is None:
+        return
+    try:
+        node = QgsProject.instance().layerTreeRoot().findLayer(layer.id())
+    except RuntimeError:
+        return
+    if node is not None and node.itemVisibilityChecked() != bool(visible):
+        node.setItemVisibilityChecked(bool(visible))
+
+
 def remove_previous_layers(keep=()):
     """Remove the layers PPE added, except those whose role is in `keep`."""
     project = QgsProject.instance()
@@ -361,6 +373,11 @@ def replace_applied_mask(result, layers):
         QgsProject.instance().removeMapLayer(old.id())
     group = _project_group()
     mask = _add_raster(result.get("mask_qgis_path"), "PPE · Applied plant mask", "mask", group, True)
+    if mask is not None:
+        try:
+            mask.dataProvider().reloadData()      # read the file as it is now, never a cached copy
+        except Exception:
+            pass
     style_plant_mask(mask)
     layers["mask"] = mask
     for role in ("pale", "crops"):

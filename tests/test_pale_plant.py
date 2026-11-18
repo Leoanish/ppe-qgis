@@ -149,5 +149,10 @@ class FindingsTests(unittest.TestCase):
         expected = plain.copy(); expected[(plain == 1) & (self.codes == 3)] = 0
         self.assertTrue(np.array_equal(clipped, expected))                     # exactly those pixels, nothing else
         self.assertEqual(clipped_result["left_out"]["shaded leaves"], int(((plain == 1) & (self.codes == 3)).sum()))
+        self.assertEqual(clipped_result["left_out_pixels"], int(((plain == 1) & (self.codes == 3)).sum()))
+        self.assertTrue(clipped_result["mask_path"].endswith("_without_shaded.tif"))   # its own file: QGIS never shows an old copy
+        valid = int((plain != 255).sum())
+        self.assertAlmostEqual(clipped_result["canopy_before_clip_pct"], 100.0 * int((plain == 1).sum()) / valid, places=6)
+        self.assertAlmostEqual(clipped_result["canopy_pct"], 100.0 * int((clipped == 1).sum()) / valid, places=6)
         back = gdal.Open(NativePPEEngine().apply(dict(base, clip_codes=[]))["mask_path"]).ReadAsArray()
         self.assertTrue(np.array_equal(back, plain))                           # put back: identical to before

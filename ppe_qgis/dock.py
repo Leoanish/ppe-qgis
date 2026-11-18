@@ -235,6 +235,7 @@ class PPEDockWidget(QDockWidget):
         label.setObjectName("accentText" if kind == "accent" else "noteText")
         label.setWordWrap(True)
         label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        label.setMinimumWidth(1)          # a long word (a file path) must never make the panel wider
         box.addWidget(label)
         self._keep_text_height(label)
         return frame
@@ -1373,8 +1374,8 @@ class PPEDockWidget(QDockWidget):
         self.pale_title.setToolTip("Click to open or close the details")
         box.addWidget(self.pale_title)
         self.pale_body = QWidget(); body = QVBoxLayout(self.pale_body); body.setContentsMargins(0, 2, 0, 2); body.setSpacing(8)
-        intro = QLabel("Information only: nothing here changes the mask unless you tick <b>Leave out of the mask</b>. "
-                       "Untick to put them back.")
+        intro = QLabel("Nothing here changes the mask until you tick <b>Leave out of the mask</b>. One click rewrites "
+                       "the mask at once and shows how many pixels were taken out. Untick to put them back.")
         intro.setObjectName("paleText"); intro.setWordWrap(True); intro.setTextFormat(Qt.RichText); body.addWidget(intro)
         self.finding_rows = {}
         for code in (1, 2, 3, 4):
@@ -1444,12 +1445,14 @@ class PPEDockWidget(QDockWidget):
     def _clip_toggled(self, code, on):
         self._update_clip_status()
         self._threshold_changed(self.threshold_slider.value())
-        if self.result.get("mask_path") and not getattr(self, "_restoring_clips", False):
-            # The mask is already finalized: write it again at once, so ticking leaves pixels out and
-            # unticking puts them back. Nothing is lost either way: the mask is rebuilt from the vote.
+        if self.result.get("vote_path"):
+            # Write the mask at once (finalizing it if needed), so one click leaves pixels out and unticking
+            # puts them back. Nothing is lost either way: the mask is rebuilt from the vote each time.
             if self._busy:
                 self.clip_status.setText(self.clip_status.text() + " (PPE is busy: press Finalize mask when it is done.)")
             else:
+                self.clip_status.setText(self.clip_status.text() + " Updating the mask…" if self.clip_status.text() else "Updating the mask…")
+                self.clip_status.setVisible(True)
                 self._auto_apply = True
                 self._emit_apply()
 
@@ -1458,12 +1461,33 @@ class PPEDockWidget(QDockWidget):
             row["clip"].blockSignals(True); row["clip"].setChecked(False); row["clip"].blockSignals(False)
         self._clip_toggled(0, False)
 
+    def _show_clip_result(self, result):
+        """After the mask is written: what was actually left out, counted in the mask file itself."""
+        if not hasattr(self, "clip_status"):
+            return
+        left = result.get("left_out") or {}
+        if left:
+            parts = ", ".join("{} {:,}".format(name, int(px)) for name, px in left.items())
+            self.clip_status.setText(
+                "✔ Mask updated at {:.2f}: {:,} pixels left out ({}).\nCanopy {:.1f} % → {:.1f} %. "
+                "The live preview is switched off so the map shows the mask itself. Untick to put them back.".format(
+                    float(result.get("threshold") or self.threshold()), int(result.get("left_out_pixels") or 0), parts,
+                    float(result.get("canopy_before_clip_pct") or 0.0), float(result.get("canopy_pct") or 0.0)))
+            self.clip_status.setVisible(True)
+        elif getattr(self, "_auto_apply", False):
+            self.clip_status.setText("✔ Mask updated at {:.2f}: everything is back in. Canopy {:.1f} %.".format(
+                float(result.get("threshold") or self.threshold()), float(result.get("canopy_pct") or 0.0)))
+            self.clip_status.setVisible(True)
+
     def _update_clip_status(self):
         names = [self.FINDING_TEXT[c][1].lower() for c in (1, 2, 3, 4) if self.finding_rows[c]["clip"].isChecked()]
         if names:
             shares = self.finding_shares_now(); left = sum(shares.get(c, 0.0) for c in self.clip_codes())
-            self.clip_status.setText("Left out of the mask: {} ({:.1f} % of the plant at {:.2f}). Untick to put them back.".format(
-                ", ".join(names), left, self.threshold()))
+            text = "Leaving out: {} (about {:.1f} % of the plant at {:.2f}).".format(", ".join(names), left, self.threshold())
+            applied = (self.result or {}).get("applied_threshold")
+            if applied is not None and abs(float(applied) - self.threshold()) > 1e-6:
+                text += " The mask on the map is still at {:.2f}: press Finalize mask to write it at {:.2f}.".format(float(applied), self.threshold())
+            self.clip_status.setText(text)
         self.clip_status.setVisible(bool(names)); self.put_back_button.setVisible(bool(names))
 
     def _update_pale_card(self):
@@ -1939,8 +1963,10 @@ class PPEDockWidget(QDockWidget):
         if result.get("left_out"):
             lines.append("  left out of the mask: {} ({:.2f} % of the image; untick on this tab to put them back)".format(
                 ", ".join(result["left_out"]), float(result.get("left_out_pct") or 0.0)))
-        lines.append(result.get("mask_path", ""))
+        # a zero-width space after each / and _ lets a long path wrap instead of widening the panel
+        lines.append(result.get("mask_path", "").replace("/", "/\u200b").replace("\\", "\\\u200b").replace("_", "_\u200b"))
         self.applied_status.setText("\n".join(lines))
+        self._show_clip_result(result)
         for button in (self.export_bands_button, self.export_vis_button, self.export_all_button, self.aoi_export_button): button.setEnabled(True)
         self.export_status.setText("Mask finalized. Choose what to export.")
 
