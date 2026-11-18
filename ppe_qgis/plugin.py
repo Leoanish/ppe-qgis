@@ -11,6 +11,7 @@ from qgis.core import Qgis, QgsProject
 
 from .dock import PPEDockWidget
 from .layer_utils import (
+    arrange_layers,
     set_layer_visible,
     load_result_layers,
     load_import_layer,
@@ -140,7 +141,7 @@ class PPEPlugin:
     def _pale_layer_toggled(self, on):
         path = (self.dock.result or {}).get("pale_plant_path", "") if self.dock else ""
         with self._own_changes():
-            layer = show_pale_plant(path, on)
+            layer = show_pale_plant(path, on, self.dock.finding_kinds())
         if on and layer is None:
             self.dock.pale_layer_removed()
         self.iface.mapCanvas().refresh()
@@ -149,10 +150,10 @@ class PPEPlugin:
         """Something removed layers from the project. When it was the user and it was a PPE
         layer, bring the panel in line with what is still on the map."""
         if self.dock is not None and not self._removing:
-            for layer_id in layer_ids:
-                layer = QgsProject.instance().mapLayer(layer_id)
-                if layer is not None and layer.customProperty(ROLE_KEY, "") == "pale":
-                    self.dock.pale_layer_removed()
+            # What PPE found is one layer per kind: the button follows only when the last one goes
+            pale = [l.id() for l in QgsProject.instance().mapLayers().values() if l.customProperty(ROLE_KEY, "") == "pale"]
+            if pale and all(i in layer_ids for i in pale):
+                self.dock.pale_layer_removed()
         if self._removing or self.dock is None:
             return
         known = self._layer_ids()
@@ -171,6 +172,9 @@ class PPEPlugin:
             self.dock.mask_layers_removed(True)
 
     def _layers_removed(self, _layer_ids):
+        if not self._removing:
+            with self._own_changes():
+                arrange_layers()          # e.g. the What PPE found group once its last kind is deleted
         if self._image_removed and not self._removing:
             self._image_removed = False
             self._image_layer_gone()

@@ -41,7 +41,7 @@ from .band_dialog import BandFilesDialog
 from .plant_parts import likely_parts
 from .native_engine import finding_shares
 from .crop_tools import PolygonDrawTool, show_crop_areas, to_crs
-from .layer_utils import canopy_at, load_plot_layer, plot_layer, remove_role, set_plot_labels
+from .layer_utils import FINDING_COLOURS, canopy_at, load_plot_layer, plot_layer, remove_role, set_plot_labels
 from .native_engine import (BAND_LABELS, PLOT_FILE_FILTER, dataset_wavelengths, describe_image, display_channels,
                             guess_plot_id_field, open_plot_file, plots_over_image, scan_band_folder)
 
@@ -1380,7 +1380,7 @@ class PPEDockWidget(QDockWidget):
         self.finding_rows = {}
         for code in (1, 2, 3, 4):
             holder = QWidget(); line = QVBoxLayout(holder); line.setContentsMargins(0, 0, 0, 0); line.setSpacing(2)
-            title = QLabel(""); title.setObjectName("findingTitle"); title.setWordWrap(True)
+            title = QLabel(""); title.setObjectName("findingTitle"); title.setWordWrap(True); title.setTextFormat(Qt.RichText)
             note = QLabel(""); note.setObjectName("paleText"); note.setWordWrap(True)
             clip = QCheckBox("Leave out of the mask")
             clip.toggled.connect(lambda on, code=code: self._clip_toggled(code, on))
@@ -1435,6 +1435,16 @@ class PPEDockWidget(QDockWidget):
         if self._early_stage():
             shares[2] += shares[1]; shares[1] = 0.0
         return shares
+
+    def finding_kinds(self):
+        """The kinds listed on the card, for the map: [(code, [codes drawn])]. Early in the season
+        plant parts are counted as leaf edges, so the leaf-edge layer draws both."""
+        early = self._early_stage(); kinds = []
+        for code, row in self.finding_rows.items():
+            if row["holder"].isHidden() or (early and code == 1):
+                continue
+            kinds.append((code, [1, 2] if (early and code == 2) else [code]))
+        return kinds
 
     def clip_codes(self):
         """Finding codes left out of the mask (leaf edges include plant parts early in the season)."""
@@ -1505,7 +1515,10 @@ class PPEDockWidget(QDockWidget):
             row["holder"].setVisible(visible)
             if visible:
                 mark, name, note = self.FINDING_TEXT[code]
-                row["title"].setText("{}  {} — {:.1f} % of the plant".format(mark, name, share))
+                rgb = {c: col for c, col, _n in FINDING_COLOURS}[code]
+                # the square has the colour of this kind on the map (Show them on the map)
+                row["title"].setText('<span style="color:#{:02x}{:02x}{:02x}; font-size:15px;">■</span>&nbsp;{}&nbsp;&nbsp;{} — {:.1f} % of the plant'.format(
+                    rgb[0], rgb[1], rgb[2], mark, name, share))
                 row["note"].setText(note.format(parts=parts))
                 shown.append(name)
         if not shown:

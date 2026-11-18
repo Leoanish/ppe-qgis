@@ -8,6 +8,7 @@ from osgeo import gdal, osr
 from qgis.PyQt.QtGui import QColor
 from qgis.core import (
     Qgis,
+    QgsPalettedRasterRenderer,
     QgsColorRampShader,
     QgsFillSymbol,
     QgsLayerTreeGroup,
@@ -112,7 +113,9 @@ def _project_group():
 
 def _node_role(node):
     if isinstance(node, QgsLayerTreeGroup):
-        return "__group__" if node.name() == GROUP_NAME else None
+        if node.name() == GROUP_NAME and not node.customProperty(ROLE_KEY, ""):
+            return "__group__"
+        return node.customProperty(ROLE_KEY, "") or None    # PPE's own sub-groups (What PPE found)
     layer = node.layer() if hasattr(node, "layer") else None
     return layer.customProperty(ROLE_KEY, "") if layer is not None else None
 
@@ -125,6 +128,9 @@ def arrange_layers():
     """Put PPE's own layers in order (TOP_ORDER, then GROUP_ORDER inside the group). The user's
     layers keep their places: PPE's top-level layers are gathered where the first of them is."""
     root = QgsProject.instance().layerTreeRoot()
+    for node in list(root.children()):          # a PPE sub-group whose layers are all gone
+        if isinstance(node, QgsLayerTreeGroup) and node.customProperty(ROLE_KEY, "") and not node.children():
+            root.removeChildNode(node)
     group = root.findGroup(GROUP_NAME)
     if group is not None:
         if not group.children():
@@ -145,16 +151,21 @@ def arrange_layers():
             _move(root, node, target)
 
 
-def place_layer(layer, role, visible=True):
-    """Add a layer PPE made to the project at its place (see TOP_ORDER)."""
+def place_layer(layer, role, visible=True, parent=None):
+    """Add a layer PPE made to the project at its place (see TOP_ORDER). Its legend starts
+    folded, so the Layers panel stays short; the arrow beside it opens it."""
     layer.setCustomProperty(ROLE_KEY, role)
     QgsProject.instance().addMapLayer(layer, False)
     root = QgsProject.instance().layerTreeRoot()
-    (_project_group() if role in GROUP_ORDER else root).insertLayer(0, layer)
+    if parent is not None:
+        parent.addLayer(layer)
+    else:
+        (_project_group() if role in GROUP_ORDER else root).insertLayer(0, layer)
     arrange_layers()
     node = root.findLayer(layer.id())
     if node is not None:
         node.setItemVisibilityChecked(visible)
+        node.setExpanded(False)
     return layer
 
 
@@ -486,26 +497,44 @@ def _raise_role(role):
 PALE_LAYER_NAME = "PPE · What PPE found"
 FINDING_COLOURS = ((1, (255, 176, 0), "Plant parts that are not green"), (2, (90, 205, 255), "Leaf edges over soil"),
                    (3, (40, 80, 230), "Shaded leaves"), (4, (240, 50, 90), "Unclear"))
+FINDING_COLOUR_NAMES = {1: "amber", 2: "light blue", 3: "blue", 4: "red"}
 
 
-def show_pale_plant(path, visible=True):
-    """Add (or remove) the 'What PPE found' layer: one colour per kind, clear elsewhere.
-    Information only; it is not part of the mask."""
+def _pale_group(create=True):
+    root = QgsProject.instance().layerTreeRoot()
+    for node in root.children():
+        if isinstance(node, QgsLayerTreeGroup) and node.customProperty(ROLE_KEY, "") == "pale":
+            return node
+    if not create:
+        return None
+    group = root.insertGroup(0, PALE_LAYER_NAME)
+    group.setCustomProperty(ROLE_KEY, "pale")
+    return group
+
+
+def show_pale_plant(path, visible=True, kinds=None):
+    """Add (or remove) 'What PPE found': a group with one layer per kind, each in its own colour
+    and clear elsewhere, so each kind can be switched on and off on its own. All the layers read
+    the same file. Information only; it is not part of the mask.
+    kinds: [(code, [codes drawn]), ...] to show; by default every kind."""
     remove_role("pale")
-    if not visible:
+    if not visible or not path or not os.path.isfile(path):
         return None
-    layer = _add_raster(path, PALE_LAYER_NAME, "pale", _project_group(), True)
-    if layer is None:
-        return None
-    _force_nearest(layer)
-    ramp = QgsColorRampShader()
-    ramp.setColorRampType(QgsColorRampShader.Exact)
-    items = [QgsColorRampShader.ColorRampItem(0, QColor(0, 0, 0, 0), "Nothing to point out")]
-    items += [QgsColorRampShader.ColorRampItem(code, QColor(*rgb, 245), name) for code, rgb, name in FINDING_COLOURS]
-    items.append(QgsColorRampShader.ColorRampItem(255, QColor(0, 0, 0, 0), "No data"))
-    ramp.setColorRampItemList(items)
-    shader = QgsRasterShader(); shader.setRasterShaderFunction(ramp)
-    renderer = QgsSingleBandPseudoColorRenderer(layer.dataProvider(), 1, shader)
-    layer.setRenderer(renderer); layer.triggerRepaint()
-    _raise_role("crops"); raise_plot_layer()
-    return layer
+    colours = {code: (rgb, name) for code, rgb, name in FINDING_COLOURS}
+    kinds = kinds if kinds is not None else [(code, [code]) for code in colours]
+    layers = []
+    for code, codes in kinds:
+        rgb, name = colours[code]
+        # the colour is in the name: a folded layer shows no colour square in the Layers panel
+        layer = QgsRasterLayer(path, "{} ({})".format(name, FINDING_COLOUR_NAMES[code]), "gdal")
+        if not layer.isValid():
+            continue
+        _force_nearest(layer)
+        classes = [QgsPalettedRasterRenderer.Class(c, QColor(*rgb, 245), name) for c in codes]
+        layer.setRenderer(QgsPalettedRasterRenderer(layer.dataProvider(), 1, classes))
+        layers.append(place_layer(layer, "pale", True, parent=_pale_group()))
+    group = _pale_group(create=False)
+    if group is not None:
+        group.setExpanded(True)                  # the kinds stay listed: each has its own tick box
+    arrange_layers()
+    return layers[0] if layers else None

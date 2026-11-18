@@ -142,8 +142,15 @@ After each run PPE sorts out four kinds of pixel worth a look. Each is judged fr
 ![What PPE found](docs/images/10_what_ppe_found.jpg)
 
 1. Open the closed card **What PPE found: n things to look at**.
-2. Each kind present shows its share of the plant and one plain sentence.
-3. **Show them on the map** adds *PPE · What PPE found*: plant parts amber, leaf edges light blue, shaded leaves blue, unclear red. Here, the tassels lie along the corn rows.
+2. Each kind present shows its share of the plant and one plain sentence. The coloured square is its colour on the map.
+3. **Show them on the map** adds a group, *PPE · What PPE found*, with **one layer per kind**:
+   - *Plant parts that are not green (amber)*;
+   - *Leaf edges over soil (light blue)*;
+   - *Shaded leaves (blue)*;
+   - *Unclear (red)*.
+
+   Tick or untick each kind to see it alone or compare it with the others. All four layers read the same file, so this costs no disk space.
+4. Here, the tassels lie along the corn rows.
 
 **Leave a kind out of the mask, or put it back, with one click:**
 
@@ -214,12 +221,12 @@ plot_id,crop,threshold,plot_pixels,plant_pixels,canopy_pct,plot_area_m2,plant_ar
 
 1. PPE's results are layers of their own, kept in this order from the top:
    - **PPE · Plots**;
-   - **PPE · What PPE found** (when shown);
+   - the **PPE · What PPE found** group, with one layer per kind (when shown);
    - **PPE · Applied plant mask**;
-   - the **Plant Pixel Extractor** group, holding only the working layers (*Crop areas*, *Live threshold preview*);
    - **PPE · Image**.
+2. The **Plant Pixel Extractor** group holds only the working layers: *Crop areas* and *Live threshold preview*.
 
-   Your own layers keep their places. Removing the PPE image layer resets PPE; removing the live preview switches the slider off until the next run. Every layer can be restyled like any QGIS layer.
+PPE's layers come in **folded**, so the panel stays short; the arrow beside a layer shows its legend. Your own layers keep their places. Removing the PPE image layer resets PPE; removing the live preview switches the slider off until the next run. Every layer can be restyled like any QGIS layer.
 
 ## 12. Files PPE writes
 
