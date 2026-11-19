@@ -279,8 +279,7 @@ class PPEPlugin:
             QTimer.singleShot(0, lambda layer=rgb: zoom_to_layer(self.iface, layer))
         self.dock.set_results(result, curve)
         self.dock.batch_opened(entry, payload.get("choice"))
-        self._refresh_preview()
-        self.dock.tabs.setCurrentIndex(2)
+        self._refresh_preview()          # the user stays on the tab they opened it from (tab 6 or tab 3)
 
     def _start_apply(self, config):
         self.current_action = "apply"
@@ -339,7 +338,10 @@ class PPEPlugin:
                 # colour) steps aside until a slider moves or a finding kind is ticked.
                 set_layer_visible(self.layers.get("votes"), False)
             self.dock.set_applied(result)
-            self.dock.tabs.setCurrentIndex(3)
+            if self.dock.batch and self.dock.batch.get("open"):
+                self.dock.batch_mask_written(result)     # a batch image: stay where the user is
+            else:
+                self.dock.tabs.setCurrentIndex(3)
             self._message("Native PPE mask exported and loaded." + (" Left out: {}.".format(", ".join(result["left_out"])) if result.get("left_out") else ""), Qgis.Success)
             return
 

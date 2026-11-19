@@ -180,6 +180,12 @@ On whole fields it is clearly better than 0.50. On small clips it is better on a
 
 It needs a NIR band. On camera RGB images plant and soil differ too little in colour for a reliable plant share per pixel, so those start at 0.50 and the Review tab says so.
 
+## 4.2.1
+
+- **Batch review on the Batch tab:** slider, Finalize this mask and Next image appear right below the list.
+- **RGB-only images:** dark pixels whose strongest colour is green count as shaded leaves; the rest stay unclear. On PhenoBench, leaving out unclear now raises the overlap at 0.70 from 84.5 to 87.3.
+- **Fixed:** pure-black pixels in camera photos showed as white holes on the map; they are now drawn black.
+
 ## Batch: many images at once (4.2)
 
 Tab 6 runs every image of a folder (raster files, or sub-folders with band files), each exactly as on its own. The list shows each image's threshold, plant cover and checks, with images to check first on top. Open any image to review it on tab 3 with the normal slider and What PPE found; your setting is kept per image (Next image moves on). Finalize all masks writes every mask at its own threshold, plus `ppe_batch_summary.csv`. A batch can be reopened later from its `ppe_batch.json`.

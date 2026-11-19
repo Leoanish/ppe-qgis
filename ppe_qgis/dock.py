@@ -5,6 +5,7 @@ import os
 from statistics import median
 
 from qgis.PyQt.QtCore import QEvent, QObject, QSettings, QStandardPaths, Qt, QTimer, pyqtSignal
+from qgis.PyQt.QtGui import QBrush, QColor
 from qgis.PyQt.QtWidgets import (
     QAbstractItemView,
     QAbstractSpinBox,
@@ -782,18 +783,48 @@ class PPEDockWidget(QDockWidget):
         self.batch_table.setSelectionBehavior(QAbstractItemView.SelectRows); self.batch_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.batch_table.setEditTriggers(QAbstractItemView.NoEditTriggers); self.batch_table.verticalHeader().setVisible(False)
         head = self.batch_table.horizontalHeader()
-        head.setSectionResizeMode(0, QHeaderView.Stretch); head.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        head.setSectionResizeMode(2, QHeaderView.ResizeToContents); head.setSectionResizeMode(3, QHeaderView.Stretch)
+        head.setSectionResizeMode(0, QHeaderView.Stretch)
+        for col in (1, 2, 3): head.setSectionResizeMode(col, QHeaderView.ResizeToContents)
         self.batch_table.setMinimumHeight(230)
         layout.addWidget(self.batch_table)
-        self.batch_status = QLabel("Run a folder to fill this list. Images to check first are listed on top.")
+        self.batch_status = QLabel("Run a folder to fill this list. Images to check first (⚠, red) are listed on top.")
         layout.addWidget(self._note(self.batch_status))
         row = QHBoxLayout(); row.setSpacing(6)
-        self.batch_review_button = QPushButton("Review selected  →"); self.batch_review_button.setProperty("secondary", True)
+        self.batch_review_button = QPushButton("Review selected  ↓"); self.batch_review_button.setProperty("secondary", True)
         self.batch_same_button = QPushButton("Same settings for all"); self.batch_same_button.setProperty("secondary", True)
         self.batch_same_button.setToolTip("Give every image the threshold (and the kinds left out) of the image open on tab 3")
         row.addWidget(self.batch_review_button, 1); row.addWidget(self.batch_same_button, 1); layout.addLayout(row)
-        self.batch_finalize_button = QPushButton("Finalize all masks"); self.batch_finalize_button.setProperty("primary", True)
+        # Review right here: the image opens on the map and this box holds its slider and Finalize.
+        self.batch_review_box, review_body = self._card("Review")
+        rb = QVBoxLayout(review_body); rb.setContentsMargins(0, 0, 0, 0); rb.setSpacing(6)
+        self.batch_review_name = QLabel(""); self.batch_review_name.setObjectName("findingTitle"); self.batch_review_name.setWordWrap(True)
+        self.batch_review_name.setTextFormat(Qt.RichText); self.batch_review_name.setMinimumWidth(1); rb.addWidget(self.batch_review_name)
+        nums = QGridLayout(); nums.setVerticalSpacing(0)
+        for column, caption in enumerate(("Vote threshold", "Canopy cover")):
+            label = QLabel(caption); label.setObjectName("statCaption"); nums.addWidget(label, 0, column)
+        self.batch_threshold_value = QLabel("—"); self.batch_threshold_value.setObjectName("statValue")
+        self.batch_canopy_value = QLabel("—"); self.batch_canopy_value.setObjectName("statValue")
+        nums.addWidget(self.batch_threshold_value, 1, 0); nums.addWidget(self.batch_canopy_value, 1, 1); rb.addLayout(nums)
+        self.batch_slider = QSlider(Qt.Horizontal); self.batch_slider.setRange(15, 95); self.batch_slider.setSingleStep(1); rb.addWidget(self.batch_slider)
+        ends = QHBoxLayout()
+        for text in ("0.15 · more plant", "less plant · 0.95"):
+            label = QLabel(text); label.setObjectName("ppeHint"); ends.addWidget(label)
+            if text.startswith("0.15"): ends.addStretch()
+        rb.addLayout(ends)
+        row2 = QHBoxLayout(); row2.setSpacing(6)
+        self.batch_suggest_button = QPushButton("Suggested"); self.batch_suggest_button.setProperty("secondary", True)
+        self.batch_more_button = QPushButton("More on tab 3"); self.batch_more_button.setProperty("secondary", True)
+        self.batch_more_button.setToolTip("What PPE found (leave kinds out) and crops: on tab 3, for this same image")
+        row2.addWidget(self.batch_suggest_button, 1); row2.addWidget(self.batch_more_button, 1); rb.addLayout(row2)
+        row3 = QHBoxLayout(); row3.setSpacing(6)
+        self.batch_finalize_one = QPushButton("✓  Finalize this mask"); self.batch_finalize_one.setProperty("primary", True)
+        self.batch_next_inline = QPushButton("Next image  →"); self.batch_next_inline.setProperty("secondary", True)
+        row3.addWidget(self.batch_finalize_one, 1); row3.addWidget(self.batch_next_inline, 1); rb.addLayout(row3)
+        self.batch_review_note = QLabel(""); self.batch_review_note.setObjectName("ppeHint"); self.batch_review_note.setWordWrap(True)
+        rb.addWidget(self.batch_review_note)
+        self.batch_review_box.setVisible(False)
+        layout.addWidget(self.batch_review_box)
+        self.batch_finalize_button = QPushButton("✓  Finalize all masks"); self.batch_finalize_button.setProperty("primary", True)
         layout.addWidget(self.batch_finalize_button)
         for b in (self.batch_review_button, self.batch_same_button, self.batch_finalize_button): b.setEnabled(False)
         layout.addStretch(1)
@@ -853,26 +884,29 @@ class PPEDockWidget(QDockWidget):
             t = c.get("threshold", e.get("threshold"))
             plant = c.get("canopy_text") or ("{:.1f} %".format(e["canopy_pct"]) if e.get("canopy_pct") is not None else "—")
             if not done:
-                check = "failed: " + str(e.get("error", ""))[:80]
+                check = "failed"; tip = "Failed: " + str(e.get("error", ""))
             else:
-                check = "; ".join(e.get("warnings") or []) or "—"
-                if c.get("reviewed"): check = "✓ reviewed" + ("" if check == "—" else " · " + check)
-                if c.get("clip_codes") or c.get("add_codes"): check += " · kinds changed"
+                warns = "; ".join(e.get("warnings") or [])
+                check = "✓ mask" if c.get("finalized_mask") else ("✓ reviewed" if c.get("reviewed") else ("⚠ check" if warns else "—"))
+                tip = "; ".join(x for x in ("Check: " + warns if warns else "", "reviewed" if c.get("reviewed") else "",
+                                            "kinds left out or added" if (c.get("clip_codes") or c.get("add_codes")) else "",
+                                            "mask written: " + c["finalized_mask"] if c.get("finalized_mask") else "") if x) or "nothing to check"
             cells = [e["name"], "{:.2f}".format(t) if done and t is not None else "—", plant if done else "—", check]
             for col, text in enumerate(cells):
-                item = QTableWidgetItem(text); item.setToolTip(text)
+                item = QTableWidgetItem(text); item.setToolTip(e["name"] + " · " + tip)
                 if col == 0: item.setData(Qt.UserRole, e["name"])
-                if done and e.get("warnings") and not c.get("reviewed"): item.setForeground(Qt.darkRed)
-                if not done: item.setForeground(Qt.gray)
+                item.setForeground(QBrush(QColor("#1f3a30")))
+                if done and e.get("warnings") and not c.get("reviewed"): item.setForeground(QBrush(QColor("#b3261e")))
+                if not done: item.setForeground(QBrush(QColor("#8a8f8c")))
                 if (self.batch or {}).get("open") == e["name"]:
                     f = item.font(); f.setBold(True); item.setFont(f)
                 self.batch_table.setItem(r, col, item)
         n = len(entries); ok = sum(1 for e in entries if e.get("status") == "done")
         warned = sum(1 for e in entries if e.get("status") == "done" and e.get("warnings"))
         seen = sum(1 for e in entries if (choices.get(e["name"]) or {}).get("reviewed"))
-        self.batch_status.setText("{} of {} image(s) done; {} to check first (red, on top); {} reviewed. Select one and press Review "
-                                  "selected (or double-click it). Images you do not review are written at their suggested or "
-                                  "starting threshold.".format(ok, n, warned, seen) if n else "No images in this batch.")
+        self.batch_status.setText("{} of {} image(s) done; {} to check first (⚠, red, on top); {} reviewed. Select one and press Review "
+                                  "selected (or double-click it); hover a row for its checks. Images you do not review are written "
+                                  "at their suggested or starting threshold.".format(ok, n, warned, seen) if n else "No images in this batch.")
         if (self.batch or {}).get("final_note"):
             self.batch_status.setText(self.batch_status.text() + "\n\n" + self.batch["final_note"])
         for b in (self.batch_review_button, self.batch_finalize_button): b.setEnabled(bool(ok) and not self._busy)
@@ -913,7 +947,35 @@ class PPEDockWidget(QDockWidget):
         self.batch_banner_text.setTextFormat(Qt.RichText)
         self.batch_next_button.setEnabled(i < len(names))
         self.batch_banner.setVisible(True)
+        self.batch_review_name.setText("Image {} of {}: <b>{}</b>{}".format(i, len(names), entry["name"], "<br>Check: " + warn if warn else ""))
+        self.batch_next_inline.setEnabled(i < len(names))
+        self.batch_suggest_button.setEnabled(self.suggestion_button.isEnabled())
+        self.batch_review_note.setText("The map shows this image and its live mask. The setting is kept for this image; "
+                                       "Finalize this mask writes it now, or Finalize all masks writes every image at the end.")
+        self.batch_review_box.setVisible(True)
+        self._batch_sync_from_main()
         self._fill_batch_table()
+        for r in range(self.batch_table.rowCount()):
+            item = self.batch_table.item(r, 0)
+            if item is not None and item.data(Qt.UserRole) == entry["name"]:
+                self.batch_table.selectRow(r); break
+
+    def _batch_sync_from_main(self, *_args):
+        """The Batch tab's slider and numbers follow the main slider (tab 3), and the other way round."""
+        if not hasattr(self, "batch_slider"): return
+        self.batch_slider.blockSignals(True); self.batch_slider.setValue(self.threshold_slider.value()); self.batch_slider.blockSignals(False)
+        self.batch_slider.setEnabled(self.threshold_slider.isEnabled())
+        self.batch_threshold_value.setText(self.threshold_value.text()); self.batch_canopy_value.setText(self.canopy_value.text())
+
+    def _batch_finalize_open(self):
+        self._batch_save_open(); self._emit_apply()
+
+    def batch_mask_written(self, result):
+        """Finalize this mask finished for the open batch image."""
+        if not self.batch or not self.batch.get("open"): return
+        c = self.batch["choices"].setdefault(self.batch["open"], {})
+        c["finalized_mask"] = result.get("mask_path", ""); self._batch_write_choices(); self._fill_batch_table()
+        self.batch_review_note.setText("Mask written: {}".format(result.get("mask_path", "")))
 
     def _batch_save_open(self):
         """Keep the threshold and kinds of the batch image open on tab 3."""
@@ -1019,6 +1081,12 @@ class PPEDockWidget(QDockWidget):
         self.batch_same_button.clicked.connect(self._batch_same_for_all)
         self.batch_finalize_button.clicked.connect(self._emit_batch_finalize)
         self.batch_next_button.clicked.connect(self._batch_next)
+        self.batch_next_inline.clicked.connect(self._batch_next)
+        self.batch_slider.valueChanged.connect(self.threshold_slider.setValue)
+        self.threshold_slider.valueChanged.connect(self._batch_sync_from_main)
+        self.batch_suggest_button.clicked.connect(self._use_suggestion)
+        self.batch_more_button.clicked.connect(lambda: self.tabs.setCurrentIndex(2))
+        self.batch_finalize_one.clicked.connect(self._batch_finalize_open)
         self.batch_back_button.clicked.connect(self._batch_back)
 
     def _on_stacked_path_edited(self):
@@ -1629,8 +1697,9 @@ class PPEDockWidget(QDockWidget):
         1: ("✿", "Plant parts that are not green", "Probably {parts}. They are plant; they drop out if you raise the slider."),
         2: ("◌", "Leaf edges over soil", "Edges of leaves where a little soil shows through, so they look paler. They are plant."),
         3: ("●", "Shaded leaves", "Darker leaves under the top of the canopy or in shadow. They are plant: their NDVI is a leaf's "
-            "(and, with a good NIR band, they reflect more near-infrared light than bare soil can)."),
-        4: ("?", "Unclear", "Too dark to tell soil from leaf. You can leave them out of the mask."),
+            "(and, with a good NIR band, they reflect more near-infrared light than bare soil can). Without NIR: dark pixels whose "
+            "strongest colour is still green."),
+        4: ("?", "Unclear", "Too dark to tell soil from leaf (without NIR: dark and not green, mostly soil in shadow). You can leave them out of the mask."),
         5: ("❧", "Dry or yellowing plant parts", "Leaves inside the canopy that are drying or turning yellow-brown. They are plant; "
             "leave them out if you want only green plant."),
         6: ("✚", "Faint plants in sparse spots", "Where the canopy is thin (under 25 % plant in 3 m squares at the suggested threshold), "
@@ -2197,6 +2266,7 @@ class PPEDockWidget(QDockWidget):
         self.batch_cancel_button.setVisible(running and batch_action)
         self.batch_run_button.setEnabled(not running and bool(getattr(self, "_batch_items_found", None)))
         self.batch_load_button.setEnabled(not running)
+        for b in (self.batch_finalize_one, self.batch_next_inline, self.batch_slider): b.setEnabled(not running)
         if self.batch: self._fill_batch_table()
         if running and (action == "zones" or str(action).startswith("export") or str(action).startswith("batch")):
             bar = self._bar_for(action)
@@ -2229,6 +2299,7 @@ class PPEDockWidget(QDockWidget):
         if self.batch and self.batch.get("open"):
             self._batch_save_open(); self.batch["open"] = None
         if hasattr(self, "batch_banner"): self.batch_banner.setVisible(False)
+        if hasattr(self, "batch_review_box"): self.batch_review_box.setVisible(False)
         self.pale_layer_removed()                 # a new run removes the old findings layer
         self._close_pale_card()
         for row in self.finding_rows.values():
@@ -2449,6 +2520,11 @@ class PPEDockWidget(QDockWidget):
             QProgressBar { border: 1px solid #d3dfd8; border-radius: 6px; background: #e8eeeb; text-align: center; color: #1f3a30; min-height: 20px; max-height: 20px; font-size: 11px; }
             QProgressBar::chunk { background: #8fcfae; border-radius: 5px; }
 
+            QTableWidget { color: #1f3a30; background: #ffffff; alternate-background-color: #f6f9f7; gridline-color: #e3ebe6; border: 1px solid #d9e3dd; border-radius: 6px; selection-background-color: #cfe5da; selection-color: #17473a; }
+            QTableWidget::item { padding: 2px 4px; }
+            QTableWidget::item:selected { background: #cfe5da; color: #17473a; }
+            QHeaderView::section { color: #1f3a30; background: #e8eeeb; border: none; border-right: 1px solid #d9e3dd; border-bottom: 1px solid #d9e3dd; padding: 4px 6px; font-weight: 600; }
+            QTableCornerButton::section { background: #e8eeeb; border: none; }
             QPlainTextEdit { color: #23392f; background: #ffffff; border: 1px solid #d9e3dd; border-radius: 6px; padding: 4px; font-family: Menlo, Consolas, monospace; font-size: 10px; }
 
             QTabWidget::pane { border: none; }

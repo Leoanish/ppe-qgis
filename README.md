@@ -241,7 +241,7 @@ For many images (dates, fields or flights), PPE can run a whole folder and let y
 1. **Choose the folder.** Every raster file in it (`.tif`, `.tiff`, `.vrt`, `.img`, `.jp2`) is one image, and every sub-folder holding band files is one image. The tab says how many it found. The output and working folders are the ones set on tab 1; each image gets its own sub-folder.
 2. **Run all.** The images run one after another, each exactly as on its own: same vote, suggested threshold, What PPE found, warnings and confident labels. An image that fails is listed as failed and the rest go on. **Cancel** stops after the current image; the finished ones are kept.
 3. **The list.** One row per image: threshold, plant cover and checks. Images to check first (for example "plants and ground do not separate clearly") are on top in red.
-4. **Review selected** (or double-click a row) opens the image on tab 3 with the normal slider, What PPE found and crop tools. A banner says which image it is; **Next image** goes to the next one and **Batch list** goes back. Your threshold and any kinds left out are kept for that image.
+4. **Review selected** (or double-click a row) opens the image on the map and shows its review right below the list: threshold, canopy cover, the slider, **Suggested**, **✓ Finalize this mask** and **Next image**. No need to leave the tab. **More on tab 3** opens What PPE found and crop tools for the same image (a banner there says which image it is). Your threshold and any kinds left out are kept for that image. In the list, ⚠ marks images to check, ✓ reviewed or ✓ mask written; hover a row for the details.
 5. **Same settings for all** gives every image the threshold (and kinds left out) of the image open on tab 3.
 6. **Finalize all masks** writes every mask at its own threshold into the image's folder, plus `ppe_batch_summary.csv`: image, threshold, whether you reviewed it, plant cover, what was left out, checks, mask and labels paths. Images you did not open are written at their suggested (or starting) threshold.
 
@@ -278,7 +278,7 @@ The output and working folders are set under **Folders** on tab 1; plot results 
 ## 14. Tips and troubleshooting
 
 - **The mask misses pale plants or flowers.** Lower the threshold a little, or draw that crop as its own area with a lower threshold. At tasselling, a corn field kept its tassels near 0.30 without letting soil in.
-- **Shaded leaves or dark gaps.** Open *What PPE found*. Shaded leaves are plant; unclear pixels can be left out with one tick and put back.
+- **Shaded leaves or dark gaps.** Open *What PPE found*. Shaded leaves are plant; unclear pixels can be left out with one tick and put back. On RGB-only images (no NIR) PPE tells them apart by colour: dark pixels whose strongest colour is still green are shaded leaves, the rest (mostly soil in shadow) are unclear.
 - **Wrong bands.** Check tab 1's *bands found* line, and for folders, the Band column of the band-files dialog.
 - **No plots over the image.** The plot file has no coordinate system (a Shapefile without `.prj`) or is in the wrong place.
 - **Errors** always name the step, the kind of error and the log file. Report problems at <https://github.com/Leoanish/ppe-qgis/issues> with the log, the QGIS version, the sensor and the raster size.
