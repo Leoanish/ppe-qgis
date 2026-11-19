@@ -4,7 +4,8 @@ from datetime import datetime
 from qgis.PyQt.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 from .native_engine import Cancelled, NativePPEEngine
 
-ACTION_NAMES = {"run": "Run", "apply": "Finalize", "zones": "Preparing the crop areas", "export_aoi": "Plot export", "preview": "Opening the image"}
+ACTION_NAMES = {"run": "Run", "apply": "Finalize", "zones": "Preparing the crop areas", "export_aoi": "Plot export", "preview": "Opening the image",
+                "batch_run": "Batch run", "batch_finalize": "Finalizing the batch"}
 
 
 def describe_error(exc, action=None, step=None, log_path=None):
@@ -37,6 +38,8 @@ class _Worker(QObject):
             engine=NativePPEEngine(self._progress,self.log.emit,self.import_ready.emit,lambda:self.cancelled)
             action=self.config.get("action")
             if action=="apply": result=engine.apply(self.config)
+            elif action=="batch_run": result=engine.batch_run(self.config)
+            elif action=="batch_finalize": result=engine.batch_finalize(self.config)
             elif action=="zones": result=engine.prepare_crop_areas(self.config)
             elif action=="export_aoi": result=engine.export_aoi_statistics(self.config)
             elif str(action).startswith("export"): result=engine.export_plant_only(self.config)

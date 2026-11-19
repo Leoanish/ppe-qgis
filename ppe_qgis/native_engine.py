@@ -1297,6 +1297,66 @@ def _pixel_area_m2(dataset):
     return abs(gt[1] * gt[5] - gt[2] * gt[4]) * srs.GetLinearUnits() ** 2
 
 
+# Batch (4.2): many images in one go. Each image is run exactly as on its own (same vote, suggested
+# threshold, What PPE found, warning, confident labels); the user then reviews them one by one with
+# the normal slider and writes every mask at its own threshold.
+BATCH_IMAGE_EXT = (".tif", ".tiff", ".vrt", ".img", ".jp2")
+BATCH_SKIP_DIRS = ("logs", "ppe_batch", "ppe_work")
+
+
+def list_batch_images(folder):
+    """The images in a folder: every raster file directly in it (one stacked image each) and every
+    sub-folder holding at least two recognised band files (a band folder). Sorted by name."""
+    items = []
+    if not folder or not os.path.isdir(folder):
+        return items
+    for name in sorted(os.listdir(folder), key=str.lower):
+        path = os.path.join(folder, name)
+        if name.startswith(".") or name.lower().startswith(BATCH_SKIP_DIRS):
+            continue
+        if os.path.isfile(path) and name.lower().endswith(BATCH_IMAGE_EXT):
+            items.append({"name": os.path.splitext(name)[0], "source_mode": "stacked", "stacked_path": path})
+        elif os.path.isdir(path):
+            try:
+                scan = scan_band_folder(path)
+            except Exception:
+                continue
+            if sum(1 for f in scan["files"] if f.get("use")) >= 2:
+                items.append({"name": name, "source_mode": "folder", "folder_path": path})
+    seen = {}
+    for item in items:                       # two files with the same name stem get distinct output folders
+        k = item["name"].lower(); seen[k] = seen.get(k, 0) + 1
+        if seen[k] > 1: item["name"] = "{}_{}".format(item["name"], seen[k])
+    return items
+
+
+def _jsonable(x):
+    if isinstance(x, dict): return {str(k): _jsonable(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)): return [_jsonable(v) for v in x]
+    if isinstance(x, np.ndarray): return x.tolist()
+    if isinstance(x, np.generic): return x.item()
+    if isinstance(x, float) and not math.isfinite(x): return None
+    return x
+
+
+def canopy_at(curve_path, threshold):
+    """Plant cover (percent) at a threshold, from the run's threshold curve."""
+    try:
+        with open(curve_path, newline="", encoding="utf-8-sig") as f:
+            pts = sorted((float(r["plant_thresh"]), float(r["canopy_pct"])) for r in csv.DictReader(f))
+    except (OSError, KeyError, ValueError):
+        return None
+    if not pts: return None
+    t = [a for a, _b in pts]; c = [b for _a, b in pts]
+    return float(np.interp(float(threshold), t, c))
+
+
+def load_batch_result(path):
+    """A run result saved by a batch, as the panel gets it from a run of its own."""
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
 class Cancelled(RuntimeError): pass
 
 
@@ -1900,7 +1960,7 @@ class NativePPEEngine:
                 labels["plant_pct"], labels["soil_pct"], labels["unlabelled_pct"]))
         findings_hist = findings_histograms(findings_path, vote_path)
         pale_pct, pale_lost_pct = self._log_findings(findings_hist if finding_fit else None)
-        result = dict(imported, vote_path=vote_path, curve_path=curve_path, threshold=start_threshold, suggestion=suggestion or {}, suggestion_note="" if suggestion else no_suggestion_reason, selected_layers=chosen, chosen_layers=chosen, layer_details=layer_details, n_voters=n_masks, n_method_masks=n_masks, canopy_regime="classic", adaptation_mode="adaptive" if adaptive else "global", half_mixture=half_mixture, spread_ranking=[{"layer": name, "group": group, "spread": spread} for spread, name, group in leaders], mixed_class_vote=.5, bright_guard=bool(guard), bright_rejection_path=rejection_path, bright_rejected_pct=rejected_pct, shadow_guard=bool(shadow_guard), shadow_rejection_path=shadow_rejection_path, shadow_rejected_pct=shadow_rejected_pct, biofilm_guard=bool(algae_guard), algae_guard_fit=algae_guard or {}, biofilm_rejection_path=biofilm_rejection_path, biofilm_rejected_pct=biofilm_rejected_pct, colour_guard=bool(colour_guard), colour_rejected_pct=colour_rejected_pct, weak_green_warning=bool(colour_guard and colour_guard["plant_excess"] < WEAK_GREEN), single_class="", one_class_warning=one_class or "", pale_plant_path=pale_path, pale_plant_pct=pale_pct, pale_plant_lost_pct=pale_lost_pct, pale_plant_fit=pale_fit or {}, findings_path=findings_path, findings_hist=findings_hist, findings_judged=bool(finding_fit), sparse_spots=sparse_spots, findings_fit={k: v for k, v in (finding_fit or {}).items() if k != "pale"}, findings_not_checked=dict(findings_not_checked), findings_note=findings_note, split_separability=split_sep, weak_split_warning=weak_split, confident_labels=labels, confident_labels_path=labels.get("path", ""), ppe_version="native-4.1.0", processing_threads=self.thread_count, output_dir=cfg["output_dir"], timings={"total": time.time()-started})
+        result = dict(imported, vote_path=vote_path, curve_path=curve_path, threshold=start_threshold, suggestion=suggestion or {}, suggestion_note="" if suggestion else no_suggestion_reason, selected_layers=chosen, chosen_layers=chosen, layer_details=layer_details, n_voters=n_masks, n_method_masks=n_masks, canopy_regime="classic", adaptation_mode="adaptive" if adaptive else "global", half_mixture=half_mixture, spread_ranking=[{"layer": name, "group": group, "spread": spread} for spread, name, group in leaders], mixed_class_vote=.5, bright_guard=bool(guard), bright_rejection_path=rejection_path, bright_rejected_pct=rejected_pct, shadow_guard=bool(shadow_guard), shadow_rejection_path=shadow_rejection_path, shadow_rejected_pct=shadow_rejected_pct, biofilm_guard=bool(algae_guard), algae_guard_fit=algae_guard or {}, biofilm_rejection_path=biofilm_rejection_path, biofilm_rejected_pct=biofilm_rejected_pct, colour_guard=bool(colour_guard), colour_rejected_pct=colour_rejected_pct, weak_green_warning=bool(colour_guard and colour_guard["plant_excess"] < WEAK_GREEN), single_class="", one_class_warning=one_class or "", pale_plant_path=pale_path, pale_plant_pct=pale_pct, pale_plant_lost_pct=pale_lost_pct, pale_plant_fit=pale_fit or {}, findings_path=findings_path, findings_hist=findings_hist, findings_judged=bool(finding_fit), sparse_spots=sparse_spots, findings_fit={k: v for k, v in (finding_fit or {}).items() if k != "pale"}, findings_not_checked=dict(findings_not_checked), findings_note=findings_note, split_separability=split_sep, weak_split_warning=weak_split, confident_labels=labels, confident_labels_path=labels.get("path", ""), ppe_version="native-4.2.0", processing_threads=self.thread_count, output_dir=cfg["output_dir"], timings={"total": time.time()-started})
         with open(os.path.join(run_dir, "run_summary.json"), "w", encoding="utf-8") as handle: json.dump(result, handle, indent=2)
         self.progress(100, "Plant vote raster and threshold curve are ready"); return result
 
@@ -2120,6 +2180,90 @@ class NativePPEEngine:
             w=csv.writer(f); w.writerow(("plant_thresh","canopy_pct"))
             for t in np.arange(.15,.951,.01): w.writerow((round(float(t),2),float(100*np.mean(x >= max(0,t-.05)))))
 
+    def batch_run(self, cfg):
+        """Run PPE on every image of cfg['batch_folder'] (see list_batch_images), one after another.
+        Each image gets its own folder under cfg['output_dir']; one image failing does not stop the rest.
+        Writes ppe_batch.json (updated after every image) and returns it."""
+        items = cfg.get("batch_items") or list_batch_images(cfg.get("batch_folder"))
+        if not items: raise ValueError("No images found in the folder: it needs raster files (.tif) or band folders.")
+        root = cfg["output_dir"]; os.makedirs(root, exist_ok=True); work_root = cfg.get("work_dir") or os.path.join(root, "ppe_work")
+        manifest_path = os.path.join(root, "ppe_batch.json"); started = time.time()
+        common = {k: v for k, v in cfg.items() if k not in ("action", "batch_items", "batch_folder", "output_dir", "work_dir",
+                                                            "source_mode", "stacked_path", "folder_path", "band_files")}
+        manifest = {"batch_folder": cfg.get("batch_folder", ""), "output_dir": root, "created": datetime.now().isoformat(timespec="seconds"),
+                    "ppe_version": "native-4.2.0", "items": []}
+        outer = self.progress_cb; n = len(items)
+        self.log_cb("Batch: {} image(s) in {}.".format(n, cfg.get("batch_folder", "the list")))
+        for i, item in enumerate(items):
+            if self.cancelled(): raise Cancelled("Batch cancelled after {} of {} images; those are kept in ppe_batch.json.".format(i, n))
+            name = item["name"]; out_dir = os.path.join(root, name)
+            entry = {"name": name, "source_mode": item["source_mode"], "source": item.get("stacked_path") or item.get("folder_path"),
+                     "output_dir": out_dir, "status": "running"}
+            self.progress_cb = (lambda p, m, i=i, name=name: outer(int(100 * (i + p / 100.0) / n), "{} ({}/{}): {}".format(name, i + 1, n, m)))
+            t0 = time.time()
+            try:
+                r = self.run(dict(common, **{k: v for k, v in item.items() if k != "name"}, output_dir=out_dir, work_dir=os.path.join(work_root, name)))
+                os.makedirs(out_dir, exist_ok=True); result_path = os.path.join(out_dir, "ppe_batch_result.json")
+                with open(result_path, "w", encoding="utf-8") as f:
+                    json.dump(_jsonable(r), f)
+                t = float(r.get("threshold", 0.5))
+                entry.update(status="done", result_path=result_path, threshold=t, suggested_threshold=t if r.get("suggestion") else None,
+                             canopy_pct=canopy_at(r.get("curve_path"), t), split_separability=r.get("split_separability"),
+                             weak_split=bool(r.get("weak_split_warning")), warnings=[w for w in (
+                                 "plants and ground do not separate clearly" if r.get("weak_split_warning") else "",
+                                 "looks like bare soil only" if r.get("one_class_warning") == "soil" else "",
+                                 "looks like closed canopy only" if r.get("one_class_warning") == "plant" else "",
+                                 "plants barely greener than soil" if r.get("weak_green_warning") else "") if w],
+                             layers=r.get("chosen_layers"), seconds=time.time() - t0)
+                self.log_cb("Batch {}/{}: {} done in {:.0f} s (threshold {:.2f}{}).".format(i + 1, n, name, entry["seconds"], t,
+                            "; check it: " + ", ".join(entry["warnings"]) if entry["warnings"] else ""))
+            except Cancelled:
+                raise
+            except Exception as exc:
+                entry.update(status="failed", error="{}: {}".format(type(exc).__name__, str(exc).strip() or "no details"), seconds=time.time() - t0)
+                self.log_cb("Batch {}/{}: {} failed ({}); going on with the next image.".format(i + 1, n, name, entry["error"]))
+            manifest["items"].append(entry); manifest["seconds"] = time.time() - started
+            with open(manifest_path, "w", encoding="utf-8") as f:
+                json.dump(_jsonable(manifest), f, indent=1)
+        self.progress_cb = outer
+        done = sum(1 for e in manifest["items"] if e["status"] == "done")
+        self.log_cb("Batch finished: {} of {} images done in {:.0f} s; {} to check first.".format(
+            done, n, time.time() - started, sum(1 for e in manifest["items"] if e.get("warnings"))))
+        manifest["manifest_path"] = manifest_path
+        return manifest
+
+    def batch_finalize(self, cfg):
+        """Write the mask of every finished image of a batch at its own threshold (cfg['choices']:
+        name -> {threshold, clip_codes, add_codes}; default: the image's suggested or starting threshold).
+        Writes ppe_batch_summary.csv next to ppe_batch.json and returns the rows."""
+        manifest_path = cfg["manifest_path"]
+        with open(manifest_path, encoding="utf-8") as f:
+            manifest = json.load(f)
+        choices = cfg.get("choices") or {}; rows = []
+        items = [e for e in manifest["items"] if e.get("status") == "done"]
+        if not items: raise ValueError("No finished images in this batch to finalize.")
+        outer = self.progress_cb; n = len(items)
+        for i, e in enumerate(items):
+            if self.cancelled(): raise Cancelled("Finalizing cancelled after {} of {} images.".format(i, n))
+            r = load_batch_result(e["result_path"]); c = choices.get(e["name"]) or {}
+            t = float(c.get("threshold", e.get("threshold", 0.5)))
+            self.progress_cb = (lambda p, m, i=i, name=e["name"]: outer(int(100 * (i + p / 100.0) / n), "{} ({}/{}): {}".format(name, i + 1, n, m)))
+            a = self.apply({"vote_path": r["vote_path"], "threshold": t, "output_dir": e["output_dir"], "findings_path": r.get("findings_path"),
+                            "clip_codes": c.get("clip_codes") or [], "add_codes": c.get("add_codes") or [], "chosen_layers": r.get("chosen_layers"),
+                            "source_mode": e["source_mode"], "stacked_path": e["source"] if e["source_mode"] == "stacked" else "",
+                            "folder_path": e["source"] if e["source_mode"] == "folder" else "", "threads": cfg.get("threads")})
+            rows.append({"image": e["name"], "threshold": round(t, 3), "reviewed": bool(c.get("reviewed")), "canopy_pct": round(a["canopy_pct"], 3),
+                         "left_out": "; ".join(a.get("left_out") or {}), "added_pixels": a.get("added_pixels", 0),
+                         "check": "; ".join(e.get("warnings") or []), "separation": e.get("split_separability"), "mask_path": a["mask_path"],
+                         "confident_labels": r.get("confident_labels_path", "")})
+            self.log_cb("Finalized {} ({}/{}): threshold {:.2f}, plant {:.1f}%.".format(e["name"], i + 1, n, t, a["canopy_pct"]))
+        self.progress_cb = outer
+        summary = os.path.join(os.path.dirname(manifest_path), "ppe_batch_summary.csv")
+        with open(summary, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
+        self.log_cb("Batch summary: {}".format(summary))
+        return {"summary_csv": summary, "rows": rows, "manifest_path": manifest_path, "batch_finalized": True}
+
     def apply(self, cfg):
         """Write the plant mask. With crop areas (cfg zone_path + zone_thresholds: index 0 for the rest
         of the image, then one per crop) each area gets its own threshold; the vote is unchanged."""
@@ -2239,7 +2383,7 @@ class NativePPEEngine:
     def write_run_record(self, cfg, result, out_dir):
         """Save what was run and chosen as ppe_run_record.json (the start of a data catalogue)."""
         try:
-            record={"plugin_version":"4.1.0","written":datetime.now().isoformat(timespec="seconds"),
+            record={"plugin_version":"4.2.0","written":datetime.now().isoformat(timespec="seconds"),
                     "source_mode":cfg.get("source_mode"),"source":cfg.get("stacked_path") or cfg.get("folder_path") or cfg.get("bands"),
                     "field_info":cfg.get("field_info") or {},"suggestion":cfg.get("suggestion") or {},
                     "final_threshold":result.get("threshold"),"canopy_pct":result.get("canopy_pct"),

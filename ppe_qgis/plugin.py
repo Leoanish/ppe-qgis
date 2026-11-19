@@ -24,9 +24,11 @@ from .layer_utils import (
     replace_preview_layer,
     validate_aligned,
     show_pale_plant,
+    zoom_to_layer,
     ROLE_KEY,
 )
 from .process_runner import describe_error, PPEPreviewRunner, PPEProcessRunner
+from .native_engine import load_batch_result
 
 
 class PPEPlugin:
@@ -94,6 +96,9 @@ class PPEPlugin:
         self.dock.zones_cleared.connect(self._zones_cleared)
         self.dock.pale_layer_toggled.connect(self._pale_layer_toggled)
         self.dock.crop_preview_changed.connect(self._tuning)
+        self.dock.batch_run_requested.connect(self._start_batch)
+        self.dock.batch_finalize_requested.connect(self._start_batch)
+        self.dock.batch_open_requested.connect(self._open_batch_item)
         QgsProject.instance().layersWillBeRemoved.connect(self._layers_will_be_removed)
         QgsProject.instance().layersRemoved.connect(self._layers_removed)
         self._project_hooked = True
@@ -235,6 +240,48 @@ class PPEPlugin:
                 replace_preview_layer(vote, self.layers)
             self._refresh_preview()
 
+    def _start_batch(self, config):
+        """Run every image of a folder, or write every mask of a batch, in the background."""
+        if self.runner.is_running:
+            return
+        self.current_action = config.get("action", "batch_run")
+        self.dock.log_view.clear()
+        self.dock.set_running(True, self.current_action)
+        self._start_process(config)
+
+    def _open_batch_item(self, payload):
+        """Show one finished image of a batch for review, exactly as after its own run."""
+        if self.runner.is_running or self.dock is None:
+            return
+        entry = payload.get("entry") or {}
+        try:
+            result = load_batch_result(entry["result_path"])
+        except (OSError, KeyError, ValueError) as exc:
+            self._message("Could not open {}: {}".format(entry.get("name", "this image"), exc), Qgis.Warning)
+            return
+        if not os.path.isfile(result.get("vote_path", "")):
+            self._message("The vote raster of {} is missing (was the working folder cleared?). Run the batch again.".format(entry.get("name")), Qgis.Warning)
+            return
+        aligned, detail = validate_aligned([result.get("rgb_path"), result.get("vote_path")])
+        if not aligned:
+            self._message("{}: image and vote raster do not line up ({}).".format(entry.get("name"), detail), Qgis.Warning)
+            return
+        self.current_action = "run"
+        curve = read_curve(result.get("curve_path"))
+        with self._own_changes():
+            self.layers = load_result_layers(self.iface, result, float(result.get("threshold", 0.5)))
+        if self.layers.get("votes") is None:
+            self._message("QGIS could not load the vote raster of {}.".format(entry.get("name")), Qgis.Warning)
+            return
+        rgb = self.layers.get("rgb")
+        if rgb is not None and rgb.crs().isValid() and QgsProject.instance().crs() != rgb.crs():
+            QgsProject.instance().setCrs(rgb.crs())   # batch images may come from different UTM zones: show each in its own
+            QTimer.singleShot(0, lambda layer=rgb: zoom_to_layer(self.iface, layer))
+        self.dock.set_results(result, curve)
+        self.dock.batch_opened(entry, payload.get("choice"))
+        self._refresh_preview()
+        self.dock.tabs.setCurrentIndex(2)
+
     def _start_apply(self, config):
         self.current_action = "apply"
         self.dock.set_running(True, "apply")
@@ -258,6 +305,17 @@ class PPEPlugin:
             self.dock.set_running(running, self.current_action)
 
     def _job_succeeded(self, result):
+        if self.current_action == "batch_run":
+            self.dock.set_batch(result)
+            done = sum(1 for e in result.get("items", []) if e.get("status") == "done"); n = len(result.get("items", []))
+            check = sum(1 for e in result.get("items", []) if e.get("warnings"))
+            self._message("Batch done: {} of {} images{}. Review them on tab 6.".format(done, n, "; {} to check first".format(check) if check else ""),
+                          Qgis.Success if done == n else Qgis.Warning)
+            return
+        if self.current_action == "batch_finalize":
+            self.dock.set_batch_finalized(result)
+            self._message("Batch masks written: {} images. Summary: {}".format(len(result.get("rows", [])), result.get("summary_csv", "")), Qgis.Success)
+            return
         if self.current_action.startswith("export"):
             self.dock.set_exported(result)
             message = "AOI plot statistics export complete." if result.get("aoi_csv") else "Plant-only GeoTIFF export complete."
@@ -320,6 +378,8 @@ class PPEPlugin:
             self._message("PPE mask generated. Review the live threshold preview.", Qgis.Success)
 
     def _import_ready(self, result):
+        if str(self.current_action).startswith("batch"):
+            return                      # a batch does not put every image on the map while it runs
         with self._own_changes():
             rgb = load_import_layer(self.iface, result)
         if rgb is None:

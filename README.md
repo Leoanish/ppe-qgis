@@ -22,9 +22,10 @@ The screenshots below are from a real run in QGIS 3.34 on a five-band multispect
 8. [Finalize the mask](#8-finalize-the-mask)
 9. [Tab 4 Export: plant-only rasters](#9-tab-4-export-plant-only-rasters)
 10. [Tab 5 Plots: canopy and statistics per plot](#10-tab-5-plots-canopy-and-statistics-per-plot)
-11. [The Layers panel](#11-the-layers-panel)
-12. [Files PPE writes](#12-files-ppe-writes)
-13. [Tips and troubleshooting](#13-tips-and-troubleshooting)
+11. [Tab 6 Batch: many images at once](#11-tab-6-batch-many-images-at-once)
+12. [The Layers panel](#12-the-layers-panel)
+13. [Files PPE writes](#13-files-ppe-writes)
+14. [Tips and troubleshooting](#14-tips-and-troubleshooting)
 
 ---
 
@@ -231,7 +232,22 @@ plot_id,crop,threshold,plot_pixels,plant_pixels,canopy_pct,plot_area_m2,plant_ar
 
 **`ppe_plot_statistics.csv`** has one row per plot and variable (every band and index). It holds the canopy columns, then, for the plant pixels only: `pixel_count`, `mean`, `median`, `sd`, `cv_pct`, `min`, `p10`, `q25`, `q75`, `p90` and `max`. Percentiles follow R's default (type 7), so they match the `ppe` R package.
 
-## 11. The Layers panel
+## 11. Tab 6 Batch: many images at once
+
+![Batch tab](docs/images/13_batch.png)
+
+For many images (dates, fields or flights), PPE can run a whole folder and let you check each image with the same slider.
+
+1. **Choose the folder.** Every raster file in it (`.tif`, `.tiff`, `.vrt`, `.img`, `.jp2`) is one image, and every sub-folder holding band files is one image. The tab says how many it found. The output and working folders are the ones set on tab 1; each image gets its own sub-folder.
+2. **Run all.** The images run one after another, each exactly as on its own: same vote, suggested threshold, What PPE found, warnings and confident labels. An image that fails is listed as failed and the rest go on. **Cancel** stops after the current image; the finished ones are kept.
+3. **The list.** One row per image: threshold, plant cover and checks. Images to check first (for example "plants and ground do not separate clearly") are on top in red.
+4. **Review selected** (or double-click a row) opens the image on tab 3 with the normal slider, What PPE found and crop tools. A banner says which image it is; **Next image** goes to the next one and **Batch list** goes back. Your threshold and any kinds left out are kept for that image.
+5. **Same settings for all** gives every image the threshold (and kinds left out) of the image open on tab 3.
+6. **Finalize all masks** writes every mask at its own threshold into the image's folder, plus `ppe_batch_summary.csv`: image, threshold, whether you reviewed it, plant cover, what was left out, checks, mask and labels paths. Images you did not open are written at their suggested (or starting) threshold.
+
+**Open a previous batch…** reopens a batch later from its `ppe_batch.json`, with the settings you chose (kept in `ppe_batch_choices.json`).
+
+## 12. The Layers panel
 
 ![Layers panel](docs/images/15_layers_panel.jpg)
 
@@ -244,7 +260,7 @@ plot_id,crop,threshold,plot_pixels,plant_pixels,canopy_pct,plot_area_m2,plant_ar
 
 PPE's layers come in **folded**, so the panel stays short; the arrow beside a layer shows its legend. Your own layers keep their places. Removing the PPE image layer resets PPE; removing the live preview switches the slider off until the next run. Every layer can be restyled like any QGIS layer.
 
-## 12. Files PPE writes
+## 13. Files PPE writes
 
 The output and working folders are set under **Folders** on tab 1; plot results go to the export folder of tab 4.
 
@@ -255,10 +271,11 @@ The output and working folders are set under **Folders** on tab 1; plot results 
 | `ppe_plot_canopy.csv`, `ppe_plot_statistics.csv` | plot results (tab 5) |
 | plant-only band and index GeoTIFFs | tab 4 |
 | run folder `ppe_YYYYMMDD_HHMMSS` (in the working folder) | the vote raster, `ppe_findings.tif` (What PPE found), the true-colour display image and guard rasters (which pixels each guard removed) |
+| `ppe_batch.json`, `ppe_batch_choices.json`, `ppe_batch_summary.csv` | a batch (tab 6): its list of images, the settings you chose, and the table written by Finalize all masks |
 | `ppe_confident_labels.tif` (in the run folder) | PPE's sure pixels as labels: 1 plant (every vote agrees), 0 soil (at most a tenth of the votes say plant), 255 not labelled. Use it to train your own model or to check PPE. On a public sugar beet dataset, a small model trained on these labels alone reached 94.7 % overlap with hand labels on unseen images, against 95.4 % when trained on the hand labels themselves. |
 | `logs/ppe_YYYYMMDD_HHMMSS.log` (in the output folder) | the log of each run: attach it when you report a problem |
 
-## 13. Tips and troubleshooting
+## 14. Tips and troubleshooting
 
 - **The mask misses pale plants or flowers.** Lower the threshold a little, or draw that crop as its own area with a lower threshold. At tasselling, a corn field kept its tassels near 0.30 without letting soil in.
 - **Shaded leaves or dark gaps.** Open *What PPE found*. Shaded leaves are plant; unclear pixels can be left out with one tick and put back.

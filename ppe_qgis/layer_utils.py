@@ -347,6 +347,17 @@ def style_bright_rejection(layer, opacity=0.72):
     renderer.setOpacity(float(opacity)); layer.setRenderer(renderer); layer.triggerRepaint()
 
 
+def zoom_to_layer(iface, layer):
+    """Zoom the map to a layer, in the map's own coordinate system (the project may use another one,
+    e.g. after an image from a different UTM zone)."""
+    canvas = iface.mapCanvas()
+    try:
+        extent = canvas.mapSettings().layerExtentToOutputExtent(layer, layer.extent())
+    except Exception:
+        extent = layer.extent()
+    canvas.setExtent(extent)
+
+
 def load_result_layers(iface, result, threshold=0.5):
     remove_previous_layers(keep=("plots", "crops"))   # plot and crop outlines stay on the map across runs
     group = _project_group()
@@ -358,7 +369,7 @@ def load_result_layers(iface, result, threshold=0.5):
     votes = _add_raster(result.get("vote_path"), "PPE · Live threshold preview", "votes", group, True)
     style_vote_threshold(votes, threshold)
     if rgb is not None:
-        iface.mapCanvas().setExtent(rgb.extent())
+        zoom_to_layer(iface, rgb)
         iface.mapCanvas().refresh()
     # Guard diagnostics (bright-neutral, shadow, algae rejection rasters) stay in the run folder
     # only; they are not added to the map, so the Layers panel holds just image, preview and mask.
@@ -376,7 +387,7 @@ def load_import_layer(iface, result):
     style_rgb(rgb, rgb_bands, result.get("display_stretch") if not result.get("rgb_path") else None)
     raise_plot_layer()
     if rgb is not None:
-        iface.mapCanvas().setExtent(rgb.extent())
+        zoom_to_layer(iface, rgb)
         iface.mapCanvas().refresh()
     return rgb
 

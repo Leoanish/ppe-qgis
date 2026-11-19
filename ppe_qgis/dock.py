@@ -1,10 +1,12 @@
 """Plant Pixel Extractor dock interface."""
 
+import json
 import os
 from statistics import median
 
 from qgis.PyQt.QtCore import QEvent, QObject, QSettings, QStandardPaths, Qt, QTimer, pyqtSignal
 from qgis.PyQt.QtWidgets import (
+    QAbstractItemView,
     QAbstractSpinBox,
     QCheckBox,
     QComboBox,
@@ -28,6 +30,9 @@ from qgis.PyQt.QtWidgets import (
     QSlider,
     QSpinBox,
     QStackedWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
     QTabWidget,
     QToolButton,
     QVBoxLayout,
@@ -43,7 +48,7 @@ from .native_engine import finding_shares
 from .crop_tools import PolygonDrawTool, show_crop_areas, to_crs
 from .layer_utils import FINDING_COLOURS, canopy_at, load_plot_layer, plot_layer, remove_role, set_plot_labels
 from .native_engine import (BAND_LABELS, PLOT_FILE_FILTER, dataset_wavelengths, describe_image, display_channels,
-                            guess_plot_id_field, open_plot_file, plots_over_image, scan_band_folder)
+                            guess_plot_id_field, list_batch_images, open_plot_file, plots_over_image, scan_band_folder)
 
 
 class _TextHeightKeeper(QObject):
@@ -124,6 +129,9 @@ class PPEDockWidget(QDockWidget):
     zones_cleared = pyqtSignal()            # back to one threshold for the whole image
     crop_preview_changed = pyqtSignal()     # a crop slider moved
     pale_layer_toggled = pyqtSignal(bool)   # show / hide the pale-plant layer on the map
+    batch_run_requested = pyqtSignal(dict)       # run every image of a folder
+    batch_finalize_requested = pyqtSignal(dict)  # write every mask of a batch at its own threshold
+    batch_open_requested = pyqtSignal(dict)      # open one image of a batch for review
     closing = pyqtSignal()
 
     def __init__(self, iface, parent=None):
@@ -144,6 +152,7 @@ class PPEDockWidget(QDockWidget):
         self.folder_bands = None
         self._folder_bands_for = None
         self._band_dialog = None
+        self.batch = None              # {"manifest": ..., "choices": {name: {...}}, "open": name or None}
         self.setObjectName("PPEDockWidget")
         self.setMinimumWidth(390)
         self._build_ui()
@@ -178,8 +187,10 @@ class PPEDockWidget(QDockWidget):
         self.tabs.addTab(self._review_tab(), "3 Review")
         self.tabs.addTab(self._export_tab(), "4 Export")
         self.tabs.addTab(self._aoi_export_tab(), "5 Plots")
+        self.tabs.addTab(self._batch_tab(), "6 Batch")
         for index, tip in enumerate(("Choose the image and check its bands", "Build the plant vote", "Set the threshold and finalize the mask",
-                                     "Export plant-only bands and indices", "Statistics for each plot polygon")):
+                                     "Export plant-only bands and indices", "Statistics for each plot polygon",
+                                     "Many images at once: run a folder, review each, finalize all")):
             self.tabs.setTabToolTip(index, tip)
         root.addWidget(self.tabs, 1)
         self.setWidget(host)
@@ -522,6 +533,17 @@ class PPEDockWidget(QDockWidget):
         help_text.setObjectName("ppeHint")
         layout.addWidget(title)
         layout.addWidget(help_text)
+        # Shown while an image of a batch is open (tab 6): which one, and a quick way to the next.
+        self.batch_banner = QFrame(); self.batch_banner.setObjectName("accentBox")
+        banner = QVBoxLayout(self.batch_banner); banner.setContentsMargins(12, 8, 12, 8); banner.setSpacing(6)
+        self.batch_banner_text = QLabel(""); self.batch_banner_text.setObjectName("accentText"); self.batch_banner_text.setWordWrap(True)
+        self.batch_banner_text.setMinimumWidth(1); banner.addWidget(self.batch_banner_text)
+        banner_row = QHBoxLayout(); banner_row.setSpacing(6)
+        self.batch_back_button = QPushButton("←  Batch list"); self.batch_back_button.setProperty("secondary", True)
+        self.batch_next_button = QPushButton("Next image  →"); self.batch_next_button.setProperty("secondary", True)
+        banner_row.addWidget(self.batch_back_button); banner_row.addWidget(self.batch_next_button, 1); banner.addLayout(banner_row)
+        self.batch_banner.setVisible(False)
+        layout.addWidget(self.batch_banner)
 
         stats = QFrame()
         stats.setObjectName("card")
@@ -731,6 +753,238 @@ class PPEDockWidget(QDockWidget):
                      else "QGIS could not draw this file, but the statistics can still be exported.")
         self.aoi_info.setText("\n".join(lines))
 
+    # ---- Tab 6 Batch (4.2): many images, each reviewed with the normal slider ------------------
+    def _batch_tab(self):
+        page, layout = self._page()
+        title = QLabel("Many images at once"); title.setObjectName("sectionTitle")
+        hint = QLabel("Choose a folder: every raster file in it is one image, and every sub-folder with band files is one image. "
+                      "PPE runs them one after another, exactly as on tab 2. Then open each image here to check it with the slider "
+                      "on tab 3, and write all masks at once. Results go to the output folder of tab 1, one sub-folder per image.")
+        hint.setWordWrap(True); hint.setObjectName("ppeHint")
+        layout.addWidget(title); layout.addWidget(hint)
+        card, body_widget = self._card("Images")
+        body = QVBoxLayout(body_widget); body.setContentsMargins(0, 0, 0, 0); body.setSpacing(6)
+        self.batch_folder = QLineEdit(); self.batch_folder.setPlaceholderText("Folder with the images")
+        body.addWidget(self._path_row(self.batch_folder, directory=True))
+        self.batch_found = QLabel("No folder chosen."); self.batch_found.setObjectName("ppeHint"); self.batch_found.setWordWrap(True)
+        body.addWidget(self.batch_found)
+        layout.addWidget(card)
+        row = QHBoxLayout(); row.setSpacing(6)
+        self.batch_run_button = QPushButton("Run all"); self.batch_run_button.setProperty("primary", True); self.batch_run_button.setEnabled(False)
+        self.batch_cancel_button = QPushButton("Cancel"); self.batch_cancel_button.setProperty("danger", True); self.batch_cancel_button.setVisible(False)
+        row.addWidget(self.batch_run_button, 1); row.addWidget(self.batch_cancel_button); layout.addLayout(row)
+        self.batch_progress = QProgressBar(); self.batch_progress.setRange(0, 100); self.batch_progress.setValue(0); self.batch_progress.setFormat("Ready")
+        layout.addWidget(self.batch_progress)
+        self.batch_load_button = QPushButton("Open a previous batch…"); self.batch_load_button.setProperty("secondary", True)
+        layout.addWidget(self.batch_load_button)
+        self.batch_table = QTableWidget(0, 4)
+        self.batch_table.setHorizontalHeaderLabels(["Image", "Threshold", "Plant", "Check"])
+        self.batch_table.setSelectionBehavior(QAbstractItemView.SelectRows); self.batch_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.batch_table.setEditTriggers(QAbstractItemView.NoEditTriggers); self.batch_table.verticalHeader().setVisible(False)
+        head = self.batch_table.horizontalHeader()
+        head.setSectionResizeMode(0, QHeaderView.Stretch); head.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        head.setSectionResizeMode(2, QHeaderView.ResizeToContents); head.setSectionResizeMode(3, QHeaderView.Stretch)
+        self.batch_table.setMinimumHeight(230)
+        layout.addWidget(self.batch_table)
+        self.batch_status = QLabel("Run a folder to fill this list. Images to check first are listed on top.")
+        layout.addWidget(self._note(self.batch_status))
+        row = QHBoxLayout(); row.setSpacing(6)
+        self.batch_review_button = QPushButton("Review selected  →"); self.batch_review_button.setProperty("secondary", True)
+        self.batch_same_button = QPushButton("Same settings for all"); self.batch_same_button.setProperty("secondary", True)
+        self.batch_same_button.setToolTip("Give every image the threshold (and the kinds left out) of the image open on tab 3")
+        row.addWidget(self.batch_review_button, 1); row.addWidget(self.batch_same_button, 1); layout.addLayout(row)
+        self.batch_finalize_button = QPushButton("Finalize all masks"); self.batch_finalize_button.setProperty("primary", True)
+        layout.addWidget(self.batch_finalize_button)
+        for b in (self.batch_review_button, self.batch_same_button, self.batch_finalize_button): b.setEnabled(False)
+        layout.addStretch(1)
+        return self._scroll_tab(page)
+
+    def _batch_scan(self, *_args):
+        path = self.batch_folder.text().strip()
+        items = list_batch_images(path) if path else []
+        if not path:
+            self.batch_found.setText("No folder chosen.")
+        elif not items:
+            self.batch_found.setText("No images found here: PPE needs raster files (.tif) or sub-folders with band files.")
+        else:
+            files = sum(1 for i in items if i["source_mode"] == "stacked")
+            self.batch_found.setText("{} image(s): {} single file(s), {} band folder(s).".format(len(items), files, len(items) - files))
+        self.batch_run_button.setEnabled(bool(items) and not self._busy)
+        self._batch_items_found = items
+
+    def _emit_batch_run(self):
+        items = getattr(self, "_batch_items_found", None) or []
+        config = self.build_config("batch_run")
+        for key in ("stacked_path", "folder_path", "folder_bands", "bands", "source_mode", "field_info"):
+            config.pop(key, None)
+        config["ortho_type"] = "auto"            # every image is detected on its own
+        config["batch_folder"] = self.batch_folder.text().strip(); config["batch_items"] = items
+        if not config["output_dir"] or not config["work_dir"]:
+            QMessageBox.warning(self, "PPE batch", "Set the output and working folders on tab 1 first."); return
+        if not items:
+            QMessageBox.warning(self, "PPE batch", "No images found in this folder."); return
+        if os.path.isfile(os.path.join(config["output_dir"], "ppe_batch.json")):
+            answer = QMessageBox.question(self, "PPE batch", "The output folder already holds a batch. Run again and replace its list?",
+                                          QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer != QMessageBox.Yes: return
+        self.batch_run_requested.emit(config)
+
+    def _batch_choices_path(self):
+        return os.path.join(os.path.dirname(self.batch["manifest"]["manifest_path"]), "ppe_batch_choices.json")
+
+    def set_batch(self, manifest, choices=None):
+        manifest = dict(manifest); manifest.setdefault("manifest_path", os.path.join(manifest.get("output_dir", ""), "ppe_batch.json"))
+        self.batch = {"manifest": manifest, "choices": dict(choices or {}), "open": None}
+        self.batch_progress.setValue(100); self.batch_progress.setFormat("Done")
+        self._fill_batch_table()
+
+    def _batch_entries(self):
+        """Images in list order: to check first, then the rest, then failed ones."""
+        items = list((self.batch or {}).get("manifest", {}).get("items") or [])
+        rank = lambda e: (2 if e.get("status") != "done" else (0 if e.get("warnings") else 1))
+        return sorted(items, key=lambda e: (rank(e), e["name"].lower()))
+
+    def _fill_batch_table(self):
+        entries = self._batch_entries(); choices = (self.batch or {}).get("choices", {})
+        self.batch_table.setRowCount(len(entries))
+        for r, e in enumerate(entries):
+            c = choices.get(e["name"]) or {}
+            done = e.get("status") == "done"
+            t = c.get("threshold", e.get("threshold"))
+            plant = c.get("canopy_text") or ("{:.1f} %".format(e["canopy_pct"]) if e.get("canopy_pct") is not None else "—")
+            if not done:
+                check = "failed: " + str(e.get("error", ""))[:80]
+            else:
+                check = "; ".join(e.get("warnings") or []) or "—"
+                if c.get("reviewed"): check = "✓ reviewed" + ("" if check == "—" else " · " + check)
+                if c.get("clip_codes") or c.get("add_codes"): check += " · kinds changed"
+            cells = [e["name"], "{:.2f}".format(t) if done and t is not None else "—", plant if done else "—", check]
+            for col, text in enumerate(cells):
+                item = QTableWidgetItem(text); item.setToolTip(text)
+                if col == 0: item.setData(Qt.UserRole, e["name"])
+                if done and e.get("warnings") and not c.get("reviewed"): item.setForeground(Qt.darkRed)
+                if not done: item.setForeground(Qt.gray)
+                if (self.batch or {}).get("open") == e["name"]:
+                    f = item.font(); f.setBold(True); item.setFont(f)
+                self.batch_table.setItem(r, col, item)
+        n = len(entries); ok = sum(1 for e in entries if e.get("status") == "done")
+        warned = sum(1 for e in entries if e.get("status") == "done" and e.get("warnings"))
+        seen = sum(1 for e in entries if (choices.get(e["name"]) or {}).get("reviewed"))
+        self.batch_status.setText("{} of {} image(s) done; {} to check first (red, on top); {} reviewed. Select one and press Review "
+                                  "selected (or double-click it). Images you do not review are written at their suggested or "
+                                  "starting threshold.".format(ok, n, warned, seen) if n else "No images in this batch.")
+        if (self.batch or {}).get("final_note"):
+            self.batch_status.setText(self.batch_status.text() + "\n\n" + self.batch["final_note"])
+        for b in (self.batch_review_button, self.batch_finalize_button): b.setEnabled(bool(ok) and not self._busy)
+        self.batch_same_button.setEnabled(bool(ok) and bool((self.batch or {}).get("open")) and not self._busy)
+
+    def _batch_selected_name(self):
+        row = self.batch_table.currentRow()
+        item = self.batch_table.item(row, 0) if row >= 0 else None
+        return item.data(Qt.UserRole) if item is not None else None
+
+    def _batch_entry(self, name):
+        return next((e for e in (self.batch or {}).get("manifest", {}).get("items", []) if e["name"] == name), None)
+
+    def _batch_open(self, name=None):
+        if self._busy or not self.batch: return
+        name = name or self._batch_selected_name()
+        entry = self._batch_entry(name) if name else None
+        if entry is None: return
+        if entry.get("status") != "done":
+            QMessageBox.information(self, "PPE batch", "This image failed: {}".format(entry.get("error", ""))); return
+        self._batch_save_open()
+        self.batch_open_requested.emit({"entry": entry, "choice": self.batch["choices"].get(name)})
+
+    def batch_opened(self, entry, choice):
+        """The plugin has loaded a batch image as the current result: restore what was chosen for it."""
+        self.batch["open"] = entry["name"]
+        if choice:
+            self.threshold_slider.setValue(round(float(choice["threshold"]) * 100))
+            for code, row in self.finding_rows.items():
+                on = code in (choice.get("clip_codes") or []) or code in (choice.get("add_codes") or [])
+                row["clip"].blockSignals(True); row["clip"].setChecked(on); row["clip"].blockSignals(False)
+            self._clip_toggled(0, False)
+        names = [e["name"] for e in self._batch_entries() if e.get("status") == "done"]
+        i = names.index(entry["name"]) + 1 if entry["name"] in names else 0
+        warn = "; ".join(entry.get("warnings") or [])
+        self.batch_banner_text.setText("Batch image {} of {}: <b>{}</b>{}. Your slider setting is kept for it when you open another "
+                                       "image or finalize all.".format(i, len(names), entry["name"], " · check: " + warn if warn else ""))
+        self.batch_banner_text.setTextFormat(Qt.RichText)
+        self.batch_next_button.setEnabled(i < len(names))
+        self.batch_banner.setVisible(True)
+        self._fill_batch_table()
+
+    def _batch_save_open(self):
+        """Keep the threshold and kinds of the batch image open on tab 3."""
+        if not self.batch or not self.batch.get("open") or (self.result or {}).get("vote_path") is None: return
+        self.batch["choices"][self.batch["open"]] = {"threshold": self.threshold(), "clip_codes": self.clip_codes(),
+                                                     "add_codes": self.add_codes(), "reviewed": True,
+                                                     "canopy_text": self.canopy_value.text().replace("%", " %")}
+        self._batch_write_choices()
+
+    def _batch_write_choices(self):
+        try:
+            with open(self._batch_choices_path(), "w", encoding="utf-8") as f:
+                json.dump(self.batch["choices"], f, indent=1)
+        except (OSError, KeyError):
+            pass
+
+    def _batch_next(self):
+        names = [e["name"] for e in self._batch_entries() if e.get("status") == "done"]
+        cur = (self.batch or {}).get("open")
+        if cur in names and names.index(cur) + 1 < len(names):
+            self._batch_open(names[names.index(cur) + 1])
+
+    def _batch_back(self):
+        self._batch_save_open(); self._fill_batch_table(); self.tabs.setCurrentIndex(5)
+
+    def _batch_same_for_all(self):
+        if not self.batch or not self.batch.get("open"): return
+        t = self.threshold(); clip = self.clip_codes(); add = self.add_codes()
+        answer = QMessageBox.question(self, "PPE batch", "Give every image threshold {:.2f}{}? Images you reviewed get it too.".format(
+            t, " and the same kinds left out or added" if (clip or add) else ""), QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer != QMessageBox.Yes: return
+        self._batch_save_open()
+        for e in self.batch["manifest"]["items"]:
+            if e.get("status") != "done" or e["name"] == self.batch["open"]: continue
+            old = self.batch["choices"].get(e["name"]) or {}
+            self.batch["choices"][e["name"]] = {"threshold": t, "clip_codes": clip, "add_codes": add, "reviewed": bool(old.get("reviewed"))}
+        self._batch_write_choices(); self._fill_batch_table()
+
+    def _emit_batch_finalize(self):
+        if not self.batch: return
+        self._batch_save_open()
+        m = self.batch["manifest"]
+        self.batch_finalize_requested.emit({"action": "batch_finalize", "manifest_path": m["manifest_path"], "choices": self.batch["choices"],
+                                            "output_dir": m.get("output_dir") or os.path.dirname(m["manifest_path"]), "threads": self.thread_count})
+
+    def set_batch_finalized(self, result):
+        rows = result.get("rows") or []
+        self.batch_progress.setValue(100); self.batch_progress.setFormat("{} masks written".format(len(rows)))
+        if self.batch is not None:
+            self.batch["final_note"] = ("{} masks written, one per image folder. Summary table (threshold, plant cover, what was left "
+                                        "out, checks): {}".format(len(rows), result.get("summary_csv", "")))
+        self._fill_batch_table()
+
+    def _batch_load_previous(self):
+        start = self.output_path.text().strip() if hasattr(self, "output_path") else ""
+        path, _f = QFileDialog.getOpenFileName(self, "Open a previous batch", start, "PPE batch (ppe_batch.json)")
+        if not path: return
+        try:
+            with open(path, encoding="utf-8") as f:
+                manifest = json.load(f)
+            manifest["manifest_path"] = path
+            choices = {}
+            cp = os.path.join(os.path.dirname(path), "ppe_batch_choices.json")
+            if os.path.isfile(cp):
+                with open(cp, encoding="utf-8") as f:
+                    choices = json.load(f)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "PPE batch", "Could not read this batch: {}".format(exc)); return
+        self.set_batch(manifest, choices)
+        self.batch_progress.setFormat("Opened")
+
     def _connect_ui(self):
         self._mode_index = self.source_mode.currentIndex()
         self.source_mode.currentIndexChanged.connect(self._source_mode_changed)
@@ -756,6 +1010,16 @@ class PPEDockWidget(QDockWidget):
         self.add_crop_button.clicked.connect(lambda: self._add_crop_row())
         self.same_threshold.toggled.connect(self._same_threshold_toggled)
         self.field_stage.currentIndexChanged.connect(lambda _index: self._update_stage_tip())
+        self.batch_folder.textChanged.connect(self._batch_scan)
+        self.batch_run_button.clicked.connect(self._emit_batch_run)
+        self.batch_cancel_button.clicked.connect(self.cancel_requested)
+        self.batch_load_button.clicked.connect(self._batch_load_previous)
+        self.batch_review_button.clicked.connect(lambda: self._batch_open())
+        self.batch_table.cellDoubleClicked.connect(lambda _r, _c: self._batch_open())
+        self.batch_same_button.clicked.connect(self._batch_same_for_all)
+        self.batch_finalize_button.clicked.connect(self._emit_batch_finalize)
+        self.batch_next_button.clicked.connect(self._batch_next)
+        self.batch_back_button.clicked.connect(self._batch_back)
 
     def _on_stacked_path_edited(self):
         path = self.stacked_path.text().strip()
@@ -1258,6 +1522,9 @@ class PPEDockWidget(QDockWidget):
                 "findings_shares": {self.FINDING_TEXT[k][1]: round(v, 3) for k, v in self.finding_shares_now().items()},
                 "pale_path": self.result.get("pale_plant_path", ""),
             })
+            if self.batch and self.batch.get("open"):
+                entry = self._batch_entry(self.batch["open"])
+                if entry: config["output_dir"] = entry["output_dir"]       # a batch image's mask goes to its own folder
             if self.zone_info:
                 config.update({"zone_path": self.zone_info["zone_path"], "zone_thresholds": self.zone_thresholds(),
                                "zone_names": [row["name"].text().strip() or "crop {}".format(i + 1)
@@ -1920,13 +2187,18 @@ class PPEDockWidget(QDockWidget):
             self._action = action
         self.generate_button.setEnabled(not running)
         self.apply_button.setEnabled(not running and bool(self.result))
-        self.cancel_button.setVisible(running)
+        self.cancel_button.setVisible(running and not str(action).startswith("batch"))
         self.continue_button.setEnabled(not running)
         for button in (self.export_bands_button, self.export_vis_button, self.export_all_button, self.aoi_export_button):
             button.setEnabled(not running and bool(self.result.get("mask_path")))
         self._refresh_draw_buttons()
         self.add_crop_button.setEnabled(not running and bool(self.result.get("vote_path")))
-        if running and (action == "zones" or str(action).startswith("export")):
+        batch_action = str(getattr(self, "_action", "")).startswith("batch")
+        self.batch_cancel_button.setVisible(running and batch_action)
+        self.batch_run_button.setEnabled(not running and bool(getattr(self, "_batch_items_found", None)))
+        self.batch_load_button.setEnabled(not running)
+        if self.batch: self._fill_batch_table()
+        if running and (action == "zones" or str(action).startswith("export") or str(action).startswith("batch")):
             bar = self._bar_for(action)
             bar.setValue(0)
             bar.setFormat("Starting…")
@@ -1938,6 +2210,7 @@ class PPEDockWidget(QDockWidget):
 
     def _bar_for(self, action):
         action = str(action)
+        if action.startswith("batch"): return self.batch_progress
         if action == "export_aoi": return self.aoi_progress
         if action == "zones": return self.crop_progress
         if action.startswith("export"): return self.export_progress
@@ -1953,6 +2226,9 @@ class PPEDockWidget(QDockWidget):
             self.log_view.appendPlainText(message)
 
     def set_results(self, result, curve_points):
+        if self.batch and self.batch.get("open"):
+            self._batch_save_open(); self.batch["open"] = None
+        if hasattr(self, "batch_banner"): self.batch_banner.setVisible(False)
         self.pale_layer_removed()                 # a new run removes the old findings layer
         self._close_pale_card()
         for row in self.finding_rows.values():

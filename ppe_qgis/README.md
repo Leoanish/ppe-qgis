@@ -180,6 +180,10 @@ On whole fields it is clearly better than 0.50. On small clips it is better on a
 
 It needs a NIR band. On camera RGB images plant and soil differ too little in colour for a reliable plant share per pixel, so those start at 0.50 and the Review tab says so.
 
+## Batch: many images at once (4.2)
+
+Tab 6 runs every image of a folder (raster files, or sub-folders with band files), each exactly as on its own. The list shows each image's threshold, plant cover and checks, with images to check first on top. Open any image to review it on tab 3 with the normal slider and What PPE found; your setting is kept per image (Next image moves on). Finalize all masks writes every mask at its own threshold, plus `ppe_batch_summary.csv`. A batch can be reopened later from its `ppe_batch.json`.
+
 ## Weak split warning and confident labels (4.1)
 
 **Weak split warning.** PPE measures how clearly its top index splits the image into two groups (Otsu separability, 0 to 1). Under 0.65 the run summary, the message bar and the What PPE found card say that plants and ground do not separate clearly and that the mask needs a closer look. It warned on an RGB-only field and on seedling images, never on four multispectral fields or late-stage images. Message only.
