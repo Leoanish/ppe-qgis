@@ -130,7 +130,7 @@ Only the threshold differs between areas; the vote itself is the same, so a crop
 
 ## 7. What PPE found: tassels, leaf edges, shade, dry leaves, sparse spots
 
-After each run PPE sorts out six kinds of pixel worth a look: five you can leave out of the mask, and one you can add to it. Each is judged from the image's own typical green leaf and its bare soil in sun, and from where the pixel sits; nothing is guessed from the crop name. The NDVI levels used for leaves follow the image: they scale with how green the leaves the voters agree on are, so a field whose leaves only reach NDVI 0.66 is judged as fairly as one at 0.88.
+After each run PPE sorts out six kinds of pixel worth a look: five you can leave out of the mask, and one you can add to it. Nothing is tied to a particular field or crop: every reference (the green leaves' NDVI, colour, brightness and near-infrared light, and the bare soil's) is measured on the image itself, from the pixels nearly all the voters agree on. Each check runs whenever the image has the bands it needs, and the card says which could not run and why.
 
 | Kind | What it is |
 |---|---|
@@ -166,7 +166,7 @@ After each run PPE sorts out six kinds of pixel worth a look: five you can leave
 
 **Finalize mask** writes the mask without them, then reports the pixels it left out (counted in the mask file) and the canopy before and after. Untick, or **Put all back**, to return them, then finalize again. The mask is always rebuilt from the vote, so nothing is lost either way. Each choice is written to its own file (for example `ppe_plant_mask_0.45_without_unclear.tif`), and the plot export and run record say what was left out.
 
-Nothing is judged when leaves and soil hardly differ in near-infrared light, or without red and NIR bands; the log says why. Faint plants in sparse spots are marked even then: they only need the vote.
+Which checks run depends only on the bands: plant parts, leaf edges and dry parts need NIR, red and green; shaded leaves and unclear pixels need a brightness (red, green and blue, or NIR alone) and are told apart by NDVI; a camera RGB image gets only unclear (dark) pixels. When the near-infrared band barely separates leaves from soil (an uncalibrated band), the checks that compare near-infrared brightness are not run and NDVI decides between shaded and unclear. Faint plants in sparse spots need only the vote; when more than 30 % of the 3 m squares are thin, the whole field is thin and PPE says to move the slider instead. The card lists anything not checked.
 
 **Add faint plants in sparse spots:**
 

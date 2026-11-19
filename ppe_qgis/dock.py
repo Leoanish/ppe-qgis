@@ -1361,7 +1361,8 @@ class PPEDockWidget(QDockWidget):
     FINDING_TEXT = {
         1: ("✿", "Plant parts that are not green", "Probably {parts}. They are plant; they drop out if you raise the slider."),
         2: ("◌", "Leaf edges over soil", "Edges of leaves where a little soil shows through, so they look paler. They are plant."),
-        3: ("●", "Shaded leaves", "Darker leaves under the top of the canopy. They are plant: they reflect more near-infrared light than bare soil can."),
+        3: ("●", "Shaded leaves", "Darker leaves under the top of the canopy or in shadow. They are plant: their NDVI is a leaf's "
+            "(and, with a good NIR band, they reflect more near-infrared light than bare soil can)."),
         4: ("?", "Unclear", "Too dark to tell soil from leaf. You can leave them out of the mask."),
         5: ("❧", "Dry or yellowing plant parts", "Leaves inside the canopy that are drying or turning yellow-brown. They are plant; "
             "leave them out if you want only green plant."),
@@ -1398,6 +1399,9 @@ class PPEDockWidget(QDockWidget):
             self.finding_rows[code] = {"holder": holder, "title": title, "note": note, "clip": clip}
         self.clip_status = QLabel(""); self.clip_status.setObjectName("paleText"); self.clip_status.setWordWrap(True); self.clip_status.setVisible(False)
         body.addWidget(self.clip_status)
+        # which checks could not run on this image, and why (a weak NIR band, missing bands, ...)
+        self.findings_scope = QLabel(""); self.findings_scope.setObjectName("paleText"); self.findings_scope.setWordWrap(True)
+        self.findings_scope.setVisible(False); body.addWidget(self.findings_scope)
         buttons = QHBoxLayout()
         self.pale_button = QPushButton("Show them on the map"); self.pale_button.setCheckable(True)
         self.pale_button.setProperty("secondary", True)
@@ -1567,12 +1571,25 @@ class PPEDockWidget(QDockWidget):
                 row["clip"].setEnabled(not (code in self.ADD_CODES and self.zone_info))
                 row["note"].setText(note.format(parts=parts))
                 shown.append(name)
-        if not shown:
+        r = self.result or {}
+        scope = []
+        if r.get("findings_note"):
+            scope.append(r["findings_note"][0].upper() + r["findings_note"][1:] + ".")
+        for what, why in (r.get("findings_not_checked") or {}).items():
+            scope.append("Not checked: {} ({}).".format(what, why))
+        if (r.get("sparse_spots") or {}).get("whole_field_thin"):
+            scope.append("Faint plants in sparse spots: not marked, because {:.0f} % of the 3 m squares are thin, so the whole field is thin: "
+                         "move the slider instead.".format(r["sparse_spots"]["squares_pct"]))
+        self.findings_scope.setText("\n".join(scope)); self.findings_scope.setVisible(bool(scope))
+        self.findings_scope.setToolTip("Each check runs when this image has the bands it needs; its references are measured on this image.")
+        if not shown and not scope:
             self.pale_frame.setVisible(False)
             if self.pale_button.isChecked(): self.pale_button.setChecked(False)
             return
         self._set_pale_style(True)
-        self.pale_title.setText("✿  What PPE found: {} thing{} to look at".format(len(shown), "" if len(shown) == 1 else "s"))
+        self.pale_button.setVisible(bool(shown))
+        self.pale_title.setText("✿  What PPE found: {}".format(
+            "{} thing{} to look at".format(len(shown), "" if len(shown) == 1 else "s") if shown else "nothing to look at"))
         self.pale_title.setToolTip("; ".join(shown) + ". Click to open or close.")
         self._update_clip_status()
         self.pale_frame.setVisible(True)

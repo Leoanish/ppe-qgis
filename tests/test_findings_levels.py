@@ -128,13 +128,13 @@ class SparseSpotsTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from ppe_qgis.native_engine import NativePPEEngine as Engine
-        rng = np.random.default_rng(7); N = 450
+        rng = np.random.default_rng(7); N = 600
         kind = np.ones((N, N), np.uint8)                                   # 1 soil
-        for c0 in range(0, 200, 12):
-            kind[:, c0:c0 + 9] = 0                                         # dense half: wide rows of green leaves
+        for c0 in range(0, 450, 12):
+            kind[:, c0:c0 + 9] = 0                                         # dense part: wide rows of green leaves
         cls.faint = np.zeros((N, N), bool)
         for r in range(10, N - 10, 20):                                    # thin half: small, pale plants
-            for c in range(260, N - 10, 40):
+            for c in range(460, N - 10, 40):
                 kind[r:r + 4, c:c + 4] = 2; cls.faint[r:r + 4, c:c + 4] = True
         FAINT = {k: FAINT_SHARE * LEAF[k] + (1 - FAINT_SHARE) * SOIL[k] for k in ORDER}
         cls.dir = tempfile.mkdtemp(prefix="ppe_sparse_"); folder = os.path.join(cls.dir, "bands"); os.makedirs(folder)
@@ -160,7 +160,7 @@ class SparseSpotsTests(unittest.TestCase):
         marked = self.codes == 6
         self.assertTrue(np.all(self.vote[marked] < t - 0.05))                       # out of the mask at the suggestion
         self.assertTrue(np.all(self.vote[marked] >= s["vote_from"] - 1e-6))
-        self.assertEqual(int(marked[:, :200].sum()), 0)                             # nothing in the dense half
+        self.assertEqual(int(marked[:, :450].sum()), 0)                             # nothing in the dense part
 
     def test_add_to_mask_and_take_back(self):
         t = self.result["threshold"]
@@ -176,7 +176,10 @@ class SparseSpotsTests(unittest.TestCase):
         back = gdal.Open(NativePPEEngine().apply(dict(base))["mask_path"]).ReadAsArray()
         self.assertTrue(np.array_equal(back, plain))
 
-    def test_can_be_switched_off(self):
+    def test_a_thin_field_is_not_a_few_spots(self):
         from ppe_qgis.native_engine import mark_sparse_spots
-        self.assertIn("vote_from", self.result["sparse_spots"])
-        self.assertTrue(callable(mark_sparse_spots))
+        import shutil as sh
+        copy = os.path.join(self.dir, "findings_copy.tif"); sh.copyfile(self.result["findings_path"], copy)
+        thin = mark_sparse_spots(self.result["vote_path"], copy, 0.95, 150)    # at 0.95 most squares look thin
+        if thin["squares_pct"] > 30:
+            self.assertTrue(thin.get("whole_field_thin")); self.assertEqual(thin["pixels"], 0)

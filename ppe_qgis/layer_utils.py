@@ -300,8 +300,10 @@ def style_vote_threshold(layer, plant_threshold, opacity=0.62):
         QgsColorRampShader.ColorRampItem(
             max(0.0, effective_cutoff - 0.000001), QColor(0, 0, 0, 0), "Below threshold"
         ),
+        # the upper bound is far above 1: faint plants added to the mask are drawn from vote x (1 / their
+        # lowest vote) and reach up to 1 / 0.10 = 10 (layer_utils.preview_source); 1.000001 left them undrawn
         QgsColorRampShader.ColorRampItem(
-            1.000001, QColor(220, 43, 155, 235), "Plant preview"
+            1000.0, QColor(220, 43, 155, 235), "Plant preview"
         ),
     ])
     shader = QgsRasterShader()
