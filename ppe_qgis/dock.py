@@ -1577,6 +1577,8 @@ class PPEDockWidget(QDockWidget):
             scope.append(r["findings_note"][0].upper() + r["findings_note"][1:] + ".")
         for what, why in (r.get("findings_not_checked") or {}).items():
             scope.append("Not checked: {} ({}).".format(what, why))
+        if r.get("weak_split_warning"):
+            scope.insert(0, r["weak_split_warning"])
         if (r.get("sparse_spots") or {}).get("whole_field_thin"):
             scope.append("Faint plants in sparse spots: not marked, because {:.0f} % of the 3 m squares are thin, so the whole field is thin: "
                          "move the slider instead.".format(r["sparse_spots"]["squares_pct"]))
@@ -2011,6 +2013,8 @@ class PPEDockWidget(QDockWidget):
             warning = "Check the mask: this image looks like closed canopy only.\n"
         if result.get("weak_green_warning"):
             warning += "Check the mask: plants are barely greener than soil in this image.\n"
+        if result.get("weak_split_warning"):
+            warning += "Check the mask: plants and ground do not separate clearly (separation {:.2f}).\n".format(float(result.get("split_separability", 0.0)))
         names = {"ndvi": "NDVI", "ndre": "NDRE", "gndvi": "GNDVI", "ndrer": "NDRER", "arvi": "ARVI", "gli": "GLI", "ngrdi": "NGRDI", "vari": "VARI"}
         layers = ", ".join(names.get(n, n.upper()) for n in result.get("selected_layers", [])) or "—"
         seconds = float((result.get("timings", {}) or {}).get("total", 0.0))

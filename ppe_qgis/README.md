@@ -180,6 +180,12 @@ On whole fields it is clearly better than 0.50. On small clips it is better on a
 
 It needs a NIR band. On camera RGB images plant and soil differ too little in colour for a reliable plant share per pixel, so those start at 0.50 and the Review tab says so.
 
+## Weak split warning and confident labels (4.1)
+
+**Weak split warning.** PPE measures how clearly its top index splits the image into two groups (Otsu separability, 0 to 1). Under 0.65 the run summary, the message bar and the What PPE found card say that plants and ground do not separate clearly and that the mask needs a closer look. It warned on an RGB-only field and on seedling images, never on four multispectral fields or late-stage images. Message only.
+
+**Confident labels.** Every run writes `ppe_confident_labels.tif` in the run folder: 1 plant where every vote agrees, 0 soil where at most a tenth of the votes say plant, 255 not labelled. It is meant for training a model or checking PPE. On PhenoBench (sugar beet, RGB), a small U-Net trained on these labels alone reached 94.7 IoU on unseen images, against 95.4 with hand labels.
+
 ## Tested on
 
 Real fields, each processed whole in one run and checked on close-ups and labelled pixels. Details, figures and scripts are in `04_test_scripts/` (`tifton_test`, `ih_test`, `kritis_and_sensors_test`).

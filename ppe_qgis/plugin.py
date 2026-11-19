@@ -311,6 +311,7 @@ class PPEPlugin:
         if result.get("one_class_warning") == "soil": checks.append("the image looks like bare soil only")
         elif result.get("one_class_warning") == "plant": checks.append("the image looks like closed canopy only")
         if result.get("weak_green_warning"): checks.append("plants are barely greener than soil")
+        if result.get("weak_split_warning"): checks.append("plants and ground do not separate clearly (separation {:.2f})".format(float(result.get("split_separability", 0.0))))
         if checks:
             self.iface.messageBar().pushMessage(
                 "Plant Pixel Extractor", "Mask generated, but check it closely: {}.".format("; ".join(checks)),

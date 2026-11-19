@@ -112,6 +112,8 @@ When the run finishes, PPE opens the Review tab.
 
 A flat stretch of the curve means the mask hardly changes there: any threshold in it gives the same canopy. A steep part means the threshold matters, so check the map carefully there.
 
+**"Plants and ground do not separate clearly."** PPE measures how clearly its top index splits the image into two groups (0 to 1). Under 0.65, the run summary, the message bar and the *What PPE found* card warn you to check the mask closely. This happens when plants are very few or tiny (seedlings) or with RGB-only images. In tests it warned on an RGB-only field and on seedling images, never on four multispectral fields or late-stage images. It is only a message: nothing in the mask changes.
+
 ## 6. Several crops in one image (optional)
 
 Different crops, or the same crop at a different stage, can need different thresholds. Under **Crops in this image** on the Review tab:
@@ -253,6 +255,7 @@ The output and working folders are set under **Folders** on tab 1; plot results 
 | `ppe_plot_canopy.csv`, `ppe_plot_statistics.csv` | plot results (tab 5) |
 | plant-only band and index GeoTIFFs | tab 4 |
 | run folder `ppe_YYYYMMDD_HHMMSS` (in the working folder) | the vote raster, `ppe_findings.tif` (What PPE found), the true-colour display image and guard rasters (which pixels each guard removed) |
+| `ppe_confident_labels.tif` (in the run folder) | PPE's sure pixels as labels: 1 plant (every vote agrees), 0 soil (at most a tenth of the votes say plant), 255 not labelled. Use it to train your own model or to check PPE. On a public sugar beet dataset, a small model trained on these labels alone reached 94.7 % overlap with hand labels on unseen images, against 95.4 % when trained on the hand labels themselves. |
 | `logs/ppe_YYYYMMDD_HHMMSS.log` (in the output folder) | the log of each run: attach it when you report a problem |
 
 ## 13. Tips and troubleshooting
