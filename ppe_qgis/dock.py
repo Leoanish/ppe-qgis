@@ -822,12 +822,13 @@ class PPEDockWidget(QDockWidget):
         self.count_join.setToolTip("Leaves of one plant often show as separate pieces (the stem or petiole between them is thin). "
                                    "Pieces closer than this are one plant. Keep it smaller than the gap between neighbouring plants.")
         form.addRow("Join leaves closer than", self.count_join)
-        self.count_rows = self._plain_spin(QDoubleSpinBox()); self.count_rows.setRange(0, 500); self.count_rows.setDecimals(0); self.count_rows.setValue(0)
-        self.count_rows.setSpecialValueText("Off · count every plant"); self.count_rows.setSuffix(" cm")
-        self.count_rows.setToolTip("Row spacing of the crop. When set, plants between the rows are marked as possible weeds (grey) and not counted; "
-                                   "switch any of them back with Plant ↔ weed. "
-                                   "For straight, parallel rows. On PhenoBench it halved the weeds counted and lost a few crop plants.")
-        form.addRow("Crop row spacing (optional)", self.count_rows)
+        self.count_find_rows = QCheckBox("Find crop rows: plants between rows are possible weeds")
+        self.count_find_rows.setChecked(True)
+        self.count_find_rows.setToolTip("PPE finds the direction and spacing of the crop rows itself (15 to 150 cm apart, any crop), "
+                                        "from the plant pixels, separately for each 4 m patch so shifted plots fit. Plants between the rows "
+                                        "are marked as possible weeds (grey) and not counted; switch any back with Plant ↔ weed. "
+                                        "Where rows are not clear (closed canopy, no rows), nothing is marked.")
+        form.addRow("", self.count_find_rows)
         self.count_plots = QLineEdit(); self.count_plots.setPlaceholderText("Optional: plot polygons for counts per plot")
         form.addRow("Plot file", self._path_row(self.count_plots))
         self.count_plot_id = QLineEdit(); self.count_plot_id.setPlaceholderText("Attribute with the plot ID (empty: feature ID)")
@@ -930,7 +931,7 @@ class PPEDockWidget(QDockWidget):
         self.plant_edit_status.setText("Check the points on the map; correct any with the buttons above.")
 
     def _count_settings(self):
-        return {"action": "count", "min_plant_cm2": self.count_min.value(), "join_cm": self.count_join.value(), "row_spacing_cm": self.count_rows.value() or None,
+        return {"action": "count", "min_plant_cm2": self.count_min.value(), "join_cm": self.count_join.value(), "find_rows": self.count_find_rows.isChecked(),
                 "aoi_path": self.count_plots.text().strip(), "aoi_id_field": self.count_plot_id.text().strip()}
 
     def _emit_count(self, batch):
@@ -965,7 +966,8 @@ class PPEDockWidget(QDockWidget):
             text = "{} plants{}{}{}.".format(result["plants"], " · {:.2f} per m²".format(per_m2) if per_m2 else "",
                                               " · {} flagged 'check' (may be touching plants)".format(result["flagged_big"]) if result.get("flagged_big") else "",
                                               " · {} possible weeds between rows, not counted (grey)".format(result["weeds_not_counted"]) if result.get("weeds_not_counted") else "")
-            if rows and rows.get("note", "").startswith("no clear"): text += "\nNo clear rows at that spacing: every plant was counted."
+            if rows and rows.get("rows"): text += "\nCrop rows found {:.0f} cm apart.".format(rows.get("spacing_cm", 0))
+            elif rows: text += "\nNo clear crop rows: nothing was marked as weed."
             if result.get("no_core_left_out"): text += "\n{} spots not counted: no pixel there where every PPE vote says plant (soil let in by the threshold).".format(result["no_core_left_out"])
             if result.get("plot_counts_path"): text += "\nPer plot: {}".format(result["plot_counts_path"])
             text += "\nPoints: {}".format(result.get("points_path", ""))

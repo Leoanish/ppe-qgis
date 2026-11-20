@@ -180,6 +180,10 @@ On whole fields it is clearly better than 0.50. On small clips it is better on a
 
 It needs a NIR band. On camera RGB images plant and soil differ too little in colour for a reliable plant share per pixel, so those start at 0.50 and the Review tab says so.
 
+## 4.5.1: crop rows found automatically
+
+No row spacing to type: `plant_count._rows` finds one direction and one spacing (15 to 150 cm) from up to 2 million plant pixels of the mask (coarse grid; the search uses 20 000), folding them by each candidate spacing in every 4 m tile and summing the tiles' strengths, so plots shifted against each other still fit. Rows count as found when their strength is at least 1.8 times the median over all directions and spacings; each tile then needs half the field's strength. Thin rows also line up at half their spacing, so the widest spacing that fits at least 80 percent as well is taken. Found: Tifton 91 cm, Midville 91 cm, IH 76 cm (30-inch corn); Kritis (closed canopy): no rows, nothing marked. The Count tab has one checkbox, *Find crop rows*, on by default.
+
 ## 4.5.0: plant count you can correct on the map
 
 The plant counter (removed in 4.4.0) is back as a fast first count that the user checks and corrects. A count from a plant mask alone cannot tell every weed from the crop or split overlapping plants (PhenoBench crop count 24 to 49 percent off from PPE's mask with rows; 39 to 57 percent off even from a perfect crop-only hand mask), so the Count tab now has *Add plant*, *Remove point*, *Plant ↔ weed*, *Undo last* and *Done*. Each click is written to `ppe_plants.gpkg` and the totals (`ppe_count_summary.csv`, plants per m², `ppe_plot_counts.csv`) are recomputed (`plant_count.summarize_points`). Points have a `status`: plant, check, added, weed?. With a crop row spacing, plants between rows are kept as *weed?* (grey, red ring) and not counted, instead of being dropped, so they can be switched back. `ppe_count_info.json` keeps the field area and settings for the recount.

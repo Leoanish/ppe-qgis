@@ -109,27 +109,101 @@ def _plant_groups(mask_path, vote_path, min_px, join_px, hole_px, progress, log)
     return ds, a, X, Y, (core[1:][sel] if core is not None else None)
 
 
-def _rows(px, py, weight, spacing_px):
-    """Crop rows from plant centres, with the row spacing known (typed by the user).
+ROW_MIN_CM, ROW_MAX_CM = 15.0, 150.0   # row spacings searched (any row crop: cereals to wide-row crops)
+ROW_MIN_CONTRAST = 1.8                 # rows are clear when their signal is this many times the background (other spacings/directions);
+                                       # a 4 m tile needs half the field's row signal. Otherwise nothing is marked as weed there.
 
-    For each direction, plant centres are folded by the row spacing; on the right direction they pile
-    up at one phase (the row centre). Returns (keep, info): keep = within ROW_BAND x spacing of a row."""
+
+def _plant_pixel_sample(mask_path, n=2000000, seed=0):
+    """Pixel coordinates of the plant pixels of the mask on a coarse grid (about 2 million cells), at most n."""
+    ds = safe_gdal_open(mask_path); b = ds.GetRasterBand(1); W, H = ds.RasterXSize, ds.RasterYSize
+    step = max(1, int(math.sqrt(W * H / 2e6)))             # read a coarse grid (about 2 million pixels)
+    a = b.ReadAsArray(0, 0, W, H, buf_xsize=max(1, W // step), buf_ysize=max(1, H // step))
+    ys, xs = np.nonzero(a == 1)
+    if len(xs) > n:
+        k = np.random.default_rng(seed).choice(len(xs), n, replace=False); xs, ys = xs[k], ys[k]
+    return xs * (W / a.shape[1]) + 0.5, ys * (H / a.shape[0]) + 0.5
+
+
+ROW_TILE_CM = 400.0                    # row positions are fitted per 4 m tile: plots can be shifted against each other
+
+
+def _tiles(x, y, tile):
+    tx = np.floor(x / tile).astype(np.int64); ty = np.floor(y / tile).astype(np.int64)
+    _u, inv = np.unique(tx * 1000003 + ty, return_inverse=True)
+    return inv, int(inv.max()) + 1 if len(inv) else 0
+
+
+def _fold(sx, sy, tid, nt, angles, spacings):
+    """Row strength for every direction x spacing: inside each tile, plant pixels folded by the spacing
+    pile up at one phase when direction and spacing are right; strength = share-weighted mean over tiles."""
+    out = np.empty((len(angles), len(spacings))); n = len(sx)
+    for k, a in enumerate(angles):
+        t = math.radians(a); d = sx * math.cos(t) + sy * math.sin(t)
+        ph = 2 * math.pi * d[:, None] / spacings[None, :]
+        c, s_ = np.cos(ph), np.sin(ph)
+        re = np.zeros((nt, len(spacings))); im = np.zeros((nt, len(spacings)))
+        np.add.at(re, tid, c); np.add.at(im, tid, s_)
+        out[k] = np.hypot(re, im).sum(axis=0) / n
+    return out
+
+
+def _rows(px, py, weight, pixel_cm, spacing_cm=None, sample=None):
+    """Crop rows, found on their own from the plant pixels of the mask: one direction and one spacing
+    (ROW_MIN_CM to ROW_MAX_CM) for the image, row positions fitted per 4 m tile. Points farther than
+    ROW_BAND x spacing from a row centre line are possible weeds. Where rows are not clear (field or tile),
+    nothing is marked. A given spacing_cm skips the spacing search. Returns (on_row, info)."""
     n = len(px)
-    if n < 10 or spacing_px < 3:
-        return np.ones(n, bool), {"rows": 0, "note": "too few plants to find rows; all plants kept"}
-    w = weight / weight.sum()
-    def strength(a):
-        t = math.radians(a); ph = 2 * math.pi * (px * math.cos(t) + py * math.sin(t)) / spacing_px
-        z = (w * np.exp(1j * ph)).sum(); return abs(z), np.angle(z), ph
-    angles = np.arange(0, 180, 0.5); r = [strength(a)[0] for a in angles]; a0 = float(angles[int(np.argmax(r))])
-    fine = np.arange(a0 - 0.5, a0 + 0.51, 0.05); rf = [strength(a)[0] for a in fine]; a0 = float(fine[int(np.argmax(rf))])
-    R, phase, ph = strength(a0)
-    if R < 0.3:
-        return np.ones(n, bool), {"rows": 0, "strength": float(R), "note": "no clear rows at this spacing; all plants kept"}
-    off = np.angle(np.exp(1j * (ph - phase))) * spacing_px / (2 * math.pi)
-    keep = np.abs(off) <= ROW_BAND * spacing_px
-    return keep, {"strength": float(R), "angle_deg": a0, "spacing_px": float(spacing_px),
-                  "note": "rows found (strength {:.2f}); {} plants between rows left out".format(R, int((~keep).sum()))}
+    if sample is None or len(sample[0]) < 200:
+        return np.ones(n, bool), {"rows": 0, "note": "too few plant pixels to find rows; nothing marked as weed"}
+    ax_, ay_ = sample; tile = ROW_TILE_CM / pixel_cm
+    sx, sy = ax_, ay_
+    if len(sx) > 20000:
+        k = np.random.default_rng(1).choice(len(sx), 20000, replace=False); sx, sy = sx[k], sy[k]
+    tid, nt = _tiles(sx, sy, tile)
+    if spacing_cm:
+        spacings = np.array([float(spacing_cm) / pixel_cm])
+    else:
+        spacings = np.exp(np.linspace(math.log(max(ROW_MIN_CM / pixel_cm, 3.0)), math.log(max(ROW_MAX_CM / pixel_cm, 4.0)), 60))
+    angles = np.arange(0, 180, 3.0)
+    R = _fold(sx, sy, tid, nt, angles, spacings); ka, ks = np.unravel_index(int(np.argmax(R)), R.shape)
+    background = float(np.median(R))                      # strength of directions/spacings that are not rows
+    a_f = np.arange(angles[ka] - 3, angles[ka] + 3.01, 0.25)
+    s_f = spacings if len(spacings) == 1 else np.linspace(spacings[max(0, ks - 1)], spacings[min(len(spacings) - 1, ks + 1)], 21)
+    Rf = _fold(sx, sy, tid, nt, a_f, s_f); ka, ks = np.unravel_index(int(np.argmax(Rf)), Rf.shape)
+    a0, sp = float(a_f[ka]), float(s_f[ks]); strength = float(Rf[ka, ks])
+    # Thin rows also line up at half (a third of) their spacing: take the widest spacing that fits as well.
+    if spacing_cm is None:
+        for mult in (3, 2):
+            wide = sp * mult
+            if wide <= ROW_MAX_CM / pixel_cm:
+                rw = float(_fold(sx, sy, tid, nt, np.array([a0]), np.array([wide]))[0, 0])
+                if rw >= 0.8 * strength:
+                    sp, strength = wide, rw; break
+    contrast = strength / max(background, 1e-6)
+    info = {"strength": strength, "contrast": contrast, "angle_deg": a0, "spacing_px": sp, "spacing_cm": sp * pixel_cm}
+    if contrast < ROW_MIN_CONTRAST or (spacing_cm is None and ks in (0, len(s_f) - 1) and sp in (spacings[0], spacings[-1])):
+        info.update(rows=0, note="no clear rows (row signal {:.1f} x background); nothing marked as weed".format(contrast))
+        return np.ones(n, bool), info
+    # phase and strength of each tile (all sampled plant pixels), then each point against its own tile's rows
+    sx, sy = ax_, ay_; tid, nt = _tiles(sx, sy, tile)
+    t = math.radians(a0); ph_s = 2 * math.pi * (sx * math.cos(t) + sy * math.sin(t)) / sp
+    re = np.bincount(tid, np.cos(ph_s), nt); im = np.bincount(tid, np.sin(ph_s), nt); cnt = np.bincount(tid, minlength=nt)
+    tile_r = np.hypot(re, im) / np.maximum(cnt, 1)
+    tile_phase = np.arctan2(im, re); tile_ok = (cnt >= 30) & (tile_r >= 0.5 * strength) & (tile_r >= 3.0 / np.sqrt(np.maximum(cnt, 1)))
+    key = np.floor(sx / tile).astype(np.int64) * 1000003 + np.floor(sy / tile).astype(np.int64)
+    ukey = np.zeros(nt, np.int64); ukey[tid] = key
+    pk = np.floor(px / tile).astype(np.int64) * 1000003 + np.floor(py / tile).astype(np.int64)
+    order = np.argsort(ukey); pos = np.searchsorted(ukey[order], pk); pos = np.clip(pos, 0, nt - 1)
+    pt = np.where(ukey[order][pos] == pk, order[pos], -1)
+    ph_p = 2 * math.pi * (px * math.cos(t) + py * math.sin(t)) / sp
+    on_row = np.ones(n, bool); has = pt >= 0
+    judged = np.zeros(n, bool); judged[has] = tile_ok[pt[has]]
+    off = np.angle(np.exp(1j * (ph_p[judged] - tile_phase[pt[judged]]))) * sp / (2 * math.pi)
+    on_row[judged] = np.abs(off) <= ROW_BAND * sp
+    info.update(rows=1, tiles_with_rows=float(tile_ok.mean()), note="rows found {:.0f} cm apart (row signal {:.1f} x background); {} plants between rows marked as possible weeds".format(
+        sp * pixel_cm, contrast, int((~on_row).sum())))
+    return on_row, info
 
 
 def count_plants(cfg, progress=None, log=None):
@@ -169,12 +243,12 @@ def count_plants(cfg, progress=None, log=None):
     median = float(np.median(areas)) if n_all else 0.0
     big = areas > BIG_FACTOR * float(np.percentile(areas, 75)) if n_all >= 4 else np.zeros(n_all, bool)
     rows_info = None; on_row = np.ones(n_all, bool)
-    if cfg.get("row_spacing_cm") and n_all:
+    if (cfg.get("find_rows") or cfg.get("row_spacing_cm")) and n_all:
         progress(80, "Finding crop rows")
         pxc = (xs - gt[0]) / gt[1]; pyc = (ys - gt[3]) / gt[5]
         pixel_cm = math.sqrt(pixel_m2) * 100 if pixel_m2 else None
         if pixel_cm:
-            on_row, rows_info = _rows(pxc, pyc, areas, float(cfg["row_spacing_cm"]) / pixel_cm)
+            on_row, rows_info = _rows(pxc, pyc, areas, pixel_cm, cfg.get("row_spacing_cm"), _plant_pixel_sample(cfg["mask_path"]))
         else:
             rows_info = {"note": "the image is not in metres; rows not used"}
         log("Rows: " + rows_info["note"] + ".")

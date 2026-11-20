@@ -34,8 +34,9 @@ def field(n=300, seed=1):
     rng = np.random.default_rng(seed); yy, xx = np.mgrid[0:n, 0:n]; plant = np.zeros((n, n), bool); weeds = np.zeros((n, n), bool)
     for r in range(4):
         y = 30 + 60 * r
-        for x in range(20, n - 10, 30): plant |= (yy - y) ** 2 + (xx - x) ** 2 <= 36
-        for x in range(35, n - 10, 70): weeds |= (yy - y - 30) ** 2 + (xx - x) ** 2 <= 16
+        for x in range(20, n - 10, 30): plant |= (yy - y) ** 2 + (xx - x - (7 * r) % 13) ** 2 <= 36   # rows staggered, as in a field
+        for x in range(35, n - 10, 70):                           # weeds scattered between the rows, not on a line
+            wy = y + 22 + int(rng.integers(0, 17)); wx = x + int(rng.integers(-10, 11)); weeds |= (yy - wy) ** 2 + (xx - wx) ** 2 <= 16
     green = plant | weeds
     red = np.where(green, 0.05, 0.25) + rng.normal(0, 0.01, (n, n)); nir = np.where(green, 0.5, 0.3) + rng.normal(0, 0.01, (n, n))
     gr = np.where(green, 0.12, 0.2) + rng.normal(0, 0.01, (n, n)); bl = np.where(green, 0.04, 0.15) + rng.normal(0, 0.01, (n, n))
@@ -86,17 +87,17 @@ class CounterTests(unittest.TestCase):
         self.assertEqual(with_core["plants"], self.n_plants + self.n_weeds); self.assertEqual(with_core["no_core_left_out"], 1)
 
     def test_row_spacing_leaves_out_weeds_between_rows(self):
-        r = self.run_count(row_spacing_cm=60)          # rows 60 px apart at 1 cm pixels
+        r = self.run_count(find_rows=True)          # rows 60 px apart at 1 cm pixels
         self.assertEqual(r["plants"], self.n_plants); self.assertEqual(r["left_out_between_rows"], self.n_weeds)
 
     def test_weeds_between_rows_are_kept_as_points_but_not_counted(self):
-        r = self.run_count(row_spacing_cm=60)
+        r = self.run_count(find_rows=True)
         ds = ogr.Open(r["points_path"]); st = [f.GetField("status") for f in ds.GetLayer()]; ds = None
         self.assertEqual(st.count("weed?"), self.n_weeds); self.assertEqual(r["weeds_not_counted"], self.n_weeds)
 
     def test_corrections_on_the_points_update_the_totals(self):
         from ppe_qgis.plant_count import summarize_points
-        r = self.run_count(row_spacing_cm=60); path = r["points_path"]; before = r["plants"]
+        r = self.run_count(find_rows=True); path = r["points_path"]; before = r["plants"]
         ds = ogr.Open(path, 1); lay = ds.GetLayer(); feats = list(lay)
         lay.DeleteFeature(next(f for f in feats if f.GetField("status") == "plant").GetFID())           # remove a wrong point
         w = next(f for f in feats if f.GetField("status") == "weed?"); w.SetField("status", "plant"); lay.SetFeature(w)   # a weed? that is a plant
