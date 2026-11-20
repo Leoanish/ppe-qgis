@@ -100,7 +100,7 @@ def canopy_at(points, threshold):
 
 # Where PPE's layers go in the Layers panel. The results are layers of their own at the top level;
 # only the working layers sit in the "Plant Pixel Extractor" group. From top to bottom:
-TOP_ORDER = ("plants", "plots", "pale", "mask", "__group__", "rgb")
+TOP_ORDER = ("plots", "pale", "mask", "__group__", "rgb")
 GROUP_ORDER = ("crops", "votes")
 
 
@@ -150,10 +150,7 @@ def arrange_layers():
         target = start + offset
         if root.children().index(node) != target:
             _move(root, node, target)
-    # The plant count points always sit at the very top of the Layers panel, so they draw over everything.
-    plants = next((n for n in root.children() if _node_role(n) == "plants"), None)
-    if plants is not None and root.children().index(plants) != 0:
-        _move(root, plants, 0)
+
 
 
 def place_layer(layer, role, visible=True, parent=None):
@@ -636,28 +633,3 @@ def show_pale_plant(path, visible=True, kinds=None):
     arrange_layers()
     return layers[0] if layers else None
 
-
-PLANT_POINT_SIZE = 3.8        # mm: large enough to see over the image at any zoom
-
-
-def show_plant_points(path, name="PPE · Plants"):
-    """Load the plant count points (ppe_plants.gpkg) as the top layer: yellow dots with a black outline,
-    orange for groups flagged 'check' (may be several touching plants). Replaces an earlier count."""
-    from qgis.core import QgsCategorizedSymbolRenderer, QgsMarkerSymbol, QgsRendererCategory, QgsUnitTypes, QgsVectorLayer
-    remove_role("plants")
-    layer = QgsVectorLayer(path + "|layername=plants", name, "ogr")
-    if not layer.isValid():
-        return None
-
-    def dot(fill):
-        sym = QgsMarkerSymbol.createSimple({"name": "circle", "color": fill, "outline_color": "0,0,0", "outline_width": "0.45",
-                                            "size": str(PLANT_POINT_SIZE)})
-        sym.setSizeUnit(QgsUnitTypes.RenderMillimeters)
-        return sym
-    renderer = QgsCategorizedSymbolRenderer("check", [
-        QgsRendererCategory("", dot("255,230,0"), "Plant"),
-        QgsRendererCategory("big: may be several plants", dot("255,140,0"), "Check: may be several touching plants")])
-    layer.setRenderer(renderer)
-    place_layer(layer, "plants")
-    layer.triggerRepaint()
-    return layer

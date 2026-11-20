@@ -89,7 +89,6 @@ class PPEPlugin:
         self.dock.generate_requested.connect(self._start_generate)
         self.dock.apply_requested.connect(self._start_apply)
         self.dock.export_requested.connect(self._start_export)
-        self.dock.count_requested.connect(self._start_goal_job)
         self.dock.training_requested.connect(self._start_goal_job)
         self.dock.cancel_requested.connect(self.runner.cancel)
         self.dock.preview_requested.connect(self._start_preview)
@@ -294,7 +293,7 @@ class PPEPlugin:
         self._start_process(config)
 
     def _start_goal_job(self, config):
-        """Plant count or training data (4.3 goals): run in the background like an export."""
+        """Training data (4.3 goal): run in the background like an export."""
         cfg = self.dock.build_config("run"); cfg.update(config)
         self.current_action = config["action"]
         self.dock.set_running(True, self.current_action)
@@ -323,17 +322,6 @@ class PPEPlugin:
         if self.current_action == "batch_finalize":
             self.dock.set_batch_finalized(result)
             self._message("Batch masks written: {} images. Summary: {}".format(len(result.get("rows", [])), result.get("summary_csv", "")), Qgis.Success)
-            return
-        if self.current_action == "count":
-            self.dock.set_counted(result)
-            if result.get("points_path"):
-                try:
-                    from .layer_utils import show_plant_points
-                    with self._own_changes():
-                        show_plant_points(result["points_path"])
-                except Exception as exc:
-                    self.dock.append_log("Could not show the plant points: {}".format(exc))
-            self._message("Counted {} plants.".format(result.get("plants", 0)), Qgis.Success)
             return
         if self.current_action == "training":
             self.dock.set_training_done(result)

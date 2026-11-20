@@ -134,7 +134,6 @@ class PPEDockWidget(QDockWidget):
     batch_run_requested = pyqtSignal(dict)       # run every image of a folder
     batch_finalize_requested = pyqtSignal(dict)  # write every mask of a batch at its own threshold
     batch_open_requested = pyqtSignal(dict)      # open one image of a batch for review
-    count_requested = pyqtSignal(dict)           # count plants in the finalized mask(s)
     training_requested = pyqtSignal(dict)        # cut training tiles + PPE labels
     closing = pyqtSignal()
 
@@ -183,10 +182,9 @@ class PPEDockWidget(QDockWidget):
         goal_row = QHBoxLayout(); goal_row.setContentsMargins(0, 6, 0, 0); goal_row.setSpacing(8)
         goal_label = QLabel("Goal"); goal_label.setObjectName("ppeSubtitle")
         self.goal = QComboBox()
-        for text, key in (("Plant mask", "mask"), ("Plant counter", "count"), ("Training data for a model", "training")):
+        for text, key in (("Plant mask", "mask"), ("Training data for a model", "training")):
             self.goal.addItem(text, key)
         self.goal.setToolTip("Plant mask: plant pixels, plant-only bands and plot statistics.\n"
-                             "Plant counter: count plants (early season) per image and per plot.\n"
                              "Training data: image tiles with PPE labels to train a fast model, no hand labelling.\n"
                              "Every goal starts with the same steps: image, run, review.")
         goal_row.addWidget(goal_label); goal_row.addWidget(self.goal, 1)
@@ -204,7 +202,6 @@ class PPEDockWidget(QDockWidget):
             "review": (self._review_tab(), "Review", "Set the threshold and finalize the mask"),
             "export": (self._export_tab(), "Export", "Export plant-only bands and indices"),
             "plots": (self._aoi_export_tab(), "Plots", "Statistics for each plot polygon"),
-            "count": (self._count_tab(), "Count", "Count the plants in the finalized mask, per image and per plot"),
             "training": (self._training_tab(), "Train data", "Image tiles with PPE labels for training a fast model"),
             "batch": (self._batch_tab(), "Batch", "Many images at once: run a folder, review each, finalize all"),
         }
@@ -772,7 +769,6 @@ class PPEDockWidget(QDockWidget):
 
     # ---- Tab 6 Batch (4.2): many images, each reviewed with the normal slider ------------------
     GOAL_TABS = {"mask": ("image", "run", "review", "export", "plots", "batch"),
-                 "count": ("image", "run", "review", "count", "batch"),
                  "training": ("image", "run", "review", "training", "batch")}
 
     def _apply_goal(self, goal):
@@ -804,91 +800,6 @@ class PPEDockWidget(QDockWidget):
 
     def _goal_changed(self):
         self._apply_goal(self.goal.currentData()); self.settings.setValue("ppe_qgis/goal", self._goal); self._refresh_goal_buttons()
-
-    # ---- goal: plant counter -------------------------------------------------------------------
-    def _count_tab(self):
-        page, layout = self._page()
-        title = QLabel("Count plants"); title.setObjectName("sectionTitle")
-        hint = QLabel("Each plant in the finalized mask gets one point. Leaves of one plant that show as separate pieces are joined. "
-                      "This works best early in the season, before plants touch: plants that touch become one, flagged 'check' "
-                      "when much bigger than a typical plant.")
-        hint.setWordWrap(True); hint.setObjectName("ppeHint"); layout.addWidget(title); layout.addWidget(hint)
-        card, body = self._card("Settings"); form = self._form(body)
-        self.count_min = self._plain_spin(QDoubleSpinBox()); self.count_min.setRange(0.01, 10000); self.count_min.setDecimals(2); self.count_min.setValue(1.0); self.count_min.setSuffix(" cm²")
-        self.count_min.setToolTip("Groups smaller than this are specks, not plants. Set it a little below your smallest seedling.")
-        form.addRow("Smallest plant", self.count_min)
-        self.count_join = self._plain_spin(QDoubleSpinBox()); self.count_join.setRange(0, 20); self.count_join.setDecimals(1); self.count_join.setValue(1.0); self.count_join.setSuffix(" cm")
-        self.count_join.setSpecialValueText("Off · every piece is a plant")
-        self.count_join.setToolTip("Leaves of one plant often show as separate pieces (the stem or petiole between them is thin). "
-                                   "Pieces closer than this are one plant. Keep it smaller than the gap between neighbouring plants.")
-        form.addRow("Join leaves closer than", self.count_join)
-        self.count_rows = self._plain_spin(QDoubleSpinBox()); self.count_rows.setRange(0, 500); self.count_rows.setDecimals(0); self.count_rows.setValue(0)
-        self.count_rows.setSpecialValueText("Off · count every plant"); self.count_rows.setSuffix(" cm")
-        self.count_rows.setToolTip("Row spacing of the crop. When set, plants between the rows (weeds) are not counted. "
-                                   "For straight, parallel rows. On PhenoBench it halved the weeds counted and lost a few crop plants.")
-        form.addRow("Crop row spacing (optional)", self.count_rows)
-        self.count_plots = QLineEdit(); self.count_plots.setPlaceholderText("Optional: plot polygons for counts per plot")
-        form.addRow("Plot file", self._path_row(self.count_plots))
-        self.count_plot_id = QLineEdit(); self.count_plot_id.setPlaceholderText("Attribute with the plot ID (empty: feature ID)")
-        form.addRow("Plot identifier", self.count_plot_id)
-        layout.addWidget(card)
-        row = QHBoxLayout(); row.setSpacing(6)
-        self.count_button = QPushButton("Count plants"); self.count_button.setProperty("primary", True); self.count_button.setEnabled(False)
-        self.count_batch_button = QPushButton("Count all batch masks"); self.count_batch_button.setProperty("secondary", True); self.count_batch_button.setEnabled(False)
-        row.addWidget(self.count_button, 1); row.addWidget(self.count_batch_button, 1); layout.addLayout(row)
-        self.count_progress = QProgressBar(); self.count_progress.setRange(0, 100); self.count_progress.setValue(0); self.count_progress.setFormat("Ready")
-        layout.addWidget(self.count_progress)
-        self.count_status = QLabel("Finalize the mask on tab 3, then count.")
-        layout.addWidget(self._note(self.count_status))
-        out = QLabel("Output, in the image's output folder: ppe_count/ppe_plants.gpkg (one point per plant: area, 'check' flag, "
-                     "on a row), ppe_count_summary.csv and, with plots, ppe_plot_counts.csv (plants and plants per m² per plot). "
-                     "A batch also writes ppe_batch_counts.csv.")
-        out.setWordWrap(True); out.setObjectName("ppeHint"); layout.addWidget(out)
-        self.count_button.clicked.connect(lambda: self._emit_count(False))
-        self.count_batch_button.clicked.connect(lambda: self._emit_count(True))
-        layout.addStretch(); return self._scroll_tab(page)
-
-    def _count_settings(self):
-        return {"action": "count", "min_plant_cm2": self.count_min.value(), "join_cm": self.count_join.value(), "row_spacing_cm": self.count_rows.value() or None,
-                "aoi_path": self.count_plots.text().strip(), "aoi_id_field": self.count_plot_id.text().strip()}
-
-    def _emit_count(self, batch):
-        cfg = self._count_settings()
-        if cfg["aoi_path"] and not os.path.isfile(cfg["aoi_path"]):
-            QMessageBox.warning(self, "PPE count", "The plot file does not exist."); return
-        if batch:
-            items = []
-            for n, p in (getattr(self, "_batch_masks", None) or []):
-                vote = ""
-                try:
-                    entry = self._batch_entry(n) or {}
-                    with open(entry.get("result_path", ""), encoding="utf-8") as f: vote = json.load(f).get("vote_path", "")
-                except Exception:
-                    pass
-                items.append({"name": n, "mask_path": p, "vote_path": vote})
-            if not items: QMessageBox.warning(self, "PPE count", "Write the batch masks first (Batch tab)."); return
-            cfg.update(count_items=items, output_dir=(self.batch or {}).get("manifest", {}).get("output_dir") or os.path.dirname(os.path.dirname(items[0]["mask_path"])))
-        else:
-            mask = (self.result or {}).get("mask_path", "")
-            if not os.path.isfile(mask): QMessageBox.warning(self, "PPE count", "Finalize the mask on tab 3 first."); return
-            cfg.update(mask_path=mask, vote_path=(self.result or {}).get("vote_path", ""), output_dir=os.path.join(os.path.dirname(mask), "ppe_count"))
-        self.count_requested.emit(cfg)
-
-    def set_counted(self, result):
-        self.count_progress.setValue(100); self.count_progress.setFormat("Complete")
-        per_m2 = result.get("plants_per_m2")
-        if result.get("batch_counts_csv"):
-            text = "{} plants in {} images.\n{}".format(result["plants"], result["images"], result["batch_counts_csv"])
-        else:
-            rows = result.get("rows") or {}
-            text = "{} plants{}{}{}.".format(result["plants"], " · {:.2f} per m²".format(per_m2) if per_m2 else "",
-                                              " · {} flagged 'check' (may be touching plants)".format(result["flagged_big"]) if result.get("flagged_big") else "",
-                                              " · {} left out between rows".format(result["left_out_between_rows"]) if rows and result.get("left_out_between_rows") else "")
-            if rows and rows.get("note", "").startswith("no clear"): text += "\nNo clear rows at that spacing: every plant was counted."
-            if result.get("no_core_left_out"): text += "\n{} spots not counted: no pixel there where every PPE vote says plant (soil let in by the threshold).".format(result["no_core_left_out"])
-            if result.get("plot_counts_path"): text += "\nPer plot: {}".format(result["plot_counts_path"])
-            text += "\nPoints: {}".format(result.get("points_path", ""))
-        self.count_status.setText(text + "\n" + result.get("note", ""))
 
     # ---- goal: training data ---------------------------------------------------------------
     def _training_tab(self):
@@ -961,9 +872,7 @@ class PPEDockWidget(QDockWidget):
 
     def _refresh_goal_buttons(self):
         busy = getattr(self, "_busy", False); r = self.result or {}
-        if hasattr(self, "count_button"):
-            self.count_button.setEnabled(not busy and bool(r.get("mask_path")))
-            self.count_batch_button.setEnabled(not busy and bool(getattr(self, "_batch_masks", None)))
+        if hasattr(self, "train_button"):
             self.train_button.setEnabled(not busy and bool(r.get("vote_path")))
             self.train_batch_button.setEnabled(not busy and bool(self.batch))
 
@@ -1078,8 +987,6 @@ class PPEDockWidget(QDockWidget):
     def set_batch(self, manifest, choices=None):
         manifest = dict(manifest); manifest.setdefault("manifest_path", os.path.join(manifest.get("output_dir", ""), "ppe_batch.json"))
         self.batch = {"manifest": manifest, "choices": dict(choices or {}), "open": None}
-        self._batch_masks = [(n, c["finalized_mask"]) for n, c in self.batch["choices"].items()
-                             if isinstance(c, dict) and c.get("finalized_mask") and os.path.isfile(c["finalized_mask"])]
         QTimer.singleShot(0, self._refresh_goal_buttons)
         self.batch_progress.setValue(100); self.batch_progress.setFormat("Done")
         self._fill_batch_table()
@@ -1190,8 +1097,6 @@ class PPEDockWidget(QDockWidget):
         if not self.batch or not self.batch.get("open"): return
         c = self.batch["choices"].setdefault(self.batch["open"], {})
         c["finalized_mask"] = result.get("mask_path", ""); self._batch_write_choices(); self._fill_batch_table()
-        masks = dict(getattr(self, "_batch_masks", None) or []); masks[self.batch["open"]] = c["finalized_mask"]
-        self._batch_masks = sorted(masks.items()); self._refresh_goal_buttons()
         self.batch_review_note.setText("Mask written: {}".format(result.get("mask_path", "")))
 
     def _batch_save_open(self):
@@ -1240,7 +1145,6 @@ class PPEDockWidget(QDockWidget):
 
     def set_batch_finalized(self, result):
         rows = result.get("rows") or []
-        self._batch_masks = [(r["image"], r["mask_path"]) for r in rows if r.get("mask_path")]
         self._refresh_goal_buttons()
         self.batch_progress.setValue(100); self.batch_progress.setFormat("{} masks written".format(len(rows)))
         if self.batch is not None:
@@ -2491,7 +2395,7 @@ class PPEDockWidget(QDockWidget):
         self.batch_load_button.setEnabled(not running)
         for b in (self.batch_finalize_one, self.batch_next_inline, self.batch_slider): b.setEnabled(not running)
         if self.batch: self._fill_batch_table()
-        if running and (action in ("zones", "count", "training") or str(action).startswith("export") or str(action).startswith("batch")):
+        if running and (action in ("zones", "training") or str(action).startswith("export") or str(action).startswith("batch")):
             bar = self._bar_for(action)
             bar.setValue(0)
             bar.setFormat("Starting…")
@@ -2504,7 +2408,6 @@ class PPEDockWidget(QDockWidget):
     def _bar_for(self, action):
         action = str(action)
         if action.startswith("batch"): return self.batch_progress
-        if action == "count": return self.count_progress
         if action == "training": return self.train_progress
         if action == "export_aoi": return self.aoi_progress
         if action == "zones": return self.crop_progress
