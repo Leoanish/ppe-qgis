@@ -139,7 +139,7 @@ def export_training_tiles(cfg, progress=None, log=None, cancelled=None):
     s = np.concatenate(samples, axis=1)
     ranges = [[float(np.nanpercentile(s[i], 1)), float(np.nanpercentile(s[i], 99))] for i in range(s.shape[0])]
     total = sum(counts.values())
-    manifest = {"created": datetime.now().isoformat(timespec="seconds"), "ppe_version": "native-4.3.0", "tile": tile,
+    manifest = {"created": datetime.now().isoformat(timespec="seconds"), "ppe_version": "native-4.3.1", "tile": tile,
                 "bands": band_names, "band_ranges_p1_p99": ranges, "labels": {"1": "plant", "0": "soil", "255": "unsure (ignore)"},
                 "label_rule": {"plant_vote": PLANT_VOTE, "soil_vote": SOIL_VOTE, "min_plant_px": MIN_PLANT_PX, "unclear_as_soil": True},
                 "pixel_shares": {k: round(v / total, 4) for k, v in counts.items()},

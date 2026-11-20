@@ -180,6 +180,12 @@ On whole fields it is clearly better than 0.50. On small clips it is better on a
 
 It needs a NIR band. On camera RGB images plant and soil differ too little in colour for a reliable plant share per pixel, so those start at 0.50 and the Review tab says so.
 
+## 4.3.1: plant counter counts plants, not leaves
+
+- Leaves of one plant that show as separate pieces (thin stem or petiole not in the mask) are joined: pieces closer than 1 cm (setting *Join leaves closer than*) are one plant. Specks smaller than the smallest plant are dropped first so they cannot chain plants together. PhenoBench test images, plants counted exactly once: seedlings 72 to 88 %, middle 51 to 57 %, late 48 to 50 %; split plants 21 to 2 %, 19 to 6 %, 12 to 5 %. Each plant's point is the centre of its plant pixels.
+- *check* flag: over 2.5 × the 75th-percentile plant (was 3 × the median, which flagged single crop plants among small weeds).
+- The layer *PPE · Plants* is always at the top of the Layers panel; yellow dots 3.8 mm with a black outline, orange for *check*.
+
 ## 4.3.0: goals, plant counter, training data, faster
 
 - **Goal** at the top of the panel: *Plant mask*, *Plant counter* or *Training data for a model*. Tabs 1 to 3 are the same for every goal; tab 4 is the goal's own step; Batch is last. Finalize leads to tab 4.

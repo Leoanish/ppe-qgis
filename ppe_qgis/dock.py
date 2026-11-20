@@ -809,13 +809,19 @@ class PPEDockWidget(QDockWidget):
     def _count_tab(self):
         page, layout = self._page()
         title = QLabel("Count plants"); title.setObjectName("sectionTitle")
-        hint = QLabel("Each separate group of plant pixels in the finalized mask is one plant. This works best early in the season, "
-                      "before plants touch: plants that touch are one group, flagged 'check' when much bigger than a typical plant.")
+        hint = QLabel("Each plant in the finalized mask gets one point. Leaves of one plant that show as separate pieces are joined. "
+                      "This works best early in the season, before plants touch: plants that touch become one, flagged 'check' "
+                      "when much bigger than a typical plant.")
         hint.setWordWrap(True); hint.setObjectName("ppeHint"); layout.addWidget(title); layout.addWidget(hint)
         card, body = self._card("Settings"); form = self._form(body)
         self.count_min = self._plain_spin(QDoubleSpinBox()); self.count_min.setRange(0.01, 10000); self.count_min.setDecimals(2); self.count_min.setValue(1.0); self.count_min.setSuffix(" cm²")
         self.count_min.setToolTip("Groups smaller than this are specks, not plants. Set it a little below your smallest seedling.")
         form.addRow("Smallest plant", self.count_min)
+        self.count_join = self._plain_spin(QDoubleSpinBox()); self.count_join.setRange(0, 20); self.count_join.setDecimals(1); self.count_join.setValue(1.0); self.count_join.setSuffix(" cm")
+        self.count_join.setSpecialValueText("Off · every piece is a plant")
+        self.count_join.setToolTip("Leaves of one plant often show as separate pieces (the stem or petiole between them is thin). "
+                                   "Pieces closer than this are one plant. Keep it smaller than the gap between neighbouring plants.")
+        form.addRow("Join leaves closer than", self.count_join)
         self.count_rows = self._plain_spin(QDoubleSpinBox()); self.count_rows.setRange(0, 500); self.count_rows.setDecimals(0); self.count_rows.setValue(0)
         self.count_rows.setSpecialValueText("Off · count every plant"); self.count_rows.setSuffix(" cm")
         self.count_rows.setToolTip("Row spacing of the crop. When set, plants between the rows (weeds) are not counted. "
@@ -843,7 +849,7 @@ class PPEDockWidget(QDockWidget):
         layout.addStretch(); return self._scroll_tab(page)
 
     def _count_settings(self):
-        return {"action": "count", "min_plant_cm2": self.count_min.value(), "row_spacing_cm": self.count_rows.value() or None,
+        return {"action": "count", "min_plant_cm2": self.count_min.value(), "join_cm": self.count_join.value(), "row_spacing_cm": self.count_rows.value() or None,
                 "aoi_path": self.count_plots.text().strip(), "aoi_id_field": self.count_plot_id.text().strip()}
 
     def _emit_count(self, batch):

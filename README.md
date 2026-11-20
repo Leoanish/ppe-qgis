@@ -255,15 +255,16 @@ For many images (dates, fields or flights), PPE can run a whole folder and let y
 
 Choose **Plant counter** at the top. Run and review as usual, finalize the mask, and tab 4 **Count** counts the plants.
 
-- **One plant** is one separate group of plant pixels that is at least the **smallest plant** size (in cm²; set it a little below your smallest seedling) and has a **sure core**: at least 5 pixels where every PPE vote says plant. The core keeps soil spots out that a low threshold lets in. On a seedling image with the threshold left at 0.50, 474 groups became 13 plants (hand count 12).
-- **Touching plants** are one group. Groups much bigger than a typical plant (over 3 × the median) are flagged **check**; they still count as one, because splitting them by size overcounted badly in tests. Count early in the season, before plants touch.
+- **One plant** gets one point. PPE first drops specks smaller than the **smallest plant** (in cm²; set it a little below your smallest seedling). Then pieces closer than **Join leaves closer than** (1 cm by default) become one plant: the leaves of one plant often show as separate pieces because the stem or petiole between them is thin. Keep this setting smaller than the gap between neighbouring plants.
+- A plant also needs a **sure core**: at least 5 pixels where every PPE vote says plant. This keeps out soil spots that a low threshold lets in.
+- **Touching plants** become one. Groups much bigger than the larger plants of the image (over 2.5 × the 75th percentile) are drawn orange and flagged **check**; they still count as one. Splitting them by size made counts much worse in tests. Count early in the season, before plants touch.
 - **Crop row spacing** (optional): with it, plants between the rows (weeds) are not counted. For straight, parallel rows. On PhenoBench it halved the weeds counted and lost a few crop plants, so it is off unless you set it.
 - **Plot file** (optional): plants and plants per m² for each plot.
 - **Count all batch masks** counts every mask written on the Batch tab.
 
-The plants appear on the map as the point layer **PPE · Plants** (area, check flag, on a row).
+How close is it? On 37 PhenoBench test images (sugar beet with weeds, every plant boxed by hand; plants smaller than 1 cm² left out), with masks at threshold 0.65, the share of plants that got exactly one point was 88 % at the seedling date, 57 % at the middle date and 50 % at the late date. Plants split into several points: 2, 6 and 5 %. Before leaves were joined (4.3.0): 72, 51 and 48 % right, with 21, 19 and 12 % split. The plants still missed later in the season are mostly plants that touch, and small weeds PPE's mask does not catch.
 
-How close is it? On 37 PhenoBench test images (sugar beet, hand-counted), the count (masks at threshold 0.65) was 25, 19 and 39 % off the hand count at the seedling, middle and late dates. With hand-drawn masks the same counting was 27, 11 and 28 % off: most of the error comes from plants that touch or leaves that fall apart, not from the mask.
+The plant points are drawn as yellow dots (3.8 mm) in the layer **PPE · Plants**, kept at the top of the Layers panel so they show over every other layer.
 
 ## 13. Goal Training data: tiles and labels for a model
 

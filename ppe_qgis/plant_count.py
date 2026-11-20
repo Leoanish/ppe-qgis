@@ -1,10 +1,13 @@
 """Plant counter (4.3): count the plants in a finalized PPE plant mask.
 
-One plant = one connected group of plant pixels (8-connected) that is at least the smallest plant
-size and has a sure core: >= 5 pixels where every PPE vote says plant. The core makes the count
+Pieces smaller than the smallest plant are dropped; pieces closer than 1 cm (setting) are joined, so
+the leaves of one plant split by a thin stem or petiole count once (PhenoBench seedlings: plants
+counted exactly once 72 -> 88 %, split plants 21 -> 2 %). One plant = one joined group of at least the
+smallest plant size with a sure core: >= 5 pixels where every PPE vote says plant. The core makes the count
 robust to the threshold: soil spots let in by a low threshold have no core (PhenoBench seedling image
 at threshold 0.50: 474 groups -> 13 plants; hand count 12). Groups much bigger than a typical plant are flagged "check" (they may be touching plants)
 but still count as one: on PhenoBench, splitting them by size overcounted badly, so PPE does not guess.
+Plants that touch (closed canopy) cannot be separated this way: count early in the season.
 Optional: with the row spacing typed in, keep only plants on the crop rows (straight, parallel rows;
 weeds between rows are left out).
 
@@ -20,69 +23,88 @@ from osgeo import gdal, ogr, osr
 
 from .native_engine import _pixel_area_m2, _plot_geometry, _plot_transform, open_plot_file, safe_gdal_open
 
-BIG_FACTOR = 3.0          # a group > 3 x the median plant is flagged "check"
+BIG_FACTOR = 2.5          # a group > 2.5 x the 75th-percentile plant is flagged "check" (may be several touching plants).
+                          # The 75th percentile, not the median: small weeds pull the median down and made single crop plants look big.
 CORE_VOTE = 0.999         # a plant has a core where every PPE vote says plant ...
 CORE_PX = 5               # ... of at least 5 pixels (soil spots let through by a low threshold have none)
+JOIN_CM = 1.0             # pieces closer than this are one plant (leaves split by a thin stem or petiole)
 ROW_BAND = 0.2            # on a row = within 0.2 x row spacing of the row centre line
 EARLY_NOTE = ("Counting works best before plants touch (early season). Groups flagged 'check' may be "
               "several touching plants; they count as one.")
 
 
-def _groups(mask_path, progress=None, fill_holes_px=0):
-    """Connected plant groups of a 0/1 mask: list of (area_px, cx, cy) in pixel coordinates and the
-    map polygons layer (kept in memory)."""
+def _plant_groups(mask_path, vote_path, min_px, join_px, hole_px, progress, log):
+    """Plants of a 0/1 mask, GDAL only. 1) Pieces smaller than the smallest plant are dropped (they
+    must not chain plants together). 2) Pieces closer than join_px are joined: leaves of one plant
+    split by a thin stem or petiole become one plant. 3) Each joined group is one candidate plant:
+    its plant pixels, sure-core pixels and centre (mean of its plant pixels, map coordinates).
+    Returns (dataset, area_px, x, y, core_px or None)."""
     ds = safe_gdal_open(mask_path)
-    if ds is None:
-        raise ValueError("The finalized plant mask is missing or unreadable.")
-    band = ds.GetRasterBand(1)
-    mem = ogr.GetDriverByName("Memory").CreateDataSource("plants")
-    srs = osr.SpatialReference(); wkt = ds.GetProjection()
-    if wkt: srs.ImportFromWkt(wkt)
-    layer = mem.CreateLayer("groups", srs if wkt else None, ogr.wkbPolygon)
-    layer.CreateField(ogr.FieldDefn("v", ogr.OFTInteger)); layer.CreateField(ogr.FieldDefn("gid", ogr.OFTInteger))
-    # Only plant pixels (value 1) are traced: a 0/1 copy serves as its own mask band.
-    plant = gdal.GetDriverByName("MEM").Create("", ds.RasterXSize, ds.RasterYSize, 1, gdal.GDT_Byte)
-    plant.SetGeoTransform(ds.GetGeoTransform()); plant.SetProjection(wkt)
-    pb = plant.GetRasterBand(1)
-    soil = gdal.GetDriverByName("MEM").Create("", ds.RasterXSize, ds.RasterYSize, 1, gdal.GDT_Byte) if fill_holes_px else None
-    for y in range(0, ds.RasterYSize, 1024):
-        h = min(1024, ds.RasterYSize - y); a = (band.ReadAsArray(0, y, ds.RasterXSize, h) == 1).astype(np.uint8)
-        pb.WriteArray(a, 0, y)
-        if soil is not None: soil.GetRasterBand(1).WriteArray(1 - a, 0, y)
-    if soil is not None:
-        # Small soil holes inside a plant become plant: the count is the same (a hole is inside one
-        # plant) but tracing is ~10x faster on dense canopy, where shapes have thousands of holes.
-        sb = soil.GetRasterBand(1); gdal.SieveFilter(sb, None, sb, int(fill_holes_px), 4)
-        for y in range(0, ds.RasterYSize, 1024):
-            h = min(1024, ds.RasterYSize - y)
-            a = pb.ReadAsArray(0, y, ds.RasterXSize, h) | (1 - sb.ReadAsArray(0, y, ds.RasterXSize, h)).astype(np.uint8)
-            pb.WriteArray(a, 0, y)
+    if ds is None: raise ValueError("The finalized plant mask is missing or unreadable.")
+    W, H = ds.RasterXSize, ds.RasterYSize; gt = ds.GetGeoTransform(); wkt = ds.GetProjection(); band = ds.GetRasterBand(1)
+    mem = gdal.GetDriverByName("MEM"); STEP = 1024
+
+    def new(dtype=gdal.GDT_Byte):
+        r = mem.Create("", W, H, 1, dtype); r.SetGeoTransform(gt); r.SetProjection(wkt); return r
+    plant = new(); pb = plant.GetRasterBand(1)
+    for y in range(0, H, STEP):
+        h = min(STEP, H - y); pb.WriteArray((band.ReadAsArray(0, y, W, h) == 1).astype(np.uint8), 0, y)
+    # 1) drop specks. The sieve also fills small holes; '& original' puts the holes back.
+    sieved = new(); sb = sieved.GetRasterBand(1)
+    gdal.SieveFilter(pb, None, sb, max(2, int(math.ceil(min_px))), 8)
+    for y in range(0, H, STEP):
+        h = min(STEP, H - y); pb.WriteArray(pb.ReadAsArray(0, y, W, h) & sb.ReadAsArray(0, y, W, h), 0, y)
+    progress(25, "Joining leaves of one plant")
+    # 2) join pieces: everything within join_px / 2 of a plant pixel.
+    joined = new(); jb = joined.GetRasterBand(1)
+    if join_px >= 1:
+        r = join_px / 2.0; prox = new(); xb = prox.GetRasterBand(1)
+        gdal.ComputeProximity(pb, xb, ["VALUES=1", "DISTUNITS=PIXEL", "MAXDIST={}".format(int(math.ceil(r)) + 1), "NODATA=255"])
+        for y in range(0, H, STEP):
+            h = min(STEP, H - y); jb.WriteArray((xb.ReadAsArray(0, y, W, h) <= r).astype(np.uint8), 0, y)
+        prox = None
+    else:
+        for y in range(0, H, STEP):
+            h = min(STEP, H - y); jb.WriteArray(pb.ReadAsArray(0, y, W, h), 0, y)
+    # Small soil holes inside a group are filled before tracing: same groups, ~10x faster on dense canopy.
+    if hole_px:
+        soil = new(); ob = soil.GetRasterBand(1)
+        for y in range(0, H, STEP):
+            h = min(STEP, H - y); ob.WriteArray(1 - jb.ReadAsArray(0, y, W, h), 0, y)
+        gdal.SieveFilter(ob, None, ob, int(hole_px), 4)
+        for y in range(0, H, STEP):
+            h = min(STEP, H - y); jb.WriteArray(jb.ReadAsArray(0, y, W, h) | (1 - ob.ReadAsArray(0, y, W, h)).astype(np.uint8), 0, y)
         soil = None
-    gdal.Polygonize(pb, pb, layer, 0, ["8CONNECTED=8"],
-                    callback=(lambda f, m, d: (progress(int(10 + 60 * f), "Finding plants") or 1) if progress else 1))
-    return ds, mem, layer
-
-
-def _core_counts(ds, layer, vote_path, log):
-    """Sure-core pixels (vote >= CORE_VOTE) in each group, indexed by feature id; None without votes."""
-    vote = safe_gdal_open(vote_path) if vote_path else None
-    if vote is None:
-        if vote_path: log("The PPE vote raster is missing: counting without the sure-core check.")
-        return None
-    if (vote.RasterXSize, vote.RasterYSize) != (ds.RasterXSize, ds.RasterYSize):
-        log("The vote raster does not match the mask: counting without the sure-core check."); return None
-    n = layer.GetFeatureCount(); layer.ResetReading()
+    progress(40, "Finding plants")
+    src = ogr.GetDriverByName("Memory").CreateDataSource("groups"); layer = src.CreateLayer("g", None, ogr.wkbPolygon)
+    layer.CreateField(ogr.FieldDefn("v", ogr.OFTInteger))
+    gdal.Polygonize(jb, jb, layer, 0, ["8CONNECTED=8"])
+    n = layer.GetFeatureCount(); layer.CreateField(ogr.FieldDefn("gid", ogr.OFTInteger)); layer.ResetReading(); k = 0
     for f in layer:
-        f.SetField("gid", f.GetFID() + 1); layer.SetFeature(f)
-    ids = gdal.GetDriverByName("MEM").Create("", ds.RasterXSize, ds.RasterYSize, 1, gdal.GDT_Int32)
-    ids.SetGeoTransform(ds.GetGeoTransform()); ids.SetProjection(ds.GetProjection())
+        k += 1; f.SetField("gid", k); layer.SetFeature(f)
+    ids = new(gdal.GDT_Int32); ib = ids.GetRasterBand(1)
     gdal.RasterizeLayer(ids, [1], layer, options=["ATTRIBUTE=gid"])
-    counts = np.zeros(n + 2, np.int64); ib = ids.GetRasterBand(1); vb = vote.GetRasterBand(1)
-    for y in range(0, ds.RasterYSize, 1024):
-        h = min(1024, ds.RasterYSize - y); g = ib.ReadAsArray(0, y, ds.RasterXSize, h); v = vb.ReadAsArray(0, y, ds.RasterXSize, h)
-        sure = (g > 0) & (v >= CORE_VOTE) & (v <= 1.0)
-        if sure.any(): counts += np.bincount(g[sure], minlength=n + 2)[:n + 2]
-    return counts[1:]          # by feature id (gid - 1)
+    progress(60, "Measuring plants")
+    vote = safe_gdal_open(vote_path) if vote_path else None
+    if vote is not None and (vote.RasterXSize, vote.RasterYSize) != (W, H):
+        log("The vote raster does not match the mask: counting without the sure-core check."); vote = None
+    elif vote_path and vote is None:
+        log("The PPE vote raster is missing: counting without the sure-core check.")
+    area = np.zeros(n + 1); sx = np.zeros(n + 1); sy = np.zeros(n + 1); core = np.zeros(n + 1) if vote is not None else None
+    cols = np.arange(W, dtype=np.float64)
+    for y in range(0, H, STEP):
+        h = min(STEP, H - y); g = ib.ReadAsArray(0, y, W, h); p = (pb.ReadAsArray(0, y, W, h) == 1) & (g > 0)
+        if not p.any(): continue
+        gi = g[p]; yy, xx = np.nonzero(p)
+        area += np.bincount(gi, minlength=n + 1)[:n + 1]
+        sx += np.bincount(gi, weights=cols[xx] + 0.5, minlength=n + 1)[:n + 1]
+        sy += np.bincount(gi, weights=yy + y + 0.5, minlength=n + 1)[:n + 1]
+        if core is not None:
+            v = vote.GetRasterBand(1).ReadAsArray(0, y, W, h); sure = p & (v >= CORE_VOTE) & (v <= 1.0)
+            if sure.any(): core += np.bincount(g[sure], minlength=n + 1)[:n + 1]
+    sel = area[1:] > 0; a = area[1:][sel]; cx = sx[1:][sel] / a; cy = sy[1:][sel] / a
+    X = gt[0] + cx * gt[1] + cy * gt[2]; Y = gt[3] + cx * gt[4] + cy * gt[5]
+    return ds, a, X, Y, (core[1:][sel] if core is not None else None)
 
 
 def _rows(px, py, weight, spacing_px):
@@ -127,24 +149,23 @@ def count_plants(cfg, progress=None, log=None):
     else:
         min_px = float(cfg.get("min_plant_px", 4)); log("The image is not in metres; smallest plant = {:g} pixels.".format(min_px))
     hole_px = int(cfg.get("fill_holes_px", max(1000, 50 * min_px)))
-    ds, mem, layer = _groups(cfg["mask_path"], progress, hole_px)
-    gt = ds.GetGeoTransform(); px_area = abs(gt[1] * gt[5]) or 1.0
+    join_cm = float(cfg.get("join_cm", JOIN_CM))
+    join_px = join_cm / (math.sqrt(pixel_m2) * 100) if pixel_m2 else float(cfg.get("join_px", 0))
+    if join_px >= 1: log("Leaves closer than {:g} cm ({:.1f} pixels) are joined into one plant.".format(join_cm, join_px))
+    progress(10, "Finding plants")
+    ds, areas, xs, ys, core_n = _plant_groups(cfg["mask_path"], cfg.get("vote_path"), min_px, join_px, hole_px, progress, log)
+    gt = ds.GetGeoTransform()
+    srs = osr.SpatialReference(); wkt = ds.GetProjection()
+    if wkt: srs.ImportFromWkt(wkt)
     progress(72, "Measuring plants")
-    core = _core_counts(ds, layer, cfg.get("vote_path"), log)
-    areas, xs, ys = [], [], []; no_core = 0
-    layer.ResetReading()
-    for f in layer:
-        g = f.GetGeometryRef()
-        if g is None: continue
-        a = g.GetArea() / px_area
-        if a < min_px: continue
-        if core is not None and core[f.GetFID()] < CORE_PX: no_core += 1; continue
-        c = g.Centroid(); areas.append(a); xs.append(c.GetX()); ys.append(c.GetY())
-    areas = np.array(areas); xs = np.array(xs); ys = np.array(ys)
-    if core is not None: log("{} groups had no sure core (every vote plant) and were not counted.".format(no_core))
+    keep0 = areas >= min_px; no_core = 0
+    if core_n is not None:
+        no_core = int((keep0 & (core_n < CORE_PX)).sum()); keep0 &= core_n >= CORE_PX
+        log("{} groups had no sure core (every vote plant) and were not counted.".format(no_core))
+    areas, xs, ys = areas[keep0], xs[keep0], ys[keep0]; core = core_n
     n_all = len(areas)
     median = float(np.median(areas)) if n_all else 0.0
-    big = areas > BIG_FACTOR * median if n_all else np.zeros(0, bool)
+    big = areas > BIG_FACTOR * float(np.percentile(areas, 75)) if n_all >= 4 else np.zeros(n_all, bool)
     rows_info = None; on_row = np.ones(n_all, bool)
     if cfg.get("row_spacing_cm") and n_all:
         progress(80, "Finding crop rows")
@@ -161,7 +182,7 @@ def count_plants(cfg, progress=None, log=None):
     gpkg = os.path.join(out_dir, "ppe_plants.gpkg")
     if os.path.exists(gpkg): gdal.GetDriverByName("GPKG").Delete(gpkg)
     out = ogr.GetDriverByName("GPKG").CreateDataSource(gpkg)
-    pl = out.CreateLayer("plants", layer.GetSpatialRef(), ogr.wkbPoint)
+    pl = out.CreateLayer("plants", srs if wkt else None, ogr.wkbPoint)
     for name, kind in (("plant_id", ogr.OFTInteger), ("area_cm2" if to_cm2 else "area_px", ogr.OFTReal), ("check", ogr.OFTString), ("on_row", ogr.OFTInteger)):
         pl.CreateField(ogr.FieldDefn(name, kind))
     pl.StartTransaction(); pid = 0

@@ -328,11 +328,9 @@ class PPEPlugin:
             self.dock.set_counted(result)
             if result.get("points_path"):
                 try:
-                    from qgis.core import QgsProject, QgsVectorLayer
-                    for old in QgsProject.instance().mapLayersByName("PPE · Plants"):
-                        QgsProject.instance().removeMapLayer(old.id())
-                    layer = QgsVectorLayer(result["points_path"] + "|layername=plants", "PPE · Plants", "ogr")
-                    if layer.isValid(): QgsProject.instance().addMapLayer(layer)
+                    from .layer_utils import show_plant_points
+                    with self._own_changes():
+                        show_plant_points(result["points_path"])
                 except Exception as exc:
                     self.dock.append_log("Could not show the plant points: {}".format(exc))
             self._message("Counted {} plants.".format(result.get("plants", 0)), Qgis.Success)

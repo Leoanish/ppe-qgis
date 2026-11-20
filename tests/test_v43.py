@@ -100,6 +100,21 @@ class CounterTests(unittest.TestCase):
         self.assertTrue(os.path.isfile(b["batch_counts_csv"])); self.assertEqual(b["plants"], r["plants"])
 
 
+class LeavesOfOnePlantTests(unittest.TestCase):
+    """4.3.1: a plant whose three leaves show as separate pieces (thin stem not in the mask) is one plant."""
+    def test_three_leaves_one_plant_two_plants_stay_two(self):
+        root = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, root)
+        n = 200; yy, xx = np.mgrid[0:n, 0:n]; m = np.zeros((n, n), np.uint8)
+        for cy, cx in ((50, 50), (150, 150)):                        # two plants, 140 px (14 cm at 1 mm) apart
+            for dy, dx in ((-12, 0), (8, -11), (8, 11)):              # three leaves around the centre, ~3 px gaps
+                m[((yy - cy - dy) ** 2 + (xx - cx - dx) ** 2) <= 36] = 1
+        mask = tif(os.path.join(root, "m.tif"), m, gdal.GDT_Byte, px=0.001, nodata=255)
+        vote = tif(os.path.join(root, "v.tif"), m.astype(np.float32), gdal.GDT_Float32, px=0.001)
+        base = {"mask_path": mask, "vote_path": vote, "output_dir": os.path.join(root, "o"), "min_plant_cm2": 0.5}
+        self.assertEqual(count_plants(dict(base, join_cm=0))["plants"], 6)          # without joining: every leaf counted
+        self.assertEqual(count_plants(dict(base, join_cm=1.0))["plants"], 2)
+
+
 class TrainingDataTests(unittest.TestCase):
     def test_label_rule(self):
         vote = np.zeros((40, 40), np.float32); f = np.zeros((40, 40), np.uint8)
