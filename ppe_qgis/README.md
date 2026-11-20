@@ -180,17 +180,17 @@ On whole fields it is clearly better than 0.50. On small clips it is better on a
 
 It needs a NIR band. On camera RGB images plant and soil differ too little in colour for a reliable plant share per pixel, so those start at 0.50 and the Review tab says so.
 
-## 4.4.0: plant counter removed
+## 4.5.0: plant count you can correct on the map
 
-The Plant counter goal (4.3.0 and 4.3.1) is removed. A count from a plant mask counts weeds as plants and counts touching plants as one, and no setting fixes that without knowing what the crop looks like. On 37 PhenoBench test images, counting the crop from PPE's mask was 24 to 49 percent off the hand count even with rows; from a perfect hand-drawn crop-only mask it was still 39 to 57 percent off. The goals are now Plant mask and Training data for a model. A model trained on PPE's training data (tools/ppe_train.py) is the way to go further.
+The plant counter (removed in 4.4.0) is back as a fast first count that the user checks and corrects. A count from a plant mask alone cannot tell every weed from the crop or split overlapping plants (PhenoBench crop count 24 to 49 percent off from PPE's mask with rows; 39 to 57 percent off even from a perfect crop-only hand mask), so the Count tab now has *Add plant*, *Remove point*, *Plant ↔ weed*, *Undo last* and *Done*. Each click is written to `ppe_plants.gpkg` and the totals (`ppe_count_summary.csv`, plants per m², `ppe_plot_counts.csv`) are recomputed (`plant_count.summarize_points`). Points have a `status`: plant, check, added, weed?. With a crop row spacing, plants between rows are kept as *weed?* (grey, red ring) and not counted, instead of being dropped, so they can be switched back. `ppe_count_info.json` keeps the field area and settings for the recount.
 
-## 4.3.1: plant counter counts plants, not leaves (removed in 4.4.0)
+## 4.3.1: plant counter counts plants, not leaves
 
 - Leaves of one plant that show as separate pieces (thin stem or petiole not in the mask) are joined: pieces closer than 1 cm (setting *Join leaves closer than*) are one plant. Specks smaller than the smallest plant are dropped first so they cannot chain plants together. PhenoBench test images, plants counted exactly once: seedlings 72 to 88 %, middle 51 to 57 %, late 48 to 50 %; split plants 21 to 2 %, 19 to 6 %, 12 to 5 %. Each plant's point is the centre of its plant pixels.
 - *check* flag: over 2.5 × the 75th-percentile plant (was 3 × the median, which flagged single crop plants among small weeds).
 - The layer *PPE · Plants* is always at the top of the Layers panel; yellow dots 3.8 mm with a black outline, orange for *check*.
 
-## 4.3.0: goals, plant counter (removed in 4.4.0), training data, faster
+## 4.3.0: goals, plant counter, training data, faster
 
 - **Goal** at the top of the panel: *Plant mask*, *Plant counter* or *Training data for a model*. Tabs 1 to 3 are the same for every goal; tab 4 is the goal's own step; Batch is last. Finalize leads to tab 4.
 - **Count tab** (Plant counter): one plant = one separate group of plant pixels, at least the smallest plant size (cm²), with a sure core (at least 5 pixels where every vote says plant). Groups over 3 × the median plant are flagged *check* and count as one. Optional crop row spacing leaves out plants between rows; optional plot file gives counts and plants per m² per plot; batch masks can be counted at once. Writes `ppe_count/ppe_plants.gpkg` (shown as *PPE · Plants*), `ppe_count_summary.csv`, `ppe_plot_counts.csv`, `ppe_batch_counts.csv`. Uses GDAL only (Polygonize, Sieve, Rasterize).
