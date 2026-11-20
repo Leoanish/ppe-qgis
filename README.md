@@ -2,7 +2,7 @@
 
 PPE separates plant pixels from soil in drone orthomosaics, with no training data. It works with RGB cameras, multispectral sensors (MicaSense, Parrot Sequoia, DJI and others) and hyperspectral cubes. It runs inside QGIS using only the GDAL and NumPy that ship with QGIS, so there is nothing else to install.
 
-**What you get:** a plant mask you can check on the map before it is written, canopy cover for the whole field, for each crop and for each plot, plant-only bands and vegetation indices, and statistics of the plant pixels in every plot.
+**What you get:** a plant mask you can check on the map before it is written, canopy cover for the whole field, for each crop and for each plot, plant-only bands and vegetation indices, and statistics of the plant pixels in every plot. Two more goals use the same mask: a **plant count** (early season, per image and per plot) and **training data** for a fast plant/soil model, with no hand labelling.
 
 **How it works, in one paragraph.** PPE ranks the vegetation indices the image allows by how well they spread plant from soil. It splits the three best with four automatic thresholds (Otsu, CDF knee, k-means and multi-Otsu), and the twelve results vote. A pixel's vote is the share of those twelve that call it plant. Guards then remove shadows, algae on wet soil and grey objects. You choose the vote threshold with a live slider; for images with a NIR band PPE suggests one.
 
@@ -23,9 +23,11 @@ The screenshots below are from a real run in QGIS 3.34 on a five-band multispect
 9. [Tab 4 Export: plant-only rasters](#9-tab-4-export-plant-only-rasters)
 10. [Tab 5 Plots: canopy and statistics per plot](#10-tab-5-plots-canopy-and-statistics-per-plot)
 11. [Tab 6 Batch: many images at once](#11-tab-6-batch-many-images-at-once)
-12. [The Layers panel](#12-the-layers-panel)
-13. [Files PPE writes](#13-files-ppe-writes)
-14. [Tips and troubleshooting](#14-tips-and-troubleshooting)
+12. [Goal Plant counter: count plants](#12-goal-plant-counter-count-plants)
+13. [Goal Training data: tiles and labels for a model](#13-goal-training-data-tiles-and-labels-for-a-model)
+14. [The Layers panel](#14-the-layers-panel)
+15. [Files PPE writes](#15-files-ppe-writes)
+16. [Tips and troubleshooting](#16-tips-and-troubleshooting)
 
 ---
 
@@ -50,7 +52,7 @@ When you update to a newer version, quit QGIS and open it again afterwards, so t
 ![PPE opened beside the map](docs/images/01_open_ppe.jpg)
 
 1. Click the **leaf button** in the toolbar, or choose **Raster → Plant Pixel Extractor**. The PPE panel opens on the right; you can drag it wider or float it.
-2. The **five tabs** are used from left to right: Image, Run, Review, Export, Plots.
+2. Choose the **Goal** at the top: *Plant mask* (the default), *Plant counter* or *Training data for a model*. The tabs are used from left to right. Tabs 1 to 3 (Image, Run, Review) are the same for every goal; tab 4 is the goal's own step (Export, Count or Train data), and Batch is last. Finalize leads straight to tab 4. PPE remembers the goal.
 3. **Imagery source**: how your image is stored. Choose one of the following:
    - *Stacked GeoTIFF*: one file holding every band;
    - *Folder containing bands*: one file per band in a folder;
@@ -247,7 +249,46 @@ For many images (dates, fields or flights), PPE can run a whole folder and let y
 
 **Open a previous batch…** reopens a batch later from its `ppe_batch.json`, with the settings you chose (kept in `ppe_batch_choices.json`).
 
-## 12. The Layers panel
+## 12. Goal Plant counter: count plants
+
+![The three goals: Plant counter (Count tab after a run), Training data](docs/images/16_goals.png)
+
+Choose **Plant counter** at the top. Run and review as usual, finalize the mask, and tab 4 **Count** counts the plants.
+
+- **One plant** is one separate group of plant pixels that is at least the **smallest plant** size (in cm²; set it a little below your smallest seedling) and has a **sure core**: at least 5 pixels where every PPE vote says plant. The core keeps soil spots out that a low threshold lets in. On a seedling image with the threshold left at 0.50, 474 groups became 13 plants (hand count 12).
+- **Touching plants** are one group. Groups much bigger than a typical plant (over 3 × the median) are flagged **check**; they still count as one, because splitting them by size overcounted badly in tests. Count early in the season, before plants touch.
+- **Crop row spacing** (optional): with it, plants between the rows (weeds) are not counted. For straight, parallel rows. On PhenoBench it halved the weeds counted and lost a few crop plants, so it is off unless you set it.
+- **Plot file** (optional): plants and plants per m² for each plot.
+- **Count all batch masks** counts every mask written on the Batch tab.
+
+The plants appear on the map as the point layer **PPE · Plants** (area, check flag, on a row).
+
+How close is it? On 37 PhenoBench test images (sugar beet, hand-counted), the count (masks at threshold 0.65) was 25, 19 and 39 % off the hand count at the seedling, middle and late dates. With hand-drawn masks the same counting was 27, 11 and 28 % off: most of the error comes from plants that touch or leaves that fall apart, not from the mask.
+
+## 13. Goal Training data: tiles and labels for a model
+
+Choose **Training data for a model** at the top. After a run (no need to finalize: the labels do not depend on the slider), tab 4 **Train data** cuts the image and PPE's labels into tiles:
+
+- **plant**: every PPE vote says plant (not *unclear*; groups of at least 30 pixels);
+- **soil**: no PPE vote (at most a tenth) says plant, or *unclear* (too dark to tell);
+- **unsure**: the rest; models skip these pixels.
+
+Image tiles keep every band with its original values and data type. Train and validation tiles come from different images (from different parts of the image when there is only one). **From all batch images** uses every image of the batch.
+
+Training happens outside QGIS with `ppe_train.py` (in the plugin's `tools` folder; **Open the tools folder** shows it). It needs Python with PyTorch (`pip install torch`) and GDAL, and uses an NVIDIA GPU, an Apple chip or the CPU:
+
+```
+python ppe_train.py train   ppe_training_data                 # about 2 minutes on a laptop CPU
+python ppe_train.py predict ppe_model.pt new_flight.tif       # writes new_flight_model_plant_mask.tif
+python ppe_train.py check   ppe_model.pt new_flight.tif <PPE run folder of new_flight>
+python ppe_train.py update  ppe_model.pt <new training data> <old training data>
+```
+
+**Keeping the model up to date.** Fields change through the season, so a model trained early drifts later. For each new flight, run PPE and then `check`: it compares the model with PPE's sure pixels, against how well it agreed on its own validation tiles. If it misses plants PPE is sure of, or calls PPE's sure soil plant, update it with the new images **plus** old ones. Updating with new images only makes it forget the old ones. In a test on PhenoBench, a model trained on seedlings and updated with late images alone fell from 87 to 77 % overlap on seedlings; updated with new and old images it kept 85 % and reached 96 % on the late images.
+
+On PhenoBench (143 training images, 37 unseen test images), the model trained in 2 minutes on PPE's labels alone reached 93.6 % overlap with hand labels on the test images; the same model trained on the hand labels reached 95.4 %.
+
+## 14. The Layers panel
 
 ![Layers panel](docs/images/15_layers_panel.jpg)
 
@@ -260,7 +301,7 @@ For many images (dates, fields or flights), PPE can run a whole folder and let y
 
 PPE's layers come in **folded**, so the panel stays short; the arrow beside a layer shows its legend. Your own layers keep their places. Removing the PPE image layer resets PPE; removing the live preview switches the slider off until the next run. Every layer can be restyled like any QGIS layer.
 
-## 13. Files PPE writes
+## 15. Files PPE writes
 
 The output and working folders are set under **Folders** on tab 1; plot results go to the export folder of tab 4.
 
@@ -273,9 +314,11 @@ The output and working folders are set under **Folders** on tab 1; plot results 
 | run folder `ppe_YYYYMMDD_HHMMSS` (in the working folder) | the vote raster, `ppe_findings.tif` (What PPE found), the true-colour display image and guard rasters (which pixels each guard removed) |
 | `ppe_batch.json`, `ppe_batch_choices.json`, `ppe_batch_summary.csv` | a batch (tab 6): its list of images, the settings you chose, and the table written by Finalize all masks |
 | `ppe_confident_labels.tif` (in the run folder) | PPE's sure pixels as labels: 1 plant (every vote agrees), 0 soil (at most a tenth of the votes say plant), 255 not labelled. Use it to train your own model or to check PPE. On a public sugar beet dataset, a small model trained on these labels alone reached 94.7 % overlap with hand labels on unseen images, against 95.4 % when trained on the hand labels themselves. |
+| `ppe_count/ppe_plants.gpkg`, `ppe_count_summary.csv`, `ppe_plot_counts.csv`, `ppe_batch_counts.csv` | plant count (Count tab): one point per plant, totals, counts per plot, counts per batch image |
+| `ppe_training_data/` (`images/`, `labels/`, `manifest.json`, `README.txt`) | training data (Train data tab) for `ppe_train.py` |
 | `logs/ppe_YYYYMMDD_HHMMSS.log` (in the output folder) | the log of each run: attach it when you report a problem |
 
-## 14. Tips and troubleshooting
+## 16. Tips and troubleshooting
 
 - **The mask misses pale plants or flowers.** Lower the threshold a little, or draw that crop as its own area with a lower threshold. At tasselling, a corn field kept its tassels near 0.30 without letting soil in.
 - **Shaded leaves or dark gaps.** Open *What PPE found*. Shaded leaves are plant; unclear pixels can be left out with one tick and put back. On RGB-only images (no NIR) PPE tells them apart by colour: dark pixels whose strongest colour is still green are shaded leaves, the rest (mostly soil in shadow) are unclear.

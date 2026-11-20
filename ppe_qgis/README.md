@@ -180,6 +180,14 @@ On whole fields it is clearly better than 0.50. On small clips it is better on a
 
 It needs a NIR band. On camera RGB images plant and soil differ too little in colour for a reliable plant share per pixel, so those start at 0.50 and the Review tab says so.
 
+## 4.3.0: goals, plant counter, training data, faster
+
+- **Goal** at the top of the panel: *Plant mask*, *Plant counter* or *Training data for a model*. Tabs 1 to 3 are the same for every goal; tab 4 is the goal's own step; Batch is last. Finalize leads to tab 4.
+- **Count tab** (Plant counter): one plant = one separate group of plant pixels, at least the smallest plant size (cm²), with a sure core (at least 5 pixels where every vote says plant). Groups over 3 × the median plant are flagged *check* and count as one. Optional crop row spacing leaves out plants between rows; optional plot file gives counts and plants per m² per plot; batch masks can be counted at once. Writes `ppe_count/ppe_plants.gpkg` (shown as *PPE · Plants*), `ppe_count_summary.csv`, `ppe_plot_counts.csv`, `ppe_batch_counts.csv`. Uses GDAL only (Polygonize, Sieve, Rasterize).
+- **Train data tab** (Training data): image tiles (every band, original values and data type) and PPE labels (1 plant: every vote, not unclear, groups of 30 pixels or more; 0 soil: vote at most 0.1 or unclear; 255 unsure), train and validation split by image, `manifest.json`, `README.txt`.
+- **`tools/ppe_train.py`** (outside QGIS, PyTorch): `train`, `predict`, `check` (drift watchdog against PPE's sure pixels, relative to the model's own validation agreement) and `update` (new plus old images). CUDA, Apple MPS or CPU.
+- **Faster:** bands stored in one file are read in one call, and GDAL keeps up to 1 GB (at most a quarter of the memory) of decoded blocks during a run, restored afterwards. A 5-band 5480 × 6559 field: 31 s to 13 s; IH 31 to 15 s. Vote, findings, labels and display image are identical (checked on five fields).
+
 ## 4.2.1
 
 - **Batch review on the Batch tab:** slider, Finalize this mask and Next image appear right below the list.

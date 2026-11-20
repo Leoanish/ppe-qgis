@@ -89,6 +89,8 @@ class PPEPlugin:
         self.dock.generate_requested.connect(self._start_generate)
         self.dock.apply_requested.connect(self._start_apply)
         self.dock.export_requested.connect(self._start_export)
+        self.dock.count_requested.connect(self._start_goal_job)
+        self.dock.training_requested.connect(self._start_goal_job)
         self.dock.cancel_requested.connect(self.runner.cancel)
         self.dock.preview_requested.connect(self._start_preview)
         self.dock.reset_requested.connect(self._reset_layers)
@@ -291,6 +293,13 @@ class PPEPlugin:
         self.dock.set_running(True, self.current_action)
         self._start_process(config)
 
+    def _start_goal_job(self, config):
+        """Plant count or training data (4.3 goals): run in the background like an export."""
+        cfg = self.dock.build_config("run"); cfg.update(config)
+        self.current_action = config["action"]
+        self.dock.set_running(True, self.current_action)
+        self._start_process(cfg)
+
     def _start_process(self, config):
         try:
             self.runner.start(config)
@@ -308,12 +317,29 @@ class PPEPlugin:
             self.dock.set_batch(result)
             done = sum(1 for e in result.get("items", []) if e.get("status") == "done"); n = len(result.get("items", []))
             check = sum(1 for e in result.get("items", []) if e.get("warnings"))
-            self._message("Batch done: {} of {} images{}. Review them on tab 6.".format(done, n, "; {} to check first".format(check) if check else ""),
+            self._message("Batch done: {} of {} images{}. Review them on the Batch tab.".format(done, n, "; {} to check first".format(check) if check else ""),
                           Qgis.Success if done == n else Qgis.Warning)
             return
         if self.current_action == "batch_finalize":
             self.dock.set_batch_finalized(result)
             self._message("Batch masks written: {} images. Summary: {}".format(len(result.get("rows", [])), result.get("summary_csv", "")), Qgis.Success)
+            return
+        if self.current_action == "count":
+            self.dock.set_counted(result)
+            if result.get("points_path"):
+                try:
+                    from qgis.core import QgsProject, QgsVectorLayer
+                    for old in QgsProject.instance().mapLayersByName("PPE · Plants"):
+                        QgsProject.instance().removeMapLayer(old.id())
+                    layer = QgsVectorLayer(result["points_path"] + "|layername=plants", "PPE · Plants", "ogr")
+                    if layer.isValid(): QgsProject.instance().addMapLayer(layer)
+                except Exception as exc:
+                    self.dock.append_log("Could not show the plant points: {}".format(exc))
+            self._message("Counted {} plants.".format(result.get("plants", 0)), Qgis.Success)
+            return
+        if self.current_action == "training":
+            self.dock.set_training_done(result)
+            self._message("Training data: {} tiles in {}".format(len(result.get("tiles", [])), result.get("output_dir", "")), Qgis.Success)
             return
         if self.current_action.startswith("export"):
             self.dock.set_exported(result)

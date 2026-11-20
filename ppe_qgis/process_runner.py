@@ -4,7 +4,7 @@ from datetime import datetime
 from qgis.PyQt.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 from .native_engine import Cancelled, NativePPEEngine
 
-ACTION_NAMES = {"run": "Run", "apply": "Finalize", "zones": "Preparing the crop areas", "export_aoi": "Plot export", "preview": "Opening the image",
+ACTION_NAMES = {"run": "Run", "apply": "Finalize", "zones": "Preparing the crop areas", "export_aoi": "Plot export", "count": "Plant count", "training": "Training data", "preview": "Opening the image",
                 "batch_run": "Batch run", "batch_finalize": "Finalizing the batch"}
 
 
@@ -42,6 +42,14 @@ class _Worker(QObject):
             elif action=="batch_finalize": result=engine.batch_finalize(self.config)
             elif action=="zones": result=engine.prepare_crop_areas(self.config)
             elif action=="export_aoi": result=engine.export_aoi_statistics(self.config)
+            elif action=="count":
+                from . import plant_count
+                result=(plant_count.count_batch if self.config.get("count_items") else plant_count.count_plants)(self.config, self._progress, self.log.emit)
+            elif action=="training":
+                from . import training_data
+                cfg=dict(self.config)
+                if cfg.get("batch_manifest"): cfg["items"]=training_data.items_from_batch(cfg["batch_manifest"])
+                result=training_data.export_training_tiles(cfg, self._progress, self.log.emit, lambda:self.cancelled)
             elif str(action).startswith("export"): result=engine.export_plant_only(self.config)
             else: result=engine.run(self.config)
             self.succeeded.emit(result)

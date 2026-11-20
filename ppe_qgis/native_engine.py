@@ -1376,6 +1376,32 @@ DISPLAY_ZERO_BORDER = 0.02   # zeros in at least 2 percent of the image: an outs
 class Cancelled(RuntimeError): pass
 
 
+def _bigger_gdal_cache(fn):
+    """4.3: while PPE runs, GDAL may keep up to 1 GB (never more than a quarter of the computer's
+    memory) of decompressed image blocks, so each block of a compressed image is decoded once
+    instead of once per pass. The previous setting is restored afterwards (QGIS shares it)."""
+    import functools
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        old = None
+        try:
+            old = gdal.GetCacheMax()
+            ram = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") if hasattr(os, "sysconf") else 4 << 30
+            want = int(min(1 << 30, ram // 4))
+            if want > old: gdal.SetCacheMax(want)
+        except Exception:
+            old = None
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            if old is not None:
+                try: gdal.SetCacheMax(old)
+                except Exception: pass
+
+
+    return wrapper
+
+
 class NativePPEEngine:
     def __init__(self, progress=None, log=None, import_ready=None, cancelled=None):
         self.progress_cb = progress or (lambda p, m: None)
@@ -1600,8 +1626,37 @@ class NativePPEEngine:
         if nd is not None: a[a == nd] = np.nan
         return a/self.scale
 
+    def _read_bands(self, names, x=0, y=0, w=None, h=None, bx=None, by=None):
+        """Several bands at once (4.3). Bands stored in one file are read in a single call, so a
+        pixel-interleaved, compressed image is decompressed once instead of once per band (it was the
+        slowest step of a run). Same values as _read_band for each band."""
+        w, h = w or self.width, h or self.height; out = {}; groups = {}
+        for name in names:
+            groups.setdefault(self.sources[name][0], []).append(name)
+        local = getattr(self, "_thread_local", None)
+        in_worker = local is not None and threading.current_thread() is not threading.main_thread()
+        for path, group in groups.items():
+            if len(group) == 1:
+                out[group[0]] = self._read_band(group[0], x, y, w, h, bx, by); continue
+            if in_worker:
+                if not hasattr(local, "paths"): local.paths = {}
+                if path not in local.paths: local.paths[path] = safe_gdal_open(path)
+                ds = local.paths[path]
+            else:
+                ds = self.datasets[group[0]]
+            idx = [self.sources[n][1] for n in group]
+            a = ds.ReadAsArray(x, y, w, h, buf_xsize=bx, buf_ysize=by, band_list=idx).astype(np.float32)
+            if a.ndim == 2: a = a[None]
+            for k, n in enumerate(group):
+                v = a[k]; nd = ds.GetRasterBand(idx[k]).GetNoDataValue()
+                if nd is not None: v[v == nd] = np.nan
+                out[n] = v / self.scale
+        return out
+
     def _sample_bands(self, n):
         ratio = self.width/max(1, self.height); bx = min(self.width, max(1, int(math.sqrt(n*ratio)))); by = min(self.height, max(1, int(n/bx)))
+        if len({p for p, _b in self.sources.values()}) < len(self.sources):
+            return self._read_bands(list(self.sources), bx=bx, by=by)       # one file holds several bands: read once
         if len(self.sources) < 2 or self.thread_count < 2:
             return {name: self._read_band(name, bx=bx, by=by) for name in self.sources}
         # Each band is decompressed in its own thread (with its own GDAL dataset).
@@ -1653,8 +1708,7 @@ class NativePPEEngine:
         # unless zeros cover a border-sized share of the image, they are drawn black (1), not see-through.
         zero_is_outside = True
         try:
-            bx = min(self.width, 600); by = min(self.height, 600)
-            ov = [self._read_band(n, bx=bx, by=by) for n in channel_names]
+            ov = [np.asarray(sampled[n]) for n in channel_names]          # the fitting sample: no extra read of the image
             zero_is_outside = float(np.logical_and.reduce([np.isfinite(o) & (o <= 0) for o in ov]).mean()) >= DISPLAY_ZERO_BORDER
         except Exception:
             pass
@@ -1689,7 +1743,7 @@ class NativePPEEngine:
             stretches.append((float(lo), float(hi)))
         for y in range(0, self.height, 512):
             h = min(512, self.height-y)
-            cache = {name: self._read_band(name, y=y, h=h) for name in set(channel_names)}
+            cache = self._read_bands(sorted(set(channel_names)), y=y, h=h)
             for index, (name, stretch) in enumerate(zip(channel_names, stretches), 1):
                 lo, hi = stretch; values = cache[name]
                 # Scale valid pixels to [1, 255] to prevent dark green leaves from being crushed to 0 (pitch black)
@@ -1703,6 +1757,7 @@ class NativePPEEngine:
         out.FlushCache(); out = None
         return path
 
+    @_bigger_gdal_cache
     def run(self, cfg):
         started = time.time(); stamp = datetime.now().strftime("%Y%m%d_%H%M%S"); run_dir = os.path.join(cfg["work_dir"], "ppe_"+stamp); os.makedirs(run_dir, exist_ok=True)
         self.progress(3, "Validating and opening imagery"); self._resolve(cfg, sample_n=max(4000, int(cfg.get("sample_size", 100000))*3))
@@ -1870,7 +1925,7 @@ class NativePPEEngine:
         display = self._display_writer(display_path, channels, display_sample)
 
         def block_votes(y):
-            h = min(block_rows, self.height-y); raw = {n: self._read_band(n, y=y, h=h) for n in self.sources}; ok = self._valid(raw); total = np.zeros((h,self.width), np.float32); wsum = 0.
+            h = min(block_rows, self.height-y); raw = self._read_bands(list(self.sources), y=y, h=h); ok = self._valid(raw); total = np.zeros((h,self.width), np.float32); wsum = 0.
             rgb = display.convert(raw)
             for name, polarity, methods in models:
                 x = raw[name] if name in raw else compute_vi(name, raw)
@@ -1985,7 +2040,7 @@ class NativePPEEngine:
                 labels["plant_pct"], labels["soil_pct"], labels["unlabelled_pct"]))
         findings_hist = findings_histograms(findings_path, vote_path)
         pale_pct, pale_lost_pct = self._log_findings(findings_hist if finding_fit else None)
-        result = dict(imported, vote_path=vote_path, curve_path=curve_path, threshold=start_threshold, suggestion=suggestion or {}, suggestion_note="" if suggestion else no_suggestion_reason, selected_layers=chosen, chosen_layers=chosen, layer_details=layer_details, n_voters=n_masks, n_method_masks=n_masks, canopy_regime="classic", adaptation_mode="adaptive" if adaptive else "global", half_mixture=half_mixture, spread_ranking=[{"layer": name, "group": group, "spread": spread} for spread, name, group in leaders], mixed_class_vote=.5, bright_guard=bool(guard), bright_rejection_path=rejection_path, bright_rejected_pct=rejected_pct, shadow_guard=bool(shadow_guard), shadow_rejection_path=shadow_rejection_path, shadow_rejected_pct=shadow_rejected_pct, biofilm_guard=bool(algae_guard), algae_guard_fit=algae_guard or {}, biofilm_rejection_path=biofilm_rejection_path, biofilm_rejected_pct=biofilm_rejected_pct, colour_guard=bool(colour_guard), colour_rejected_pct=colour_rejected_pct, weak_green_warning=bool(colour_guard and colour_guard["plant_excess"] < WEAK_GREEN), single_class="", one_class_warning=one_class or "", pale_plant_path=pale_path, pale_plant_pct=pale_pct, pale_plant_lost_pct=pale_lost_pct, pale_plant_fit=pale_fit or {}, findings_path=findings_path, findings_hist=findings_hist, findings_judged=bool(finding_fit), sparse_spots=sparse_spots, findings_fit={k: v for k, v in (finding_fit or {}).items() if k != "pale"}, findings_not_checked=dict(findings_not_checked), findings_note=findings_note, split_separability=split_sep, weak_split_warning=weak_split, confident_labels=labels, confident_labels_path=labels.get("path", ""), ppe_version="native-4.2.1", processing_threads=self.thread_count, output_dir=cfg["output_dir"], timings={"total": time.time()-started})
+        result = dict(imported, vote_path=vote_path, curve_path=curve_path, threshold=start_threshold, suggestion=suggestion or {}, suggestion_note="" if suggestion else no_suggestion_reason, selected_layers=chosen, chosen_layers=chosen, layer_details=layer_details, n_voters=n_masks, n_method_masks=n_masks, canopy_regime="classic", adaptation_mode="adaptive" if adaptive else "global", half_mixture=half_mixture, spread_ranking=[{"layer": name, "group": group, "spread": spread} for spread, name, group in leaders], mixed_class_vote=.5, bright_guard=bool(guard), bright_rejection_path=rejection_path, bright_rejected_pct=rejected_pct, shadow_guard=bool(shadow_guard), shadow_rejection_path=shadow_rejection_path, shadow_rejected_pct=shadow_rejected_pct, biofilm_guard=bool(algae_guard), algae_guard_fit=algae_guard or {}, biofilm_rejection_path=biofilm_rejection_path, biofilm_rejected_pct=biofilm_rejected_pct, colour_guard=bool(colour_guard), colour_rejected_pct=colour_rejected_pct, weak_green_warning=bool(colour_guard and colour_guard["plant_excess"] < WEAK_GREEN), single_class="", one_class_warning=one_class or "", pale_plant_path=pale_path, pale_plant_pct=pale_pct, pale_plant_lost_pct=pale_lost_pct, pale_plant_fit=pale_fit or {}, findings_path=findings_path, findings_hist=findings_hist, findings_judged=bool(finding_fit), sparse_spots=sparse_spots, findings_fit={k: v for k, v in (finding_fit or {}).items() if k != "pale"}, findings_not_checked=dict(findings_not_checked), findings_note=findings_note, split_separability=split_sep, weak_split_warning=weak_split, confident_labels=labels, confident_labels_path=labels.get("path", ""), ppe_version="native-4.3.0", processing_threads=self.thread_count, output_dir=cfg["output_dir"], timings={"total": time.time()-started})
         with open(os.path.join(run_dir, "run_summary.json"), "w", encoding="utf-8") as handle: json.dump(result, handle, indent=2)
         self.progress(100, "Plant vote raster and threshold curve are ready"); return result
 
@@ -2205,6 +2260,7 @@ class NativePPEEngine:
             w=csv.writer(f); w.writerow(("plant_thresh","canopy_pct"))
             for t in np.arange(.15,.951,.01): w.writerow((round(float(t),2),float(100*np.mean(x >= max(0,t-.05)))))
 
+    @_bigger_gdal_cache
     def batch_run(self, cfg):
         """Run PPE on every image of cfg['batch_folder'] (see list_batch_images), one after another.
         Each image gets its own folder under cfg['output_dir']; one image failing does not stop the rest.
@@ -2216,7 +2272,7 @@ class NativePPEEngine:
         common = {k: v for k, v in cfg.items() if k not in ("action", "batch_items", "batch_folder", "output_dir", "work_dir",
                                                             "source_mode", "stacked_path", "folder_path", "band_files")}
         manifest = {"batch_folder": cfg.get("batch_folder", ""), "output_dir": root, "created": datetime.now().isoformat(timespec="seconds"),
-                    "ppe_version": "native-4.2.1", "items": []}
+                    "ppe_version": "native-4.3.0", "items": []}
         outer = self.progress_cb; n = len(items)
         self.log_cb("Batch: {} image(s) in {}.".format(n, cfg.get("batch_folder", "the list")))
         for i, item in enumerate(items):
@@ -2289,6 +2345,7 @@ class NativePPEEngine:
         self.log_cb("Batch summary: {}".format(summary))
         return {"summary_csv": summary, "rows": rows, "manifest_path": manifest_path, "batch_finalized": True}
 
+    @_bigger_gdal_cache
     def apply(self, cfg):
         """Write the plant mask. With crop areas (cfg zone_path + zone_thresholds: index 0 for the rest
         of the image, then one per crop) each area gets its own threshold; the vote is unchanged."""
@@ -2408,7 +2465,7 @@ class NativePPEEngine:
     def write_run_record(self, cfg, result, out_dir):
         """Save what was run and chosen as ppe_run_record.json (the start of a data catalogue)."""
         try:
-            record={"plugin_version":"4.2.1","written":datetime.now().isoformat(timespec="seconds"),
+            record={"plugin_version":"4.3.0","written":datetime.now().isoformat(timespec="seconds"),
                     "source_mode":cfg.get("source_mode"),"source":cfg.get("stacked_path") or cfg.get("folder_path") or cfg.get("bands"),
                     "field_info":cfg.get("field_info") or {},"suggestion":cfg.get("suggestion") or {},
                     "final_threshold":result.get("threshold"),"canopy_pct":result.get("canopy_pct"),
@@ -2485,7 +2542,7 @@ class NativePPEEngine:
                     if source_nodata is not None: good &= values != source_nodata
                     out.GetRasterBand(1).WriteArray(np.where(good,values,NODATA).astype(np.float32),0,y)
             if do_vis:
-                bands={name:self._read_band(name,y=y,h=h) for name in self.sources}; valid=self._valid(bands); keep=plant&valid
+                bands=self._read_bands(list(self.sources),y=y,h=h); valid=self._valid(bands); keep=plant&valid
                 for name,out,_path in vi_entries:
                     values=compute_vi(name,bands); out.GetRasterBand(1).WriteArray(np.where(keep&np.isfinite(values),values,NODATA).astype(np.float32),0,y)
             self.progress(5+int(92*(y+h)/self.height),"Exporting {} plant-only GeoTIFFs".format(total_products))
@@ -2607,7 +2664,7 @@ class NativePPEEngine:
                 if nodata is not None: good &= values != nodata
                 rows.append(dict(base,variable=name,variable_type="raw_band",source_band=index,wavelength_nm=wavelength,**self._summary(values[good])))
             if vis:
-                bands={name:self._read_band(name,x=x,y=y,w=width,h=height) for name in self.sources}; vi_keep=keep&self._valid(bands)
+                bands=self._read_bands(list(self.sources),x=x,y=y,w=width,h=height); vi_keep=keep&self._valid(bands)
                 for name in vis:
                     values=compute_vi(name,bands)
                     rows.append(dict(base,variable=name,variable_type="vegetation_index",source_band=None,wavelength_nm=None,**self._summary(values[vi_keep&np.isfinite(values)])))
