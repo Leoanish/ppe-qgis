@@ -156,7 +156,7 @@ def save_model(torch, net, path, meta):
 
 
 def load_model(torch, path, dev):
-    ck = torch.load(path, map_location="cpu", weights_only=False)
+    ck = torch.load(path, map_location="cpu", weights_only=True)
     net = unet(torch, len(ck["bands"])); net.load_state_dict(ck["state"]); return net.to(dev), ck
 
 
@@ -227,7 +227,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if a.cmd == "train": a.old_share = 1.0; return cmd_train(a)
     if a.cmd == "update":
-        torch = _torch(); ck = torch.load(a.model, map_location="cpu", weights_only=False); a.scale = ck["scale"]
+        torch = _torch(); ck = torch.load(a.model, map_location="cpu", weights_only=True); a.scale = ck["scale"]
         a.out = a.out or os.path.splitext(a.model)[0] + "_updated.pt"; return cmd_train(a, init=ck)
     if a.cmd == "predict": cmd_predict(a); return 0
     if a.cmd == "check": return cmd_check(a)

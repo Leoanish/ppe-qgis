@@ -1,5 +1,6 @@
 """Plant Pixel Extractor dock interface."""
 
+import logging
 import json
 import os
 from statistics import median
@@ -51,6 +52,8 @@ from .crop_tools import PolygonDrawTool, show_crop_areas, to_crs
 from .layer_utils import FINDING_COLOURS, canopy_at, load_plot_layer, plot_layer, remove_role, set_plot_labels
 from .native_engine import (BAND_LABELS, PLOT_FILE_FILTER, dataset_wavelengths, describe_image, display_channels,
                             guess_plot_id_field, list_batch_images, open_plot_file, plots_over_image, scan_band_folder)
+
+_LOG = logging.getLogger(__name__)    # errors PPE deliberately ignores are kept here (debug level)
 
 
 class _TextHeightKeeper(QObject):
@@ -722,7 +725,7 @@ class PPEDockWidget(QDockWidget):
         try:
             remove_role("plots")
         except Exception:
-            pass
+            _LOG.debug("PPE: ignored error", exc_info=True)
         self.aoi_info.setText(message)
 
     def _load_plots(self, path, layer_name=None):
@@ -946,7 +949,7 @@ class PPEDockWidget(QDockWidget):
                     entry = self._batch_entry(n) or {}
                     with open(entry.get("result_path", ""), encoding="utf-8") as f: vote = json.load(f).get("vote_path", "")
                 except Exception:
-                    pass
+                    _LOG.debug("PPE: ignored error", exc_info=True)
                 items.append({"name": n, "mask_path": p, "vote_path": vote})
             if not items: QMessageBox.warning(self, "PPE count", "Write the batch masks first (Batch tab)."); return
             cfg.update(count_items=items, output_dir=(self.batch or {}).get("manifest", {}).get("output_dir") or os.path.dirname(os.path.dirname(items[0]["mask_path"])))
@@ -2435,7 +2438,7 @@ class PPEDockWidget(QDockWidget):
         self.crops_note.setText(self._crops_hint())
         if remove_layer:
             try: remove_role("crops")
-            except Exception: pass
+            except Exception: _LOG.debug("PPE: ignored error", exc_info=True)
 
     def _same_threshold_toggled(self, on):
         for row in self.crop_rows:

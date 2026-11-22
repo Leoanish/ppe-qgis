@@ -1,8 +1,14 @@
 """QGIS raster loading and lightweight threshold rendering."""
 
+import logging
 import csv
 import os
-from xml.sax.saxutils import escape
+from html import escape as _html_escape
+
+
+def escape(text):
+    """Escape &, < and > for XML text (what xml.sax.saxutils.escape did)."""
+    return _html_escape(text, quote=False)
 
 from osgeo import gdal, osr
 
@@ -26,6 +32,8 @@ from qgis.core import (
     QgsRasterShader,
     QgsSingleBandPseudoColorRenderer,
 )
+
+_LOG = logging.getLogger(__name__)    # errors PPE deliberately ignores are kept here (debug level)
 
 
 GROUP_NAME = "Plant Pixel Extractor"
@@ -406,7 +414,7 @@ def replace_applied_mask(result, layers):
         try:
             mask.dataProvider().reloadData()      # read the file as it is now, never a cached copy
         except Exception:
-            pass
+            _LOG.debug("PPE: ignored error", exc_info=True)
     style_plant_mask(mask)
     layers["mask"] = mask
     for role in ("pale", "crops"):

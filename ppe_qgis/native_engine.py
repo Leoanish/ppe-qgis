@@ -1,5 +1,6 @@
 """Native NumPy/GDAL implementation of PPE's proven classic Method 1 workflow."""
 
+import logging
 import csv
 import json
 import math, threading
@@ -10,6 +11,8 @@ from datetime import datetime
 
 import numpy as np
 from osgeo import gdal, ogr, osr
+
+_LOG = logging.getLogger(__name__)    # errors PPE deliberately ignores are kept here (debug level)
 
 gdal.UseExceptions()
 
@@ -1071,7 +1074,7 @@ def physical_memory_bytes():
             status = MemoryStatus(); status.length = ctypes.sizeof(MemoryStatus)
             if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)): return float(status.total)
     except Exception:
-        pass
+        _LOG.debug("PPE: ignored error", exc_info=True)
     return 4.0 * 1024 ** 3
 
 
@@ -1333,7 +1336,7 @@ def list_batch_images(folder):
             try:
                 scan = scan_band_folder(path)
             except Exception:
-                continue
+                _LOG.debug("PPE: ignored error", exc_info=True); continue
             if sum(1 for f in scan["files"] if f.get("use")) >= 2:
                 items.append({"name": name, "source_mode": "folder", "folder_path": path})
     seen = {}
@@ -1396,7 +1399,7 @@ def _bigger_gdal_cache(fn):
         finally:
             if old is not None:
                 try: gdal.SetCacheMax(old)
-                except Exception: pass
+                except Exception: _LOG.debug("PPE: ignored error", exc_info=True)
 
 
     return wrapper
@@ -1711,7 +1714,7 @@ class NativePPEEngine:
             ov = [np.asarray(sampled[n]) for n in channel_names]          # the fitting sample: no extra read of the image
             zero_is_outside = float(np.logical_and.reduce([np.isfinite(o) & (o <= 0) for o in ov]).mean()) >= DISPLAY_ZERO_BORDER
         except Exception:
-            pass
+            _LOG.debug("PPE: ignored error", exc_info=True)
         for index in range(1, 4):
             band = out.GetRasterBand(index); band.SetNoDataValue(0)
             band.SetColorInterpretation((gdal.GCI_RedBand, gdal.GCI_GreenBand, gdal.GCI_BlueBand)[index-1])
@@ -2040,7 +2043,7 @@ class NativePPEEngine:
                 labels["plant_pct"], labels["soil_pct"], labels["unlabelled_pct"]))
         findings_hist = findings_histograms(findings_path, vote_path)
         pale_pct, pale_lost_pct = self._log_findings(findings_hist if finding_fit else None)
-        result = dict(imported, vote_path=vote_path, curve_path=curve_path, threshold=start_threshold, suggestion=suggestion or {}, suggestion_note="" if suggestion else no_suggestion_reason, selected_layers=chosen, chosen_layers=chosen, layer_details=layer_details, n_voters=n_masks, n_method_masks=n_masks, canopy_regime="classic", adaptation_mode="adaptive" if adaptive else "global", half_mixture=half_mixture, spread_ranking=[{"layer": name, "group": group, "spread": spread} for spread, name, group in leaders], mixed_class_vote=.5, bright_guard=bool(guard), bright_rejection_path=rejection_path, bright_rejected_pct=rejected_pct, shadow_guard=bool(shadow_guard), shadow_rejection_path=shadow_rejection_path, shadow_rejected_pct=shadow_rejected_pct, biofilm_guard=bool(algae_guard), algae_guard_fit=algae_guard or {}, biofilm_rejection_path=biofilm_rejection_path, biofilm_rejected_pct=biofilm_rejected_pct, colour_guard=bool(colour_guard), colour_rejected_pct=colour_rejected_pct, weak_green_warning=bool(colour_guard and colour_guard["plant_excess"] < WEAK_GREEN), single_class="", one_class_warning=one_class or "", pale_plant_path=pale_path, pale_plant_pct=pale_pct, pale_plant_lost_pct=pale_lost_pct, pale_plant_fit=pale_fit or {}, findings_path=findings_path, findings_hist=findings_hist, findings_judged=bool(finding_fit), sparse_spots=sparse_spots, findings_fit={k: v for k, v in (finding_fit or {}).items() if k != "pale"}, findings_not_checked=dict(findings_not_checked), findings_note=findings_note, split_separability=split_sep, weak_split_warning=weak_split, confident_labels=labels, confident_labels_path=labels.get("path", ""), ppe_version="native-4.5.2", processing_threads=self.thread_count, output_dir=cfg["output_dir"], timings={"total": time.time()-started})
+        result = dict(imported, vote_path=vote_path, curve_path=curve_path, threshold=start_threshold, suggestion=suggestion or {}, suggestion_note="" if suggestion else no_suggestion_reason, selected_layers=chosen, chosen_layers=chosen, layer_details=layer_details, n_voters=n_masks, n_method_masks=n_masks, canopy_regime="classic", adaptation_mode="adaptive" if adaptive else "global", half_mixture=half_mixture, spread_ranking=[{"layer": name, "group": group, "spread": spread} for spread, name, group in leaders], mixed_class_vote=.5, bright_guard=bool(guard), bright_rejection_path=rejection_path, bright_rejected_pct=rejected_pct, shadow_guard=bool(shadow_guard), shadow_rejection_path=shadow_rejection_path, shadow_rejected_pct=shadow_rejected_pct, biofilm_guard=bool(algae_guard), algae_guard_fit=algae_guard or {}, biofilm_rejection_path=biofilm_rejection_path, biofilm_rejected_pct=biofilm_rejected_pct, colour_guard=bool(colour_guard), colour_rejected_pct=colour_rejected_pct, weak_green_warning=bool(colour_guard and colour_guard["plant_excess"] < WEAK_GREEN), single_class="", one_class_warning=one_class or "", pale_plant_path=pale_path, pale_plant_pct=pale_pct, pale_plant_lost_pct=pale_lost_pct, pale_plant_fit=pale_fit or {}, findings_path=findings_path, findings_hist=findings_hist, findings_judged=bool(finding_fit), sparse_spots=sparse_spots, findings_fit={k: v for k, v in (finding_fit or {}).items() if k != "pale"}, findings_not_checked=dict(findings_not_checked), findings_note=findings_note, split_separability=split_sep, weak_split_warning=weak_split, confident_labels=labels, confident_labels_path=labels.get("path", ""), ppe_version="native-4.5.3", processing_threads=self.thread_count, output_dir=cfg["output_dir"], timings={"total": time.time()-started})
         with open(os.path.join(run_dir, "run_summary.json"), "w", encoding="utf-8") as handle: json.dump(result, handle, indent=2)
         self.progress(100, "Plant vote raster and threshold curve are ready"); return result
 
@@ -2272,7 +2275,7 @@ class NativePPEEngine:
         common = {k: v for k, v in cfg.items() if k not in ("action", "batch_items", "batch_folder", "output_dir", "work_dir",
                                                             "source_mode", "stacked_path", "folder_path", "band_files")}
         manifest = {"batch_folder": cfg.get("batch_folder", ""), "output_dir": root, "created": datetime.now().isoformat(timespec="seconds"),
-                    "ppe_version": "native-4.5.2", "items": []}
+                    "ppe_version": "native-4.5.3", "items": []}
         outer = self.progress_cb; n = len(items)
         self.log_cb("Batch: {} image(s) in {}.".format(n, cfg.get("batch_folder", "the list")))
         for i, item in enumerate(items):
@@ -2465,7 +2468,7 @@ class NativePPEEngine:
     def write_run_record(self, cfg, result, out_dir):
         """Save what was run and chosen as ppe_run_record.json (the start of a data catalogue)."""
         try:
-            record={"plugin_version":"4.5.2","written":datetime.now().isoformat(timespec="seconds"),
+            record={"plugin_version":"4.5.3","written":datetime.now().isoformat(timespec="seconds"),
                     "source_mode":cfg.get("source_mode"),"source":cfg.get("stacked_path") or cfg.get("folder_path") or cfg.get("bands"),
                     "field_info":cfg.get("field_info") or {},"suggestion":cfg.get("suggestion") or {},
                     "final_threshold":result.get("threshold"),"canopy_pct":result.get("canopy_pct"),
