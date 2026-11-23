@@ -796,3 +796,45 @@ def switch_goal_layers(old_goal, new_goal):
     if group is not None:                  # the PPE group itself: shown only when one of its layers is
         group.setItemVisibilityChecked(any(n.itemVisibilityChecked() for n in group.children()))
     return hidden
+
+
+# ---- label buffers that follow the slider (4.6.8) ------------------------------------------------
+LABEL_BUFFER_SOIL_OFFSET = 1000.0      # as label_points.SOIL_OFFSET
+
+
+def style_label_buffers(layer, radius_cm):
+    """Colour the buffer distance raster for one radius: plant pixels within radius_cm of their point
+    green, soil pixels orange, the rest clear. Only the colours change, so this is instant."""
+    from qgis.core import QgsColorRampShader, QgsRasterShader, QgsSingleBandPseudoColorRenderer
+    if layer is None or not layer.isValid():
+        return
+    r = max(0.0, float(radius_cm)) + 1e-4
+    ramp = QgsColorRampShader(); ramp.setColorRampType(QgsColorRampShader.Discrete)
+    ramp.setColorRampItemList([
+        QgsColorRampShader.ColorRampItem(r, QColor(0, 230, 0, 170), "Plant label (within {:.1f} cm)".format(radius_cm)),
+        QgsColorRampShader.ColorRampItem(LABEL_BUFFER_SOIL_OFFSET - 0.5, QColor(0, 0, 0, 0), ""),
+        QgsColorRampShader.ColorRampItem(LABEL_BUFFER_SOIL_OFFSET + r, QColor(255, 150, 0, 170), "Soil label (within {:.1f} cm)".format(radius_cm)),
+        QgsColorRampShader.ColorRampItem(1e9, QColor(0, 0, 0, 0), "")])
+    shader = QgsRasterShader(); shader.setRasterShaderFunction(ramp)
+    renderer = QgsSingleBandPseudoColorRenderer(layer.dataProvider(), 1, shader)
+    layer.setRenderer(renderer); _force_nearest(layer); layer.triggerRepaint()
+
+
+def show_label_buffer_raster(path, radius_cm, name="PPE · Label buffers"):
+    """The labelled pixels around the points for the slider's radius (filled: plant green, soil
+    orange), just under the points. Replaces earlier buffers."""
+    remove_role("label_buffers")
+    if not path or not os.path.isfile(path):
+        return None
+    layer = QgsRasterLayer(path, name, "gdal")
+    if not layer.isValid():
+        return None
+    style_label_buffers(layer, radius_cm)
+    return place_layer(layer, "label_buffers")
+
+
+def label_buffer_layer():
+    for layer in QgsProject.instance().mapLayers().values():
+        if layer.customProperty(ROLE_KEY, "") == "label_buffers":
+            return layer
+    return None

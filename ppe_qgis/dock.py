@@ -1174,13 +1174,13 @@ class PPEDockWidget(QDockWidget):
         self.label_write_button.clicked.connect(self._emit_labels_write)
         self.label_radius.valueChanged.connect(self._label_preview_update)
         self.label_cap.valueChanged.connect(self._label_preview_update)
-        # 4.6.6: the buffers are drawn on the map as the slider moves (a moment after it stops)
-        self._buffer_timer = QTimer(self); self._buffer_timer.setSingleShot(True); self._buffer_timer.setInterval(500)
+        # 4.6.8: the buffers follow the slider on the map at once (only the colours of a prepared raster change);
+        # after the points are checked, the raster is rebuilt in the background a moment later.
+        self._buffer_timer = QTimer(self); self._buffer_timer.setSingleShot(True); self._buffer_timer.setInterval(800)
         self._buffer_timer.timeout.connect(self._emit_buffers)
-        self.label_radius.valueChanged.connect(lambda *_: self._schedule_buffers())
-        self.label_cap.valueChanged.connect(lambda *_: self._schedule_buffers())
+        self.label_radius.valueChanged.connect(lambda *_: self._restyle_buffers())
         self.label_buffer_mode.currentIndexChanged.connect(self._label_preview_update)
-        self.label_buffer_mode.currentIndexChanged.connect(lambda *_: self._schedule_buffers())
+        self.label_buffer_mode.currentIndexChanged.connect(lambda *_: self.show_buffers())
         for b, mode in self._label_edit_buttons: b.clicked.connect(lambda _=False, m=mode: self._label_edit(m))
         self.label_undo_button.clicked.connect(self._label_undo)
         self.label_done_button.clicked.connect(self._label_edit_done)
@@ -1312,33 +1312,54 @@ class PPEDockWidget(QDockWidget):
             info.get("plant_points", 0), info.get("soil_points", 0), info.get("clear_plant_pixels", 0), info.get("clear_soil_pixels", 0),
             info.get("pixel_cm", 0), " · PPE threshold {:.2f}".format(info["threshold"]) if info.get("threshold") is not None else "", info.get("points_path", "")))
         self.label_write_status.setText(""); self._label_preview_update(); self._refresh_goal_buttons()
-        if self.label_radius.value() > 0: self._buffers_pending = True      # drawn once the points are on the map
+
+    def buffer_raster(self):
+        """The prepared buffer raster of the chosen mode (None before the points exist)."""
+        info = getattr(self, "_label_info", None)
+        if not info: return None
+        from .label_points import buffer_raster_path
+        path = buffer_raster_path(os.path.dirname(info["points_path"]), self.label_buffer_mode.currentData())
+        return path if os.path.isfile(path) else None
+
+    def show_buffers(self):
+        """Put the filled buffers of the current radius and mode on the map (under the points)."""
+        path = self.buffer_raster()
+        if not path: return
+        try:
+            from .layer_utils import show_label_buffer_raster
+            show_label_buffer_raster(path, self.label_radius.value() / 2.0)
+        except Exception as err:
+            self.append_log("Could not show the buffers: {}".format(err))
+        self._label_preview_update()
+
+    def _restyle_buffers(self):
+        """Slider moved: recolour the buffer layer for the new radius (instant)."""
+        try:
+            from .layer_utils import label_buffer_layer, style_label_buffers
+            layer = label_buffer_layer()
+            if layer is None: self.show_buffers()
+            else: style_label_buffers(layer, self.label_radius.value() / 2.0)
+        except Exception as err:
+            self.append_log("Could not update the buffers: {}".format(err))
 
     def _schedule_buffers(self):
         if getattr(self, "_label_info", None) and hasattr(self, "_buffer_timer"): self._buffer_timer.start()
 
     def _emit_buffers(self):
-        """Draw the buffers of the current points on the map (polygons only; Export writes everything)."""
+        """Points were checked: rebuild the buffers from the points as they are now (in the background)."""
         info = getattr(self, "_label_info", None)
         if not info: return
         if self._busy:
             self._buffers_pending = True; return
         self._buffers_pending = False
-        if self.label_radius.value() == 0:
-            try:
-                from .layer_utils import remove_role
-                remove_role("label_buffers")
-            except Exception:
-                _LOG.debug("PPE: ignored error", exc_info=True)
-            return
-        self.labels_requested.emit({"action": "labels_buffers", "points_path": info["points_path"], "radius_cm": self.label_radius.value() / 2.0,
-                                    "max_px": self.label_cap.value(), "preview": True, "buffer_mode": self.label_buffer_mode.currentData()})
+        self.labels_requested.emit({"action": "labels_buffers", "points_path": info["points_path"]})
 
-    def set_buffers_shown(self, result):
-        self.label_progress.setValue(100); self.label_progress.setFormat("Buffers on the map")
-        self.label_preview.setText("Buffers of {:.1f} cm on the map (PPE · Label buffers): {:,} plant and {:,} soil pixels will be labelled{}.".format(
-            result.get("radius_cm", 0), result.get("plant_pixels", 0), result.get("soil_pixels", 0),
-            "; {} points you changed keep only their own pixel".format(result["point_only"]) if result.get("point_only") else ""))
+    def set_buffers_shown(self, info):
+        """The buffers were rebuilt after checks."""
+        if info.get("buffer_pixels") is not None and getattr(self, "_label_info", None):
+            self._label_info.update(buffer_pixels=info["buffer_pixels"], buffer_ids=info.get("buffer_ids"))
+        self.label_progress.setValue(100); self.label_progress.setFormat("Buffers updated")
+        self.show_buffers()
 
     def labels_shown(self):
         for b, _ in self._label_edit_buttons: b.setEnabled(True)
@@ -1359,7 +1380,8 @@ class PPEDockWidget(QDockWidget):
         try:
             from .label_points import buffer_preview, read_points
             t = buffer_preview(info, read_points(info["points_path"]), cm, self.label_cap.value(), self.label_buffer_mode.currentData())
-            self.label_preview.setText("About {:,} plant and {:,} soil pixels will be labelled.".format(t["plant"], t["soil"]))
+            self.label_preview.setText("About {:,} plant and {:,} soil pixels labelled at {:.1f} cm (filled green and orange on the map).".format(
+                t["plant"], t["soil"], cm))
         except Exception as exc:
             self.label_preview.setText("Could not count the pixels: {}".format(exc))
 
@@ -1405,7 +1427,7 @@ class PPEDockWidget(QDockWidget):
         except Exception as exc:
             self.label_edit_status.setText("Could not read the points: {}".format(exc)); return
         plant = sum(1 for p in pts if p["label"] == 1); changed = sum(1 for p in pts if p["status"] in ("changed", "added"))
-        if message != "Checks saved." and self.label_radius.value() > 0: self._schedule_buffers()     # a fixed point: its buffer follows
+        if message != "Checks saved.": self._schedule_buffers()     # a fixed point: its buffer is rebuilt a moment later
         self.label_edit_status.setText("{}  Now {} plant and {} soil points{}.".format(message, plant, len(pts) - plant,
                                                                                     " · {} changed or added by you".format(changed) if changed else ""))
         self._label_preview_update()

@@ -342,25 +342,17 @@ class PPEPlugin:
                 from .layer_utils import show_label_points
                 with self._own_changes():
                     if show_label_points(result["points_path"]) is not None: self.dock.labels_shown()
+                    self.dock.show_buffers()          # filled buffers, following the slider
             except Exception as exc:
                 self.dock.append_log("Could not show the label points: {}".format(exc))
             self._message("Label points: {} plant and {} soil. Check them on the map.".format(result.get("plant_points", 0), result.get("soil_points", 0)), Qgis.Success)
             return
         if self.current_action == "labels_buffers":
-            try:
-                from .layer_utils import show_label_buffers
-                with self._own_changes(): show_label_buffers(result["buffers_path"])
-            except Exception as exc:
-                self.dock.append_log("Could not show the buffers: {}".format(exc))
-            self.dock.set_buffers_shown(result)
+            with self._own_changes(): self.dock.set_buffers_shown(result)
             return
         if self.current_action == "labels_write":
             self.dock.set_labels_written(result)
-            try:
-                from .layer_utils import show_label_buffers
-                with self._own_changes(): show_label_buffers(result["buffers_path"])
-            except Exception as exc:
-                self.dock.append_log("Could not show the label buffers: {}".format(exc))
+            # the exported buffers are the ones already on the map (the slider's layer stays)
             self._message("Labels written: {:,} plant and {:,} soil pixels.".format(result.get("plant_pixels", 0), result.get("soil_pixels", 0)), Qgis.Success)
             return
         if self.current_action == "training":

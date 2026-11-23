@@ -258,7 +258,7 @@ def create_points(cfg, progress=lambda p, m: None, log=lambda m: None, cancelled
         idx = clhs(np.column_stack([cov, xy]), n, seed=seed + c)          # spread over bands, NDVI and position
         for i in idx: points.append((c, A[i]))
     path = os.path.join(out_dir, "ppe_labels.gpkg"); _write_points(path, points, cols, R, cfg)
-    hist = _buffer_histograms(R, points)
+    hist = _buffer_histograms(R, points, out_dir)
     info = {"points_path": path, "plant_points": sum(1 for c, _ in points if c == PLANT), "soil_points": sum(1 for c, _ in points if c == SOIL),
             "clear_plant_pixels": count[PLANT], "clear_soil_pixels": count[SOIL], "pixel_cm": R.pixel_cm, "bands": bands,
             "mask_path": cfg["mask_path"], "vote_path": cfg["vote_path"], "findings_path": cfg.get("findings_path", ""), "area_path": area_path,
@@ -353,16 +353,63 @@ def _same_class(R, x, y, label, r_px, mode="sure"):
     return m & np.isfinite(d), d, x0, y0, agrees
 
 
-def _buffer_histograms(R, points):
-    """For the slider: per point and buffer mode, how many pixels the buffer takes in at each radius step."""
+SOIL_OFFSET = 1000.0      # buffer distance raster: plant pixels hold their distance in cm, soil pixels 1000 + it
+
+
+def buffer_raster_path(out_dir, mode):
+    return os.path.join(out_dir, "ppe_label_buffer_distance_{}.tif".format(mode))
+
+
+def _buffer_histograms(R, points, out_dir=None, agrees_only=None):
+    """For the slider (4.6.8): per point and buffer mode, how many pixels the buffer takes in at each
+    radius step, and (with out_dir) one raster per mode holding, for every pixel a buffer can reach
+    within 50 cm, its distance to its point along the buffer's path (cm; soil + 1000; nearest point
+    wins). The map shows the buffers of any radius by colouring this raster, so they follow the slider
+    at once. points: [(label, (px, py, ...))]; agrees_only: per point False = keep its own pixel only."""
     r_max = _radius_px(R, MAX_BUFFER_CM); steps = int(round(MAX_BUFFER_CM / STEP_CM)) + 1; out = {}
     for mode in BUFFER_MODES:
-        rows = []
-        for c, a in points:
-            m, d, *_ = _same_class(R, int(a[0]), int(a[1]), c, r_max, mode)
+        rows = []; rast = band = None
+        if out_dir:
+            path = buffer_raster_path(out_dir, mode)
+            if os.path.exists(path): os.remove(path)
+            rast = gdal.GetDriverByName("GTiff").Create(path, R.w, R.h, 1, gdal.GDT_Float32, options=["COMPRESS=DEFLATE", "TILED=YES", "SPARSE_OK=TRUE"])
+            rast.SetGeoTransform(R.gt); rast.SetProjection(R.wkt); band = rast.GetRasterBand(1); band.SetNoDataValue(-1)
+        for k, (c, a) in enumerate(points):
+            x, y = int(a[0]), int(a[1])
+            if agrees_only is not None and not agrees_only[k]:
+                m = np.ones((1, 1), bool); d = np.zeros((1, 1)); x0, y0 = x, y
+            else:
+                m, d, x0, y0, _ag = _same_class(R, x, y, c, r_max, mode)
             dist_cm = d[m] * R.pixel_cm; rows.append(np.searchsorted(np.sort(dist_cm), np.arange(steps) * STEP_CM, side="right").tolist())
+            if band is not None:
+                h, w = m.shape; win = band.ReadAsArray(x0, y0, w, h)
+                val = np.where(m, d * R.pixel_cm + (0.0 if c == PLANT else SOIL_OFFSET), -1.0)
+                cur = np.where(win < 0, np.inf, win % SOIL_OFFSET); new = np.where(m, d * R.pixel_cm, np.inf)
+                win = np.where(new < cur, val, win)          # the nearer point's buffer wins
+                band.WriteArray(win.astype(np.float32), x0, y0)
+        if rast is not None: rast.FlushCache(); rast = None
         out[mode] = rows
     return out
+
+
+def rebuild_buffers(cfg, progress=lambda p, m: None, log=lambda m: None, cancelled=lambda: False):
+    """After the user checked points (4.6.8): rebuild the buffer distance rasters and slider counts from
+    the points as they are now. Points switched to the other class or added keep only their own pixel.
+    cfg: points_path. Returns the updated info."""
+    work_dir = os.path.dirname(cfg["points_path"]); info_path = os.path.join(work_dir, "ppe_labels_info.json")
+    with open(info_path, encoding="utf-8") as f: info = json.load(f)
+    R = _Rasters(info["mask_path"], info["vote_path"], info.get("findings_path", ""), info.get("area_path", ""))
+    pts = read_points(cfg["points_path"]); inv = gdal.InvGeoTransform(R.gt); points = []; agrees = []
+    for p in pts:
+        x, y = p["px"], p["py"]
+        if x is None or y is None: x, y = (int(v) for v in gdal.ApplyGeoTransform(inv, p["X"], p["Y"]))
+        if not (0 <= x < R.w and 0 <= y < R.h): continue
+        points.append((p["label"], (x, y))); agrees.append(p["status"] != STATUS_ADDED and p["label"] == (PLANT if p["ppe_label"] == "plant" else SOIL))
+    progress(10, "Updating the buffers")
+    info["buffer_pixels"] = _buffer_histograms(R, points, work_dir, agrees); info["buffer_ids"] = [p["id"] for p in pts]
+    with open(info_path, "w", encoding="utf-8") as f: json.dump(info, f)
+    progress(100, "Buffers updated")
+    return dict(info, points_path=cfg["points_path"], rebuilt=True)
 
 
 def read_points(path):
@@ -382,6 +429,13 @@ def buffer_preview(info, points, radius_cm, max_px=0, mode="sure"):
     Points the user changed or added count their own pixel only. Overlaps are counted twice here."""
     hist = info.get("buffer_pixels") or []
     if isinstance(hist, dict): hist = hist.get(mode) or hist.get("sure") or []
+    ids = info.get("buffer_ids")
+    if ids is not None:                                # rebuilt after checks: one row per current point, in this order
+        step = int(round(min(radius_cm, MAX_BUFFER_CM) / STEP_CM)); tot = {PLANT: 0, SOIL: 0}; pos = {i: k for k, i in enumerate(ids)}
+        for p in points:
+            k = pos.get(p["id"]); n = hist[k][step] if k is not None and k < len(hist) else 1
+            tot[p["label"]] += min(n, max_px) if max_px else n
+        return {"plant": tot[PLANT], "soil": tot[SOIL]}
     step = int(round(min(radius_cm, MAX_BUFFER_CM) / STEP_CM)); tot = {PLANT: 0, SOIL: 0}
     for p in points:
         i = (p["id"] or 0) - 1

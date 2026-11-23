@@ -253,3 +253,35 @@ class SplitTouchingPlants(unittest.TestCase):
             self.assertIn("of_which_check_counted_as_one", head)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+class BuffersFollowTheSlider(unittest.TestCase):
+    """4.6.8: one distance raster per buffer mode; colouring it at radius r gives exactly the exported buffers."""
+
+    def test_raster_at_any_radius_matches_the_export_and_checks_rebuild_it(self):
+        from ppe_qgis.label_points import SOIL_OFFSET, buffer_raster_path, rebuild_buffers
+        tmp = tempfile.mkdtemp()
+        try:
+            bands, plant, weeds = field(200); green = plant | weeds
+            img = tif(os.path.join(tmp, "img.tif"), bands, gdal.GDT_Float32)
+            mask = tif(os.path.join(tmp, "mask.tif"), green.astype(np.uint8), gdal.GDT_Byte, nodata=255)
+            vote = tif(os.path.join(tmp, "vote.tif"), np.where(green, 1.0, 0.0).astype(np.float32), gdal.GDT_Float32)
+            info = create_points({"source_mode": "stacked", "stacked_path": img, "mask_path": mask, "vote_path": vote, "findings_path": "",
+                                  "n_points": 30, "output_dir": os.path.join(tmp, "l")})
+            for mode in ("sure", "class"):
+                d = gdal.Open(buffer_raster_path(os.path.join(tmp, "l"), mode)).ReadAsArray()
+                for cm in (0.0, 4.0, 9.5):
+                    r = write_labels({"points_path": info["points_path"], "radius_cm": cm, "buffer_mode": mode})
+                    lab = gdal.Open(r["raster_path"]).ReadAsArray()
+                    shown_plant = (d >= 0) & (d < SOIL_OFFSET) & (d <= cm + 1e-4); shown_soil = (d >= SOIL_OFFSET) & (d - SOIL_OFFSET <= cm + 1e-4)
+                    self.assertTrue(((lab == 1) == shown_plant).all()); self.assertTrue(((lab == 0) == shown_soil).all())
+            # switch one point to the other class: after the rebuild its buffer is its own pixel only
+            ds = ogr.Open(info["points_path"], 1); L = ds.GetLayer(); f = L.GetNextFeature(); x, y = f.GetField("px"), f.GetField("py")
+            f.SetField("label", "soil" if f.GetField("label") == "plant" else "plant"); f.SetField("status", "changed"); L.SetFeature(f); ds = None
+            rebuild_buffers({"points_path": info["points_path"]})
+            d = gdal.Open(buffer_raster_path(os.path.join(tmp, "l"), "sure")).ReadAsArray()
+            self.assertEqual(d[y, x] % SOIL_OFFSET, 0.0)
+            nb = d[max(0, y - 2):y + 3, max(0, x - 2):x + 3]
+            self.assertEqual(int((nb >= 0).sum()), 1 + int(((nb >= 0) & ((nb % SOIL_OFFSET) > 0)).sum()))   # no buffer grown around it
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
