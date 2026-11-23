@@ -831,7 +831,8 @@ class PPEDockWidget(QDockWidget):
                        "Plants whose canopies overlap merge into one patch and are counted as one, so later in the season the count is too low.")
         stage.setWordWrap(True); stage.setObjectName("stageWarning")
         hint = QLabel("Each plant in the finalized mask gets one point. Leaves of one plant that show as separate pieces are joined. "
-                      "A patch much bigger than a typical plant is flagged 'check' (orange): it counts as one, and ✂ Split below "
+                      "A patch much bigger than a typical plant is flagged 'check' (orange). With crop rows, PPE splits it by the "
+                      "plant spacing in the row (green with an orange ring); otherwise it counts as one and ✂ Split below "
                       "turns it into as many plants as you see.")
         hint.setWordWrap(True); hint.setObjectName("ppeHint"); layout.addWidget(title); layout.addWidget(stage); layout.addWidget(hint)
         card, body = self._card("Settings"); form = self._form(body)
@@ -850,6 +851,20 @@ class PPEDockWidget(QDockWidget):
                                         "are marked as possible weeds (grey) and not counted; switch any back with Plant ↔ weed. "
                                         "Where rows are not clear (closed canopy, no rows), nothing is marked.")
         form.addRow("", self.count_find_rows)
+        self.count_auto_split = QCheckBox("Split touching plants by the plant spacing")
+        self.count_auto_split.setChecked(True)
+        self.count_auto_split.setToolTip("Needs crop rows. PPE measures the spacing between plants along the rows and splits each orange "
+                                         "'check' patch into (its length along the row ÷ plant spacing) plants, shown in green with an orange "
+                                         "ring ('split by PPE'). Check them: ✂ Split again or ⊕ Merge any that are wrong. Works best early in "
+                                         "the season; it does nothing where no rows are found.")
+        form.addRow("", self.count_auto_split)
+        self.count_spacing = self._plain_spin(QDoubleSpinBox()); self.count_spacing.setRange(0, 200); self.count_spacing.setDecimals(1); self.count_spacing.setValue(0); self.count_spacing.setSuffix(" cm")
+        self.count_spacing.setSpecialValueText("Measure it from the plants")
+        self.count_spacing.setToolTip("Distance between plants along the row. Leave it at 'Measure' and PPE measures it (needs at least 20 gaps "
+                                      "between plants); type your seeding distance if you know it or the image is small.")
+        form.addRow("Plant spacing in the row", self.count_spacing)
+        self.count_find_rows.toggled.connect(lambda on: (self.count_auto_split.setEnabled(on), self.count_spacing.setEnabled(on and self.count_auto_split.isChecked())))
+        self.count_auto_split.toggled.connect(lambda on: self.count_spacing.setEnabled(on and self.count_find_rows.isChecked()))
         form.addRow("Area", self._area_widget("count", "Plants counted only inside ", "Whole image. Draw an area (or choose a field boundary) to count only there."))
         self.count_plots = QLineEdit(); self.count_plots.setPlaceholderText("Optional: plot polygons for counts per plot")
         form.addRow("Plot file", self._path_row(self.count_plots))
@@ -868,20 +883,25 @@ class PPEDockWidget(QDockWidget):
         fb = QVBoxLayout(fix_body); fb.setContentsMargins(0, 0, 0, 0); fb.setSpacing(6)
         fix_hint = QLabel("PPE's points are a fast first count. Check them on the map and fix what is wrong: each click is saved and the "
                           "count updates. Counted: yellow (plant), orange (check: counted as ONE plant, but it may be several touching "
-                          "plants; use ✂ Split), light green (split by you) and blue (added by you). Not counted: grey with a red ring "
+                          "plants; use ✂ Split), green with an orange ring (split by PPE from the plant spacing: check them; ✂ Split "
+                          "again or ⊕ Merge), light green (split by you) and blue (added by you). Not counted: grey with a red ring "
                           "(possible weeds between rows).")
         fix_hint.setWordWrap(True); fix_hint.setObjectName("ppeHint"); fb.addWidget(fix_hint)
         row = QHBoxLayout(); row.setSpacing(6)
         self.plant_add_button = QPushButton("＋ Add plant"); self.plant_remove_button = QPushButton("－ Remove point")
         self.plant_switch_button = QPushButton("Plant ↔ weed")
         self.plant_split_button = QPushButton("✂ Split")
+        self.plant_merge_button = QPushButton("⊕ Merge")
+        self.plant_merge_button.setToolTip("Click a point that was split (by PPE or by you): its group becomes one plant again. "
+                                           "Or click two separate points to make them one plant.")
         self.plant_split_button.setToolTip("Click a point that holds several touching plants (orange 'check' points usually do), "
                                            "type how many plants you see, and PPE puts one point on each.")
         self.plant_add_button.setToolTip("Click on the map where a plant was missed.")
         self.plant_remove_button.setToolTip("Click on a point that is not a plant (soil, a leaf counted twice).")
         self.plant_switch_button.setToolTip("Click on a point to switch it between plant (counted) and weed (not counted).")
         row2 = QHBoxLayout(); row2.setSpacing(6)
-        for b, r in ((self.plant_add_button, row), (self.plant_remove_button, row), (self.plant_switch_button, row2), (self.plant_split_button, row2)):
+        for b, r in ((self.plant_add_button, row), (self.plant_remove_button, row), (self.plant_switch_button, row2), (self.plant_split_button, row2),
+                     (self.plant_merge_button, row2)):
             b.setCheckable(True); b.setProperty("secondary", True); b.setEnabled(False); r.addWidget(b, 1)
         fb.addLayout(row); fb.addLayout(row2)
         row = QHBoxLayout(); row.setSpacing(6)
@@ -895,6 +915,7 @@ class PPEDockWidget(QDockWidget):
         self.plant_remove_button.clicked.connect(lambda: self._plant_edit("remove"))
         self.plant_switch_button.clicked.connect(lambda: self._plant_edit("switch"))
         self.plant_split_button.clicked.connect(lambda: self._plant_edit("split"))
+        self.plant_merge_button.clicked.connect(lambda: self._plant_edit("merge"))
         self.plant_undo_button.clicked.connect(self._plant_undo)
         self.plant_done_button.clicked.connect(self._plant_edit_done)
         out = QLabel("Output, in the image's output folder: ppe_count/ppe_plants.gpkg (one point per plant: area, 'check' flag, "
@@ -921,11 +942,12 @@ class PPEDockWidget(QDockWidget):
         self._plant_edit_buttons(mode)
         self.plant_edit_status.setText({"add": "Click on the map where a plant was missed.", "remove": "Click on a point to remove it.",
                                         "switch": "Click on a point to switch it between plant and weed.",
-                                        "split": "Click a point of touching plants (orange 'check'), then type how many plants you see."}[mode] + " Esc or Done to stop.")
+                                        "split": "Click a point of touching plants (orange 'check'), then type how many plants you see.",
+                                        "merge": "Click a point split by PPE or by you to make its group one plant again, or click two points to merge them."}[mode] + " Esc or Done to stop.")
 
     def _plant_edit_buttons(self, mode):
         for b, m in ((self.plant_add_button, "add"), (self.plant_remove_button, "remove"), (self.plant_switch_button, "switch"),
-                     (self.plant_split_button, "split")):
+                     (self.plant_split_button, "split"), (self.plant_merge_button, "merge")):
             b.setChecked(mode == m)
         tool = getattr(self, "_plant_tool", None)
         self.plant_undo_button.setEnabled(tool is not None); self.plant_done_button.setEnabled(tool is not None)
@@ -959,6 +981,7 @@ class PPEDockWidget(QDockWidget):
         """What is counted and what is not, in one line."""
         parts = ["{} plant".format(r.get("plain_plants", r["plants"]))]
         if r.get("flagged_big"): parts.append("{} check (each as 1)".format(r["flagged_big"]))
+        if r.get("split_by_ppe"): parts.append("{} split by PPE".format(r["split_by_ppe"]))
         if r.get("split_by_user"): parts.append("{} split by you".format(r["split_by_user"]))
         if r.get("added_by_user"): parts.append("{} added by you".format(r["added_by_user"]))
         return "Counted: {} plants = {}{}. Not counted: {} possible weeds.".format(
@@ -966,11 +989,12 @@ class PPEDockWidget(QDockWidget):
 
     def plants_shown(self):
         """The plant points are on the map: correcting is possible."""
-        for b in (self.plant_add_button, self.plant_remove_button, self.plant_switch_button, self.plant_split_button): b.setEnabled(True)
+        for b in (self.plant_add_button, self.plant_remove_button, self.plant_switch_button, self.plant_split_button, self.plant_merge_button): b.setEnabled(True)
         self.plant_edit_status.setText("Check the points on the map; correct any with the buttons above.")
 
     def _count_settings(self):
         return dict({"action": "count", "min_plant_cm2": self.count_min.value(), "join_cm": self.count_join.value(), "find_rows": self.count_find_rows.isChecked(),
+                     "auto_split": self.count_auto_split.isChecked(), "plant_spacing_cm": self.count_spacing.value() or None,
                      "aoi_path": self.count_plots.text().strip(), "aoi_id_field": self.count_plot_id.text().strip()}, **(self._area_config("count") or {}))
 
     def _emit_count(self, batch):
@@ -1005,6 +1029,8 @@ class PPEDockWidget(QDockWidget):
         else:
             rows = result.get("rows") or {}
             text = self._count_line(result)
+            auto = result.get("auto_split") or {}
+            if auto.get("note"): text += "\n" + auto["note"][0].upper() + auto["note"][1:] + "."
             if result.get("flagged_big"):
                 text += "\nOrange 'check' points count as one plant each but may be several touching plants: ✂ Split them below."
             if rows and rows.get("rows"): text += "\nCrop rows found {:.0f} cm apart.".format(rows.get("spacing_cm", 0))

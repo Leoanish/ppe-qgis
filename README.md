@@ -262,7 +262,8 @@ Choose **Plant counter** at the top. Run and review as usual, finalize the mask,
 
 - **One plant** gets one point. PPE first drops specks smaller than the **smallest plant** (in cm²; set it a little below your smallest seedling). Then pieces closer than **Join leaves closer than** (1 cm by default) become one plant: the leaves of one plant often show as separate pieces because the stem or petiole between them is thin. Keep this setting smaller than the gap between neighbouring plants.
 - A plant also needs a **sure core**: at least 5 pixels where every PPE vote says plant. This keeps out soil spots that a low threshold lets in.
-- **Touching plants** become one. Groups much bigger than the larger plants of the image (over 2.5 × the 75th percentile) are drawn orange and flagged **check**; they still count as one. Splitting them by size made counts much worse in tests. Count early in the season, before plants touch.
+- **Touching plants** become one. Groups much bigger than the larger plants of the image (over 2.5 × the 75th percentile) are flagged **check** (orange). Splitting them by size made counts much worse in tests, so PPE uses the rows instead (next point).
+- **Split touching plants by the plant spacing** (on by default; needs crop rows): PPE measures the distance between plants along the rows (the gaps between neighbouring plants; gaps over a missing plant are halved; at least 20 gaps are needed) and splits each *check* patch into *(its length along the row ÷ plant spacing)* plants, drawn green with an orange ring (**split by PPE**). A patch shorter than 1.5 spacings is one big plant and stays *check*. You can type the **plant spacing in the row** (your seeding distance) instead, for small images or when you know it. On PhenoBench (61 check patches, spacing measured from many plants) the wrong plants in check patches fell from 51 to 25, and the true plants with exactly one point rose from 33 to 63 %; it helps little once canopies close (17 to 15 wrong on the late date). Check these points: ✂ Split again or ⊕ Merge.
 - **Find crop rows** (on by default): PPE finds the direction and spacing of the crop rows itself, anywhere from 15 to 150 cm apart, from the plant pixels of the mask, and fits the row positions separately in each 4 m patch so plots shifted against each other still fit. Plants between the rows are marked as possible weeds (grey with a red ring) and not counted. Where rows are not clear (closed canopy, broadcast crops), nothing is marked. On our fields it found 91 cm (Tifton, Midville) and 76 cm (IH corn), and no rows on the closed Kritis canopy.
 - **Area** (optional): **Draw area** lets you click an outline on the map (right-click to finish; draw several to add them together), or choose a polygon file such as the field boundary. Plants are counted only inside it: the mask outside the area is left out before counting, so field edges, headlands and weedy corners give no points, and plants per m² uses the area's own size. The area is shown as **PPE · Count area** with a solid red outline (every area drawn in PPE is red, while drawing and after), and the panel shows a green **✓ Area set** and kept as `ppe_count/ppe_count_area.gpkg`. With **Count all batch masks** the same area is used for every image.
 - **Plot file** (optional): plants and plants per m² for each plot.
@@ -276,11 +277,12 @@ The points are in the layer **PPE · Plants**, kept at the top of the Layers pan
 |---|---|---|
 | yellow | plant | yes |
 | orange | check: a patch much bigger than a typical plant; may be several touching plants | yes, as **one** (split it to count each) |
+| green with an orange ring | split by PPE from the plant spacing | yes, each (check them) |
 | light green | split by you | yes, each |
 | blue | added by you | yes |
 | grey with a red ring | possible weed between the rows | **no** |
 
-The panel says the same after every change, for example *Counted: 214 plants = 198 plant + 9 check (each as 1) + 4 split by you + 3 added by you. Not counted: 12 possible weeds.* `ppe_count_summary.csv` has the same columns.
+The panel says the same after every change, for example *Counted: 214 plants = 190 plant + 5 check (each as 1) + 12 split by PPE + 4 split by you + 3 added by you. Not counted: 12 possible weeds.* `ppe_count_summary.csv` has the same columns.
 
 **Correct the count on the map.** PPE's points are a fast first count; it cannot tell every weed from the crop or separate plants that overlap, so check them and fix what is wrong:
 
@@ -290,6 +292,7 @@ The panel says the same after every change, for example *Counted: 214 plants = 1
 - **－ Remove point**: click a point that is not a plant (soil, a weed, a plant counted twice).
 - **Plant ↔ weed**: click a point to switch it between plant (counted) and weed (not counted).
 - **✂ Split**: click a point that holds several touching plants (orange *check* points usually do; two touching plants are often not big enough to be flagged), type how many plants you see, and PPE puts one point on each: on the thickest parts of the patch, each with its share of the pixels. The new points are light green and each is counted. PPE does not guess the number itself: on PhenoBench neither the patch size nor its shape got it right often enough. With the right number typed, the plants that got exactly one point rose from 26 to 53 % in check patches of 2 or more plants. Where leaves overlap a lot, look at the result and use **Undo last** or **＋ Add plant**.
+- **⊕ Merge**: click a point that was split (by PPE or by you) and its whole patch becomes one plant again (yellow). Or click two separate points (for example one plant counted twice) to make them one. ✂ **Split** on a split point splits its whole patch again into the number you type.
 - **Undo last** (or Backspace), and **Done** (or Esc) to stop.
 
 Each click is saved in `ppe_plants.gpkg` at once, and the count, plants per m², `ppe_count_summary.csv` and the counts per plot are updated.

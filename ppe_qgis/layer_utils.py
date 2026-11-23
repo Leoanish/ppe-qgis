@@ -671,6 +671,7 @@ def show_plant_points(path, name="PPE · Plants"):
     renderer = QgsCategorizedSymbolRenderer("status", [
         QgsRendererCategory("plant", dot("255,230,0"), "Plant · counted"),
         QgsRendererCategory("check", dot("255,140,0"), "Check · counted as 1 plant; may be several touching plants (✂ Split)"),
+        QgsRendererCategory("auto split", dot("60,220,170", "255,140,0"), "Split by PPE (plant spacing) · each counted; check, ⊕ Merge if wrong"),
         QgsRendererCategory("split", dot("150,230,0"), "Split by you · each counted"),
         QgsRendererCategory("added", dot("0,200,255"), "Added by you · counted"),
         QgsRendererCategory("weed?", dot("170,170,170", "220,0,0"), "Weed? (between rows) · NOT counted")])

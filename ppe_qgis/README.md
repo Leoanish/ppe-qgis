@@ -180,6 +180,10 @@ On whole fields it is clearly better than 0.50. On small clips it is better on a
 
 It needs a NIR band. On camera RGB images plant and soil differ too little in colour for a reliable plant share per pixel, so those start at 0.50 and the Review tab says so.
 
+## 4.7.0: touching plants split by the plant spacing
+
+With crop rows found, the plant counter measures the plant spacing along the rows (gaps between neighbouring plants; gaps over a missing plant divided by the number of steps; at least 20 gaps) or takes the spacing the user types, and splits every *check* patch into round(length along the row / spacing) plants, status *auto split* (green, orange ring), field `split_of` = the original point (`plant_count.auto_split`). A patch shorter than 1.5 spacings stays *check*. On PhenoBench (61 check patches, spacing measured per date from many plants) the wrong plants in check patches fell from 51 to 25 and true plants with exactly one point rose from 33 to 63 %; from a single 1 m image the spacing was too rough to help, hence the 20-gap minimum. *⊕ Merge* makes a split patch one plant again (or two clicked points one plant); *✂ Split* on a split point splits the whole patch again. The summary has `of_which_split_by_ppe` and `plant_spacing_cm`.
+
 ## 4.5.1: crop rows found automatically
 
 No row spacing to type: `plant_count._rows` finds one direction and one spacing (15 to 150 cm) from up to 2 million plant pixels of the mask (coarse grid; the search uses 20 000), folding them by each candidate spacing in every 4 m tile and summing the tiles' strengths, so plots shifted against each other still fit. Rows count as found when their strength is at least 1.8 times the median over all directions and spacings; each tile then needs half the field's strength. Thin rows also line up at half their spacing, so the widest spacing that fits at least 80 percent as well is taken. Found: Tifton 91 cm, Midville 91 cm, IH 76 cm (30-inch corn); Kritis (closed canopy): no rows, nothing marked. The Count tab has one checkbox, *Find crop rows*, on by default.

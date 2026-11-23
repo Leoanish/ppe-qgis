@@ -7,6 +7,7 @@ from qgis.gui import QgsMapTool
 from .layer_utils import ROLE_KEY
 
 STATUS_PLANT, STATUS_CHECK, STATUS_WEED, STATUS_ADDED, STATUS_SPLIT = "plant", "check", "weed?", "added", "split"
+STATUS_AUTO = "auto split"     # 4.7: split by PPE from the plant spacing
 PICK_PIXELS = 12            # a click picks the nearest point within this many screen pixels
 
 
@@ -18,8 +19,9 @@ def plants_layer():
 
 
 class PlantEditTool(QgsMapTool):
-    """mode: 'add', 'remove', 'switch' or 'split' (4.6.6: a point of touching plants becomes one point
-    per plant). Emits changed() after every edit; Esc emits done()."""
+    """mode: 'add', 'remove', 'switch', 'split' (4.6.6: a point of touching plants becomes one point
+    per plant) or 'merge' (4.7: points split from one group become one point again; or click two points
+    to make them one plant). Emits changed() after every edit; Esc emits done()."""
     changed = pyqtSignal(str)
     done = pyqtSignal()
 
@@ -28,6 +30,7 @@ class PlantEditTool(QgsMapTool):
         self.layer, self.mode = layer, mode
         self.setCursor(Qt.CrossCursor)
         self.undo = []                   # (kind, data) to undo the last edits
+        self.first = None                # merge: the first of two points
 
     def _to_layer(self, point):
         tr = QgsCoordinateTransform(self.canvas().mapSettings().destinationCrs(), self.layer.crs(), QgsProject.instance())
@@ -61,6 +64,8 @@ class PlantEditTool(QgsMapTool):
             prov.deleteFeatures([f.id()]); self._changed("Point removed.")
         elif self.mode == "split":
             self._split(f)
+        elif self.mode == "merge":
+            self._merge(f)
         elif self.mode == "switch":
             old = f["status"]; new = STATUS_PLANT if old == STATUS_WEED else STATUS_WEED
             prov.changeAttributeValues({f.id(): {fields.indexOf("status"): new}})
@@ -80,10 +85,43 @@ class PlantEditTool(QgsMapTool):
         if not ok: return
         self._split_into(f, n)
 
+    def _siblings(self, f):
+        """The points split from the same group as f (f included), or [f]."""
+        if self.layer.fields().indexOf("split_of") < 0 or not f["split_of"]: return [f]
+        return [g for g in self.layer.getFeatures() if g["split_of"] == f["split_of"]] or [f]
+
+    def _area(self, f):
+        return f["area_cm2"] if self.layer.fields().indexOf("area_cm2") >= 0 else None
+
+    def _merge(self, f):
+        """A point split from a group (by PPE or by you): all points of that group become one plant again.
+        Any other point: remembered; the next point clicked is merged with it."""
+        from .plant_count import merge_points
+        group = self._siblings(f)
+        if len(group) < 2:
+            if self.first is None or self.first.id() == f.id():
+                self.first = QgsFeature(f); self.changed.emit("Now click the point to merge it with."); return
+            group = [self.first, f]
+        self.first = None
+        x, y, a = merge_points([(g.geometry().asPoint().x(), g.geometry().asPoint().y(), self._area(g) or 0.0) for g in group])
+        fields = self.layer.fields(); prov = self.layer.dataProvider()
+        m = QgsFeature(fields); m.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(x, y)))
+        m["plant_id"] = min(g["plant_id"] for g in group if g["plant_id"] is not None); m["status"] = STATUS_PLANT
+        if fields.indexOf("on_row") >= 0: m["on_row"] = group[0]["on_row"] if group[0]["on_row"] is not None else 1
+        if fields.indexOf("area_cm2") >= 0 and a: m["area_cm2"] = a
+        if fields.indexOf("split_of") >= 0: m["split_of"] = 0
+        old = [QgsFeature(g) for g in group]
+        ok, out = prov.addFeatures([m])
+        if not ok: self.changed.emit("Could not write the merged point."); return
+        prov.deleteFeatures([g.id() for g in group])
+        self.undo.append(("split", (old, [o.id() for o in out])))
+        self._changed("{} points merged into one plant.".format(len(group)))
+
     def _split_into(self, f, n):
         from .plant_count import split_group
         path = self.layer.source().split("|")[0]; p = f.geometry().asPoint()
-        area = f["area_cm2"] if self.layer.fields().indexOf("area_cm2") >= 0 else None
+        group = self._siblings(f)          # splitting a split point again: the whole group is split anew
+        area = sum(self._area(g) or 0.0 for g in group) if len(group) > 1 else self._area(f)
         try:
             parts = split_group(path, p.x(), p.y(), n, area)
         except Exception as exc:
@@ -97,11 +135,12 @@ class PlantEditTool(QgsMapTool):
             g["plant_id"] = next_id + k; g["status"] = STATUS_SPLIT
             if fields.indexOf("on_row") >= 0: g["on_row"] = f["on_row"] if f["on_row"] is not None else 1
             if fields.indexOf("area_cm2") >= 0: g["area_cm2"] = a
+            if fields.indexOf("split_of") >= 0: g["split_of"] = (f["split_of"] or f["plant_id"]) if len(group) > 1 else f["plant_id"]
             new.append(g)
-        old = QgsFeature(f)
+        old = [QgsFeature(g) for g in group]
         ok, out = prov.addFeatures(new)
         if not ok: self.changed.emit("Could not write the new points."); return
-        prov.deleteFeatures([f.id()])
+        prov.deleteFeatures([g.id() for g in group])
         self.undo.append(("split", (old, [o.id() for o in out])))
         self._changed("Split into {} plants (each counted).".format(len(out)))
 
@@ -109,7 +148,8 @@ class PlantEditTool(QgsMapTool):
         if not self.undo: return False
         kind, data = self.undo.pop(); prov = self.layer.dataProvider()
         if kind == "split":
-            prov.deleteFeatures(data[1]); prov.addFeatures([data[0]]); self._changed("Last change undone."); return True
+            old = data[0] if isinstance(data[0], list) else [data[0]]
+            prov.deleteFeatures(data[1]); prov.addFeatures(old); self._changed("Last change undone."); return True
         if kind == "add": prov.deleteFeatures([data])
         elif kind == "remove": prov.addFeatures([data])
         else: prov.changeAttributeValues({data[0]: {self.layer.fields().indexOf("status"): data[1]}})

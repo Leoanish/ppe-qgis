@@ -263,7 +263,8 @@ def count_plants(cfg, progress=None, log=None):
     if os.path.exists(gpkg): gdal.GetDriverByName("GPKG").Delete(gpkg)
     out = ogr.GetDriverByName("GPKG").CreateDataSource(gpkg)
     pl = out.CreateLayer("plants", srs if wkt else None, ogr.wkbPoint)
-    for name, kind in (("plant_id", ogr.OFTInteger), ("area_cm2" if to_cm2 else "area_px", ogr.OFTReal), ("status", ogr.OFTString), ("on_row", ogr.OFTInteger)):
+    for name, kind in (("plant_id", ogr.OFTInteger), ("area_cm2" if to_cm2 else "area_px", ogr.OFTReal), ("status", ogr.OFTString), ("on_row", ogr.OFTInteger),
+                       ("split_of", ogr.OFTInteger)):
         pl.CreateField(ogr.FieldDefn(name, kind))
     pl.StartTransaction()
     for i in range(n_all):
@@ -284,6 +285,9 @@ def count_plants(cfg, progress=None, log=None):
             "count_area": os.path.join(out_dir, "ppe_count_area.gpkg") if area_used else ""}
     with open(os.path.join(out_dir, "ppe_count_info.json"), "w", encoding="utf-8") as fh:
         json.dump(info, fh, indent=1)
+    if cfg.get("auto_split", True) and rows_info and rows_info.get("rows"):
+        progress(88, "Splitting touching plants by the plant spacing")
+        auto_split(gpkg, cfg.get("plant_spacing_cm"), log)
     if cfg.get("aoi_path"): progress(92, "Counting per plot")
     summary = summarize_points(gpkg, log)
     summary["seconds"] = time.time() - started
@@ -313,19 +317,21 @@ def summarize_points(points_path, log=None):
         info = {}
     pts, wkt = read_points(points_path)
     counted = [(x, y, st) for x, y, st in pts if st != STATUS_WEED]
-    n = {k: sum(1 for p in pts if p[2] == k) for k in (STATUS_PLANT, STATUS_CHECK, STATUS_ADDED, STATUS_WEED, "split")}
+    n = {k: sum(1 for p in pts if p[2] == k) for k in (STATUS_PLANT, STATUS_CHECK, STATUS_ADDED, STATUS_WEED, "split", "auto split")}
     plants = len(counted); field_m2 = info.get("field_m2")
     summary = {"plants": plants, "flagged_big": n[STATUS_CHECK], "added_by_user": n[STATUS_ADDED], "weeds_not_counted": n[STATUS_WEED],
-               "plain_plants": n[STATUS_PLANT], "split_by_user": n["split"],
+               "plain_plants": n[STATUS_PLANT], "split_by_user": n["split"], "split_by_ppe": n["auto split"],
+               "plant_spacing_cm": info.get("plant_spacing_cm"), "auto_split": info.get("auto_split"),
                "left_out_between_rows": n[STATUS_WEED], "no_core_left_out": info.get("no_core_left_out"),
                "median_plant_cm2": info.get("median_plant_cm2"), "min_plant_cm2": info.get("min_plant_cm2"),
                "plants_per_m2": (plants / field_m2) if field_m2 else None, "rows": info.get("rows"), "points_path": points_path, "note": EARLY_NOTE}
     path = os.path.join(out_dir, "ppe_count_summary.csv")
     with open(path, "w", newline="") as fh:
-        w = csv.writer(fh); w.writerow(["plants_counted", "of_which_plant", "of_which_check_counted_as_one", "of_which_split_by_user", "of_which_added_by_user",
-                                        "weeds_not_counted", "median_plant_cm2", "smallest_plant_cm2", "plants_per_m2", "note"])
-        w.writerow([plants, n[STATUS_PLANT], n[STATUS_CHECK], n["split"], n[STATUS_ADDED], n[STATUS_WEED], _r(summary["median_plant_cm2"]),
-                    _r(summary["min_plant_cm2"]), _r(summary["plants_per_m2"], 3), EARLY_NOTE])
+        w = csv.writer(fh); w.writerow(["plants_counted", "of_which_plant", "of_which_check_counted_as_one", "of_which_split_by_ppe", "of_which_split_by_user",
+                                        "of_which_added_by_user", "weeds_not_counted", "median_plant_cm2", "smallest_plant_cm2", "plant_spacing_cm",
+                                        "plants_per_m2", "note"])
+        w.writerow([plants, n[STATUS_PLANT], n[STATUS_CHECK], n["auto split"], n["split"], n[STATUS_ADDED], n[STATUS_WEED], _r(summary["median_plant_cm2"]),
+                    _r(summary["min_plant_cm2"]), _r(info.get("plant_spacing_cm"), 1), _r(summary["plants_per_m2"], 3), EARLY_NOTE])
     summary["summary_path"] = path
     if info.get("aoi_path") and os.path.isfile(info["aoi_path"]):
         xs = np.array([p[0] for p in counted]); ys = np.array([p[1] for p in counted]); big = np.array([p[2] == STATUS_CHECK for p in counted])
@@ -423,7 +429,11 @@ def group_at(points_path, x, y, area_cm2=None):
     pixels connected through gaps up to the join distance. Returns (mask window bool array, x0, y0,
     geotransform, pixel_cm, info)."""
     with open(os.path.join(os.path.dirname(points_path), "ppe_count_info.json"), encoding="utf-8") as fh: info = json.load(fh)
-    ds = safe_gdal_open(info["mask_path"]); gt = ds.GetGeoTransform(); W, H = ds.RasterXSize, ds.RasterYSize
+    return _group_window(info, x, y, area_cm2)
+
+
+def _group_window(info, x, y, area_cm2=None, ds=None):
+    ds = ds or safe_gdal_open(info["mask_path"]); gt = ds.GetGeoTransform(); W, H = ds.RasterXSize, ds.RasterYSize
     pixel_cm = 100.0 * math.sqrt(abs(gt[1] * gt[5])) if _pixel_area_m2(ds) else 1.0
     a_px = (area_cm2 / pixel_cm ** 2) if area_cm2 else 400.0
     half = int(min(2000, max(40, 3.0 * math.sqrt(a_px / math.pi))))
@@ -456,6 +466,10 @@ def split_group(points_path, x, y, n, area_cm2=None):
     others; every pixel then goes to its nearest centre and the centres move to the middle of their
     pixels (a few k-means steps). Returns [(x, y, area_cm2)] in map coordinates, or [] if nothing found."""
     g = group_at(points_path, x, y, area_cm2)
+    return _split_window(g, n)
+
+
+def _split_window(g, n):
     if g is None or n < 2: return []
     m, x0, y0, gt, pixel_cm, info = g
     py, px = np.nonzero(m)
@@ -464,6 +478,7 @@ def split_group(points_path, x, y, n, area_cm2=None):
     dist = gdal.GetDriverByName("MEM").Create("", m.shape[1], m.shape[0], 1, gdal.GDT_Float32)
     gdal.ComputeProximity(mem.GetRasterBand(1), dist.GetRasterBand(1), ["VALUES=1", "DISTUNITS=PIXEL"])
     d = dist.GetRasterBand(1).ReadAsArray()[py, px]
+    pts = np.column_stack([px, py]).astype(np.float64)
     sep = math.sqrt(len(px) / n / math.pi)          # a lobe's radius if the n plants were equal
     order = np.argsort(-d); seeds = []
     for i in order:                                 # deepest pixels first, kept apart
@@ -471,7 +486,7 @@ def split_group(points_path, x, y, n, area_cm2=None):
         if len(seeds) == n: break
     while len(seeds) < n:                           # not enough separate lobes: farthest point from the chosen ones
         dd = np.min([(px - px[j]) ** 2 + (py - py[j]) ** 2 for j in seeds], axis=0); seeds.append(int(np.argmax(dd)))
-    c = np.array([[px[j], py[j]] for j in seeds], np.float64); pts = np.column_stack([px, py]).astype(np.float64)
+    c = np.array([[px[j], py[j]] for j in seeds], np.float64)
     for _ in range(10):
         lab = np.argmin(((pts[:, None, :] - c[None, :, :]) ** 2).sum(2), 1)
         new = np.array([pts[lab == k].mean(0) if (lab == k).any() else c[k] for k in range(n)])
@@ -485,3 +500,129 @@ def split_group(points_path, x, y, n, area_cm2=None):
         cx, cy = pts[sel].mean(0) + (x0 + 0.5, y0 + 0.5)
         out.append((gt[0] + cx * gt[1] + cy * gt[2], gt[3] + cx * gt[4] + cy * gt[5], float(sel.sum()) * pixel_cm ** 2))
     return out
+
+
+# ---- 4.7: split touching plants by the plant spacing in the row ------------------------------------------
+# A 'check' group's length along the row over the in-row plant spacing is close to the number of plants in
+# it. On PhenoBench (61 check groups; spacing measured from many plants per date, as in an orthomosaic)
+# round(length / spacing) cut the wrong plants in check groups from 51 to 25 (34 to 10 in mid early
+# season; 17 to 15 once canopies close). From a single 1 m image the spacing was too rough to help, so PPE
+# measures it only from enough gaps, or the user types it. The n points are placed as in ✂ Split (deepest
+# pixels, then k-means): true plants with exactly one point went from 33 to 63 % (starting the centres
+# evenly along the row gave 59 %).
+STATUS_AUTO = "auto split"          # split by PPE from the plant spacing; counted; the user can merge or split again
+SPACING_MIN_GAPS = 20               # plant spacing is measured only from at least this many gaps between plants
+
+
+def _ensure_split_field(path):
+    ds = ogr.Open(path, 1); lay = ds.GetLayer()
+    if lay.GetLayerDefn().GetFieldIndex("split_of") < 0:
+        lay.CreateField(ogr.FieldDefn("split_of", ogr.OFTInteger))
+    ds = None
+
+
+def plant_spacing(px, py, angle_deg, row_spacing_px, tile_px):
+    """In-row plant spacing (pixels) from plant centres in pixel coordinates: plants are grouped into rows
+    per 4 m tile (by the gaps across the rows), the gaps between neighbours along each row are measured,
+    and gaps that span missing plants are divided by the number of steps. Returns (spacing, gaps used) or
+    (None, gaps) when there are fewer than SPACING_MIN_GAPS gaps."""
+    px = np.asarray(px, float); py = np.asarray(py, float)
+    if len(px) < 3: return None, 0
+    t = math.radians(angle_deg); d = px * math.cos(t) + py * math.sin(t); u = -px * math.sin(t) + py * math.cos(t)
+    gaps = []
+    tid = np.floor(px / tile_px) * 1000003 + np.floor(py / tile_px)
+    for k in np.unique(tid):
+        sel = np.nonzero(tid == k)[0]
+        if len(sel) < 2: continue
+        o = sel[np.argsort(d[sel])]; start = 0
+        for i in range(1, len(o) + 1):
+            if i == len(o) or d[o[i]] - d[o[i - 1]] > 0.5 * row_spacing_px:
+                row = np.sort(u[o[start:i]])
+                if len(row) > 1: gaps.extend(np.diff(row).tolist())
+                start = i
+    g = np.array([v for v in gaps if v > 0])
+    if len(g) < SPACING_MIN_GAPS: return None, len(g)
+    s0 = float(np.median(g)); steps = np.maximum(1, np.round(g / s0))
+    return float(np.median(g / steps)), len(g)
+
+
+def _read_features(path):
+    ds = ogr.Open(path); lay = ds.GetLayer(); out = []
+    names = [lay.GetLayerDefn().GetFieldDefn(i).GetName() for i in range(lay.GetLayerDefn().GetFieldCount())]
+    for f in lay:
+        g = f.GetGeometryRef()
+        if g is None: continue
+        r = {k: f.GetField(k) for k in names}; r["fid"] = f.GetFID(); r["x"] = g.GetX(); r["y"] = g.GetY(); out.append(r)
+    return out
+
+
+def auto_split(points_path, plant_spacing_cm=None, log=None):
+    """Split every 'check' group into round(length along the row / plant spacing) plants (status
+    'auto split', field split_of = the original plant_id). Needs rows (count with rows on); the spacing is
+    measured from the plants on the rows unless given. Groups that come out as one plant stay 'check'.
+    Writes plant_spacing_cm into ppe_count_info.json. Returns a dict with what was done."""
+    log = log or (lambda m: None); out_dir = os.path.dirname(points_path)
+    info_path = os.path.join(out_dir, "ppe_count_info.json")
+    with open(info_path, encoding="utf-8") as fh: info = json.load(fh)
+    rows = info.get("rows") or {}
+    res = {"groups_split": 0, "points_added": 0, "plant_spacing_cm": None, "spacing_from": ""}
+    if not rows.get("rows") or rows.get("angle_deg") is None:
+        res["note"] = "no crop rows found, so touching plants were not split by spacing (split them with ✂ Split)"
+        info["auto_split"] = res
+        with open(info_path, "w", encoding="utf-8") as fh: json.dump(info, fh, indent=1)
+        return res
+    ds = safe_gdal_open(info["mask_path"]); gt = ds.GetGeoTransform()
+    pixel_cm = 100.0 * math.sqrt(abs(gt[1] * gt[5])); a0 = float(rows["angle_deg"])
+    feats = _read_features(points_path)
+    if plant_spacing_cm:
+        s_px = float(plant_spacing_cm) / pixel_cm; res["spacing_from"] = "given"
+    else:
+        pl = [f for f in feats if f.get("status") == STATUS_PLANT]
+        s_px, n_gaps = plant_spacing([(f["x"] - gt[0]) / gt[1] for f in pl], [(f["y"] - gt[3]) / gt[5] for f in pl], a0,
+                                     float(rows["spacing_cm"]) / pixel_cm, ROW_TILE_CM / pixel_cm)
+        if s_px is None:
+            res["note"] = "too few plants in the rows to measure the plant spacing ({} gaps, {} needed); type the spacing to split touching plants".format(n_gaps, SPACING_MIN_GAPS)
+            info["auto_split"] = res
+            with open(info_path, "w", encoding="utf-8") as fh: json.dump(info, fh, indent=1)
+            return res
+        res["spacing_from"] = "measured from {} gaps".format(n_gaps)
+    res["plant_spacing_cm"] = s_px * pixel_cm
+    checks = [f for f in feats if f.get("status") == STATUS_CHECK]
+    _ensure_split_field(points_path)
+    out = ogr.Open(points_path, 1); lay = out.GetLayer()
+    next_id = max([f.get("plant_id") or 0 for f in feats] or [0]) + 1
+    area_field = "area_cm2" if lay.GetLayerDefn().GetFieldIndex("area_cm2") >= 0 else "area_px"
+    t = math.radians(a0)
+    for f in checks:
+        g = _group_window(info, f["x"], f["y"], f.get(area_field) if area_field == "area_cm2" else None, ds)
+        if g is None: continue
+        m = g[0]; yy, xx = np.nonzero(m)
+        if len(xx) < 2: continue
+        u = -xx * math.sin(t) + yy * math.cos(t)
+        length = float(np.percentile(u, 98) - np.percentile(u, 2))
+        n = int(round(length / s_px))
+        if n < 2: continue
+        parts = _split_window(g, n)
+        if len(parts) < 2: continue
+        lay.DeleteFeature(f["fid"])
+        for x, y, a in parts:
+            nf = ogr.Feature(lay.GetLayerDefn()); p = ogr.Geometry(ogr.wkbPoint); p.AddPoint_2D(float(x), float(y)); nf.SetGeometry(p)
+            nf.SetField("plant_id", next_id); next_id += 1
+            nf.SetField(area_field, float(a) if area_field == "area_cm2" else float(a) / pixel_cm ** 2)
+            nf.SetField("status", STATUS_AUTO); nf.SetField("on_row", int(f.get("on_row") if f.get("on_row") is not None else 1))
+            nf.SetField("split_of", int(f["plant_id"])); lay.CreateFeature(nf)
+        res["groups_split"] += 1; res["points_added"] += len(parts) - 1
+    out = None
+    res["note"] = "{} touching group{} split by the plant spacing ({:.1f} cm, {}): {} more plant{}; check them on the map".format(
+        res["groups_split"], "" if res["groups_split"] == 1 else "s", res["plant_spacing_cm"], res["spacing_from"],
+        res["points_added"], "" if res["points_added"] == 1 else "s")
+    log(res["note"] + ".")
+    info["auto_split"] = res; info["plant_spacing_cm"] = res["plant_spacing_cm"]
+    with open(info_path, "w", encoding="utf-8") as fh: json.dump(info, fh, indent=1)
+    return res
+
+
+def merge_points(points):
+    """One point for a list of points [(x, y, area)]: the area-weighted middle and the summed area."""
+    a = np.array([max(p[2] or 0.0, 1e-9) for p in points]); x = np.array([p[0] for p in points]); y = np.array([p[1] for p in points])
+    return float((x * a).sum() / a.sum()), float((y * a).sum() / a.sum()), float(sum(p[2] or 0.0 for p in points))
