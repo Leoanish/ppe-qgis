@@ -814,7 +814,8 @@ class PPEDockWidget(QDockWidget):
         old = getattr(self, "_goal", None)
         self._apply_goal(self.goal.currentData()); self.settings.setValue("ppe_qgis/goal", self._goal); self._refresh_goal_buttons()
         if old != self._goal:
-            if old == "labels": self._label_edit_done(); self._label_area_end()
+            if old == "labels": self._label_edit_done()
+            if old in getattr(self, "_areas", {}): self._area_end(old)
             if old == "count" and getattr(self, "_plant_tool", None) is not None: self._plant_edit_done()
             try:
                 from .layer_utils import switch_goal_layers
@@ -846,6 +847,7 @@ class PPEDockWidget(QDockWidget):
                                         "are marked as possible weeds (grey) and not counted; switch any back with Plant ↔ weed. "
                                         "Where rows are not clear (closed canopy, no rows), nothing is marked.")
         form.addRow("", self.count_find_rows)
+        form.addRow("Area", self._area_widget("count", "Plants counted only inside ", "Whole image. Draw an area (or choose a field boundary) to count only there."))
         self.count_plots = QLineEdit(); self.count_plots.setPlaceholderText("Optional: plot polygons for counts per plot")
         form.addRow("Plot file", self._path_row(self.count_plots))
         self.count_plot_id = QLineEdit(); self.count_plot_id.setPlaceholderText("Attribute with the plot ID (empty: feature ID)")
@@ -948,11 +950,13 @@ class PPEDockWidget(QDockWidget):
         self.plant_edit_status.setText("Check the points on the map; correct any with the buttons above.")
 
     def _count_settings(self):
-        return {"action": "count", "min_plant_cm2": self.count_min.value(), "join_cm": self.count_join.value(), "find_rows": self.count_find_rows.isChecked(),
-                "aoi_path": self.count_plots.text().strip(), "aoi_id_field": self.count_plot_id.text().strip()}
+        return dict({"action": "count", "min_plant_cm2": self.count_min.value(), "join_cm": self.count_join.value(), "find_rows": self.count_find_rows.isChecked(),
+                     "aoi_path": self.count_plots.text().strip(), "aoi_id_field": self.count_plot_id.text().strip()}, **(self._area_config("count") or {}))
 
     def _emit_count(self, batch):
         cfg = self._count_settings()
+        if self._area_config("count") is None:
+            QMessageBox.warning(self, "PPE count", "The area file does not exist."); return
         if cfg["aoi_path"] and not os.path.isfile(cfg["aoi_path"]):
             QMessageBox.warning(self, "PPE count", "The plot file does not exist."); return
         if batch:
@@ -1075,18 +1079,7 @@ class PPEDockWidget(QDockWidget):
         self.label_share = self._plain_spin(QSpinBox()); self.label_share.setRange(5, 95); self.label_share.setValue(50); self.label_share.setSuffix(" % plant")
         self.label_share.setToolTip("Share of plant points; the rest are soil. 50 % gives the model both classes equally.")
         form.addRow("Plant / soil", self.label_share)
-        area = QWidget(); ar = QVBoxLayout(area); ar.setContentsMargins(0, 0, 0, 0); ar.setSpacing(4)
-        row = QHBoxLayout(); row.setSpacing(6)
-        self.label_draw_button = QPushButton("✎ Draw area"); self.label_draw_button.setProperty("secondary", True)
-        self.label_draw_button.setToolTip("Click the corners of an area on the map, right-click to finish. Draw several to add them together.")
-        self.label_clear_area_button = QPushButton("Clear"); self.label_clear_area_button.setProperty("secondary", True)
-        row.addWidget(self.label_draw_button, 1); row.addWidget(self.label_clear_area_button); ar.addLayout(row)
-        self.label_area_file = QLineEdit(); self.label_area_file.setPlaceholderText("or a polygon file (field boundary, plots…)")
-        ar.addWidget(self._path_row(self.label_area_file))
-        self.label_area_status = QLabel("Whole image. Draw an area to leave out field edges, headlands or weedy corners."); self.label_area_status.setObjectName("ppeHint"); self.label_area_status.setWordWrap(True)
-        ar.addWidget(self.label_area_status)
-        form.addRow("Area", area)
-        self._label_area = []
+        form.addRow("Area", self._area_widget("labels", "Points and buffers only inside ", "Whole image. Draw an area to leave out field edges, headlands or weedy corners."))
         buf = QWidget(); bl = QVBoxLayout(buf); bl.setContentsMargins(0, 0, 0, 0); bl.setSpacing(2)
         row = QHBoxLayout(); row.setSpacing(8)
         self.label_radius = QSlider(Qt.Horizontal); self.label_radius.setRange(0, 100); self.label_radius.setSingleStep(1); self.label_radius.setPageStep(2)
@@ -1149,9 +1142,6 @@ class PPEDockWidget(QDockWidget):
         out.setWordWrap(True); out.setObjectName("ppeHint"); eb.addWidget(out)
         layout.addWidget(exp)
         self.label_create_button.clicked.connect(self._emit_labels_create)
-        self.label_draw_button.clicked.connect(self._label_draw_area)
-        self.label_clear_area_button.clicked.connect(self._label_clear_area)
-        self.label_area_file.textChanged.connect(self._label_area_text)
         self.label_write_button.clicked.connect(self._emit_labels_write)
         self.label_radius.valueChanged.connect(self._label_preview_update)
         self.label_cap.valueChanged.connect(self._label_preview_update)
@@ -1172,53 +1162,81 @@ class PPEDockWidget(QDockWidget):
             if QMessageBox.question(self, "PPE labels", "Label points were already created in this output folder (maybe with your checks). Replace them with new points?",
                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes: return
         self._label_edit_done()
-        area_file = self.label_area_file.text().strip()
-        if area_file and not os.path.isfile(area_file): QMessageBox.warning(self, "PPE labels", "The area file does not exist."); return
+        area = self._area_config("labels")
+        if area is None: QMessageBox.warning(self, "PPE labels", "The area file does not exist."); return
         self._label_info = None; self.label_write_status.setText(""); self.label_preview.setText("")
         self.labels_requested.emit({"action": "labels_create", "labels_dir": out,
                                     "n_points": self.label_count.value(), "plant_share": self.label_share.value() / 100.0,
-                                    "area_wkts": [g.asWkt() for g in self._label_area], "area_path": area_file})
+                                    **area})
 
-    # the area the labels may come from (4.6)
-    def _label_draw_area(self):
+    # ---- an area drawn on the map or a polygon file (labels 4.6, plant counter 4.6.4) --------------
+    AREA_ROLES = {"labels": ("label_area", "PPE · Label area"), "count": ("count_area", "PPE · Count area")}
+
+    def _area_widget(self, key, inside_text, whole_text):
+        area = QWidget(); ar = QVBoxLayout(area); ar.setContentsMargins(0, 0, 0, 0); ar.setSpacing(4)
+        row = QHBoxLayout(); row.setSpacing(6)
+        draw = QPushButton("✎ Draw area"); draw.setProperty("secondary", True)
+        draw.setToolTip("Click the corners of an area on the map, right-click to finish. Draw several to add them together.")
+        clear = QPushButton("Clear"); clear.setProperty("secondary", True)
+        row.addWidget(draw, 1); row.addWidget(clear); ar.addLayout(row)
+        f = QLineEdit(); f.setPlaceholderText("or a polygon file (field boundary, plots…)"); ar.addWidget(self._path_row(f))
+        status = QLabel(whole_text); status.setObjectName("ppeHint"); status.setWordWrap(True); ar.addWidget(status)
+        if not hasattr(self, "_areas"): self._areas = {}
+        self._areas[key] = {"geoms": [], "crs": None, "tool": None, "prev": None, "draw": draw, "file": f, "status": status,
+                            "inside": inside_text, "whole": whole_text}
+        draw.clicked.connect(lambda: self._area_draw(key)); clear.clicked.connect(lambda: self._area_clear(key))
+        f.textChanged.connect(lambda *_: self._area_text(key))
+        return area
+
+    def _area_draw(self, key):
         if self._busy: self._busy_warning(); return
-        if getattr(self, "_label_area_tool", None) is not None: return
-        self._label_edit_done()
-        canvas = self.iface.mapCanvas(); self._label_area_prev = canvas.mapTool()
-        tool = PolygonDrawTool(canvas); tool.finished.connect(self._label_area_drawn); tool.cancelled.connect(lambda: self._label_area_end())
-        self._label_area_tool = tool; canvas.setMapTool(tool); canvas.setFocus()
-        self.label_draw_button.setText("● drawing…")
-        self.label_area_status.setText("Click the corners on the map; right-click (or double-click) to finish, Esc to cancel, Backspace undoes a corner.")
+        a = self._areas[key]
+        if a["tool"] is not None: return
+        if key == "labels": self._label_edit_done()
+        elif getattr(self, "_plant_tool", None) is not None: self._plant_edit_done()
+        canvas = self.iface.mapCanvas(); a["prev"] = canvas.mapTool()
+        tool = PolygonDrawTool(canvas); tool.finished.connect(lambda g: self._area_drawn(key, g)); tool.cancelled.connect(lambda: self._area_end(key))
+        a["tool"] = tool; canvas.setMapTool(tool); canvas.setFocus()
+        a["draw"].setText("● drawing…")
+        a["status"].setText("Click the corners on the map; right-click (or double-click) to finish, Esc to cancel, Backspace undoes a corner.")
 
-    def _label_area_drawn(self, geometry):
+    def _area_drawn(self, key, geometry):
+        a = self._areas[key]
         copy, crs = to_crs(geometry, self.iface.mapCanvas().mapSettings().destinationCrs(), self._image_wkt())
-        self._label_area.append(copy); self._label_area_crs = crs
-        self._label_area_end(); self._label_area_show()
+        a["geoms"].append(copy); a["crs"] = crs
+        self._area_end(key); self._area_show(key)
 
-    def _label_area_end(self):
-        tool = getattr(self, "_label_area_tool", None); self._label_area_tool = None
-        canvas = self.iface.mapCanvas()
-        if tool is not None and canvas.mapTool() is tool and not getattr(tool, "switched_away", False):
-            prev = getattr(self, "_label_area_prev", None)
-            if prev is not None: canvas.setMapTool(prev)
+    def _area_end(self, key):
+        a = self._areas.get(key)
+        if a is None: return
+        tool = a["tool"]; a["tool"] = None
+        canvas = self.iface.mapCanvas() if self.iface is not None else None
+        if tool is not None and canvas is not None and canvas.mapTool() is tool and not getattr(tool, "switched_away", False):
+            if a["prev"] is not None: canvas.setMapTool(a["prev"])
             else: self.iface.actionPan().trigger()
-        self.label_draw_button.setText("✎ Draw area"); self._label_area_text()
+        a["draw"].setText("✎ Draw area"); self._area_text(key)
 
-    def _label_clear_area(self):
-        self._label_area = []; self.label_area_file.clear(); self._label_area_show(); self._label_area_text()
+    def _area_clear(self, key):
+        a = self._areas[key]; a["geoms"] = []; a["file"].clear(); self._area_show(key); self._area_text(key)
 
-    def _label_area_show(self):
+    def _area_show(self, key):
         try:
-            from .layer_utils import show_label_area
-            show_label_area(self._label_area, getattr(self, "_label_area_crs", None))
+            from .layer_utils import show_area_layer
+            role, name = self.AREA_ROLES[key]; a = self._areas[key]
+            show_area_layer(a["geoms"], a["crs"], role, name)
         except Exception as err:
-            self.append_log("Could not show the label area: {}".format(err))
+            self.append_log("Could not show the area: {}".format(err))
 
-    def _label_area_text(self, *_):
-        n = len(self._label_area); f = self.label_area_file.text().strip()
+    def _area_text(self, key):
+        a = self._areas[key]; n = len(a["geoms"]); f = a["file"].text().strip()
         parts = (["{} drawn area{}".format(n, "s" if n > 1 else "")] if n else []) + (["the polygons in {}".format(os.path.basename(f))] if f else [])
-        self.label_area_status.setText("Points and buffers only inside " + " + ".join(parts) + "." if parts
-                                       else "Whole image. Draw an area to leave out field edges, headlands or weedy corners.")
+        a["status"].setText(a["inside"] + " + ".join(parts) + "." if parts else a["whole"])
+
+    def _area_config(self, key):
+        """area_wkts / area_path for a job, or None when the chosen file is missing."""
+        a = self._areas[key]; f = a["file"].text().strip()
+        if f and not os.path.isfile(f): return None
+        return {"area_wkts": [g.asWkt() for g in a["geoms"]], "area_path": f}
 
     def _emit_labels_write(self):
         info = getattr(self, "_label_info", None)

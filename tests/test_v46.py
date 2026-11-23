@@ -131,5 +131,19 @@ class CreateAndBuffer(unittest.TestCase):
         self.assertEqual(len(read_points(os.path.join(exp, "ppe_labels.gpkg"))), len(read_points(self.info["points_path"])))
 
 
+    def test_plant_counter_counts_only_inside_the_area(self):
+        from ppe_qgis.plant_count import count_plants
+        whole = count_plants({"mask_path": self.mask, "vote_path": self.vote, "output_dir": os.path.join(self.tmp, "count_all"), "min_plant_cm2": 0.05})
+        x0, y0, px = 500000, 3500000, 0.01
+        wkt = "POLYGON(({a} {b},{c} {b},{c} {d},{a} {d},{a} {b}))".format(a=x0, b=y0, c=x0 + 120 * px, d=y0 - 240 * px)
+        half = count_plants({"mask_path": self.mask, "vote_path": self.vote, "output_dir": os.path.join(self.tmp, "count_half"), "min_plant_cm2": 0.05,
+                             "area_wkts": [wkt]})
+        self.assertGreater(whole["plants"], 0); self.assertLess(half["plants"], whole["plants"]); self.assertGreater(half["plants"], 0)
+        ds = ogr.Open(half["points_path"]); xs = [f.GetGeometryRef().GetX() for f in ds.GetLayer()]
+        self.assertTrue(all(x <= x0 + 120 * px + 0.07 for x in xs))          # a plant cut by the edge keeps its centre near it
+        self.assertTrue(os.path.isfile(os.path.join(self.tmp, "count_half", "ppe_count_area.gpkg")))
+        self.assertAlmostEqual(half["plants_per_m2"] * (1.2 * 2.4), half["plants"], delta=0.5)   # per m² of the area, not of the image
+
+
 if __name__ == "__main__":
     unittest.main()

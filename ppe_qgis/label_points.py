@@ -90,15 +90,15 @@ class _Rasters:
         return p[sl], s[sl]
 
 
-def _area_raster(cfg, out_dir):
+def _area_raster(cfg, out_dir, stem="ppe_labels_area"):
     """The chosen area as a raster aligned with the mask (1 inside), or '' for the whole image.
     cfg area_wkts: polygons in the image CRS (drawn on the map), or area_path: a polygon file in any CRS.
-    The polygons are also kept as ppe_labels_area.gpkg."""
+    The polygons are also kept as <stem>.gpkg."""
     wkts = [w for w in (cfg.get("area_wkts") or []) if w]; src = cfg.get("area_path") or ""
-    raster = os.path.join(out_dir, "ppe_labels_area.tif"); vec = os.path.join(out_dir, "ppe_labels_area.gpkg")
-    for old in (raster, vec):
-        if os.path.exists(old): os.remove(old)
+    raster = os.path.join(out_dir, stem + ".tif"); vec = os.path.join(out_dir, stem + ".gpkg")
+    if os.path.exists(raster): os.remove(raster)
     if not wkts and not src: return ""
+    if os.path.exists(vec): gdal.GetDriverByName("GPKG").Delete(vec)
     mask = safe_gdal_open(cfg["mask_path"]); wkt = mask.GetProjection(); srs = osr.SpatialReference(); srs.ImportFromWkt(wkt)
     srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
     geoms = [ogr.CreateGeometryFromWkt(w) for w in wkts]

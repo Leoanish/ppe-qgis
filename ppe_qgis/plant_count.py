@@ -215,6 +215,10 @@ def count_plants(cfg, progress=None, log=None):
     """
     progress = progress or (lambda p, m: None); log = log or (lambda m: None); started = time.time()
     out_dir = cfg["output_dir"]; os.makedirs(out_dir, exist_ok=True)
+    area_used = bool(cfg.get("area_wkts") or cfg.get("area_path"))
+    if area_used:                       # 4.6.4: count only inside the area (the mask outside it becomes no data)
+        progress(2, "Cutting the mask to the area")
+        cfg = dict(cfg, mask_path=_mask_in_area(cfg, out_dir))
     progress(5, "Reading the plant mask")
     probe = safe_gdal_open(cfg["mask_path"])
     if probe is None: raise ValueError("The finalized plant mask is missing or unreadable.")
@@ -275,7 +279,8 @@ def count_plants(cfg, progress=None, log=None):
     info = {"mask_path": cfg["mask_path"], "field_m2": field_m2, "median_plant_cm2": (median * to_cm2) if to_cm2 else None,
             "min_plant_cm2": min_cm2 if pixel_m2 else None, "join_cm": join_cm, "rows": rows_info,
             "no_core_left_out": no_core if core is not None else None,
-            "aoi_path": cfg.get("aoi_path") or "", "aoi_layer": cfg.get("aoi_layer") or "", "aoi_id_field": cfg.get("aoi_id_field") or ""}
+            "aoi_path": cfg.get("aoi_path") or "", "aoi_layer": cfg.get("aoi_layer") or "", "aoi_id_field": cfg.get("aoi_id_field") or "",
+            "count_area": os.path.join(out_dir, "ppe_count_area.gpkg") if area_used else ""}
     with open(os.path.join(out_dir, "ppe_count_info.json"), "w", encoding="utf-8") as fh:
         json.dump(info, fh, indent=1)
     if cfg.get("aoi_path"): progress(92, "Counting per plot")
@@ -352,6 +357,24 @@ def _plot_counts(cfg, wkt, xs, ys, big, out_dir, log):
         w = csv.writer(fh); w.writerow(["plot_id", "plants", "flagged_big", "plot_area_m2", "plants_per_m2"]); w.writerows(rows)
     log("Counted plants in {} plots.".format(k))
     return {"plot_counts_path": path, "plots": k}
+
+
+def _mask_in_area(cfg, out_dir):
+    """A copy of the mask with everything outside the area set to no data (255): ppe_mask_in_area.tif.
+    The area is kept as ppe_count_area.gpkg."""
+    from .label_points import _area_raster
+    area_path = _area_raster(cfg, out_dir, "ppe_count_area")
+    src = safe_gdal_open(cfg["mask_path"]); area = gdal.Open(area_path); w, h = src.RasterXSize, src.RasterYSize
+    path = os.path.join(out_dir, "ppe_mask_in_area.tif")
+    if os.path.exists(path): os.remove(path)
+    out = gdal.GetDriverByName("GTiff").Create(path, w, h, 1, gdal.GDT_Byte, options=["COMPRESS=DEFLATE", "TILED=YES"])
+    out.SetGeoTransform(src.GetGeoTransform()); out.SetProjection(src.GetProjection()); out.GetRasterBand(1).SetNoDataValue(255)
+    for y in range(0, h, 1024):
+        n = min(1024, h - y); m = src.GetRasterBand(1).ReadAsArray(0, y, w, n); a = area.GetRasterBand(1).ReadAsArray(0, y, w, n)
+        out.GetRasterBand(1).WriteArray(np.where(a > 0, m, 255).astype(np.uint8), 0, y)
+    out.FlushCache(); out = None; area = None
+    if os.path.exists(area_path): os.remove(area_path)
+    return path
 
 
 def count_batch(cfg, progress=None, log=None):

@@ -108,7 +108,7 @@ def canopy_at(points, threshold):
 
 # Where PPE's layers go in the Layers panel. The results are layers of their own at the top level;
 # only the working layers sit in the "Plant Pixel Extractor" group. From top to bottom:
-TOP_ORDER = ("labels", "label_buffers", "label_area", "plants", "plots", "pale", "mask", "__group__", "rgb")
+TOP_ORDER = ("labels", "label_buffers", "label_area", "plants", "count_area", "plots", "pale", "mask", "__group__", "rgb")
 GROUP_ORDER = ("crops", "votes")
 
 
@@ -714,10 +714,14 @@ def show_label_buffers(path, name="PPE · Label buffers"):
 
 
 def show_label_area(geometries, crs, name="PPE · Label area"):
-    """The area the labels come from (dashed magenta outline). geometries: QgsGeometry in `crs`;
-    an empty list removes the layer."""
+    return show_area_layer(geometries, crs, "label_area", name)
+
+
+def show_area_layer(geometries, crs, role, name):
+    """An area drawn for a goal (dashed white outline, seen on true-colour and colour-infrared images): the label area or the count area.
+    geometries: QgsGeometry in `crs`; an empty list removes the layer."""
     from qgis.core import QgsFeature, QgsFillSymbol, QgsSingleSymbolRenderer, QgsVectorLayer
-    remove_role("label_area")
+    remove_role(role)
     if not geometries or crs is None:
         return None
     layer = QgsVectorLayer("MultiPolygon", name, "memory"); layer.setCrs(crs)
@@ -725,9 +729,9 @@ def show_label_area(geometries, crs, name="PPE · Label area"):
     for g in geometries:
         f = QgsFeature(); f.setGeometry(g); feats.append(f)
     layer.dataProvider().addFeatures(feats); layer.updateExtents()
-    layer.setRenderer(QgsSingleSymbolRenderer(QgsFillSymbol.createSimple({"style": "no", "outline_color": "255,0,200", "outline_width": "0.8",
+    layer.setRenderer(QgsSingleSymbolRenderer(QgsFillSymbol.createSimple({"style": "no", "outline_color": "255,255,255", "outline_width": "1.0",
                                                                           "outline_width_unit": "MM", "outline_style": "dash"})))
-    place_layer(layer, "label_area")
+    place_layer(layer, role)
     return layer
 
 
@@ -737,7 +741,7 @@ def show_label_area(geometries, crs, name="PPE · Label area"):
 # common to every goal; the vote, mask, findings, crop and plot layers to the goals with Run/Review.
 _MASK_ROLES = {"rgb", "votes", "mask", "pale", "crops"}
 GOAL_ROLES = {"mask": _MASK_ROLES | {"plots"},
-              "count": _MASK_ROLES | {"plots", "plants"},
+              "count": _MASK_ROLES | {"plots", "plants", "count_area"},
               "training": set(_MASK_ROLES),
               "labels": {"rgb", "labels", "label_buffers", "label_area"}}
 GOAL_VIS_KEY = "ppe/goal_visible/"
