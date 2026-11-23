@@ -358,20 +358,23 @@ def write_labels(cfg, progress=lambda p, m: None, log=lambda m: None, cancelled=
     """Grow each checked point into its buffer and write the labels. cfg: points_path, radius_cm,
     max_px (0 = no cap), and the info of create_points (mask, vote, findings, image).
     Writes next to the points: ppe_label_buffers.gpkg (one polygon per point), ppe_label_raster.tif
-    (1 plant, 0 soil, 255 no label), ppe_label_pixels.csv (every labelled pixel with its band values)."""
-    t0 = time.time(); work_dir = os.path.dirname(cfg["points_path"])
+    (1 plant, 0 soil, 255 no label), ppe_label_pixels.csv (every labelled pixel with its band values).
+    cfg preview=True (4.6.6, for the slider): only the buffer polygons, to ppe_label_buffers_preview.gpkg in
+    the working folder, without bands, raster or table, so the map follows the slider in a moment."""
+    t0 = time.time(); work_dir = os.path.dirname(cfg["points_path"]); preview = bool(cfg.get("preview"))
     with open(os.path.join(work_dir, "ppe_labels_info.json"), encoding="utf-8") as f: info = json.load(f)
-    out_dir = cfg.get("export_dir") or work_dir; os.makedirs(out_dir, exist_ok=True)
+    out_dir = (cfg.get("export_dir") if not preview else None) or work_dir; os.makedirs(out_dir, exist_ok=True)
     R = _Rasters(info["mask_path"], info["vote_path"], info.get("findings_path", ""), info.get("area_path", "")); pts = read_points(cfg["points_path"])
     if not pts: raise ValueError("No points with a plant or soil label in {}.".format(cfg["points_path"]))
     radius_cm = max(0.0, min(MAX_BUFFER_CM, float(cfg.get("radius_cm", 0)))); max_px = int(cfg.get("max_px", 0) or 0)
     r_px = _radius_px(R, radius_cm); gt = R.gt
     img = dict(info.get("image") or {}); img.update({k: cfg[k] for k in ("source_mode", "stacked_path", "folder_path", "folder_bands", "bands") if k in cfg})
-    e = _engine(img); bands = [b for b in ("blue", "green", "red", "re", "nir") if b in e.sources]
-    raster_path = os.path.join(out_dir, "ppe_label_raster.tif"); csv_path = os.path.join(out_dir, "ppe_label_pixels.csv")
-    poly_path = os.path.join(out_dir, "ppe_label_buffers.gpkg")
-    rast = gdal.GetDriverByName("GTiff").Create(raster_path, R.w, R.h, 1, gdal.GDT_Byte, options=["COMPRESS=DEFLATE", "TILED=YES", "SPARSE_OK=TRUE"])
-    rast.SetGeoTransform(gt); rast.SetProjection(R.wkt); rb = rast.GetRasterBand(1); rb.SetNoDataValue(255); rb.Fill(255)
+    e = None if preview else _engine(img); bands = [] if preview else [b for b in ("blue", "green", "red", "re", "nir") if b in e.sources]
+    raster_path = os.path.join(out_dir, "ppe_label_raster.tif"); csv_path = os.path.join(out_dir, "ppe_label_pixels.csv") if not preview else os.devnull
+    poly_path = os.path.join(out_dir, "ppe_label_buffers_preview.gpkg" if preview else "ppe_label_buffers.gpkg"); rb = None; rast = None
+    if not preview:
+        rast = gdal.GetDriverByName("GTiff").Create(raster_path, R.w, R.h, 1, gdal.GDT_Byte, options=["COMPRESS=DEFLATE", "TILED=YES", "SPARSE_OK=TRUE"])
+        rast.SetGeoTransform(gt); rast.SetProjection(R.wkt); rb = rast.GetRasterBand(1); rb.SetNoDataValue(255); rb.Fill(255)
     if os.path.exists(poly_path): gdal.GetDriverByName("GPKG").Delete(poly_path)
     srs = osr.SpatialReference(); srs.ImportFromWkt(R.wkt)
     pds = ogr.GetDriverByName("GPKG").CreateDataSource(poly_path); PL = pds.CreateLayer("buffers", srs, ogr.wkbMultiPolygon)
@@ -398,19 +401,24 @@ def write_labels(cfg, progress=lambda p, m: None, log=lambda m: None, cancelled=
             new = np.array([f not in taken for f in flat.tolist()], bool)
             rr, cc, flat = rr[new], cc[new], flat[new]; taken.update(flat.tolist())
             if rr.size == 0: continue
-            win = rb.ReadAsArray(x0, y0, sel.shape[1], sel.shape[0]); win[rr, cc] = p["label"]; rb.WriteArray(win, x0, y0)
-            vals = _features(e, bands, x0, y0, sel.shape[1], sel.shape[0])
-            gx = gt[0] + (cc + x0 + .5) * gt[1] + (rr + y0 + .5) * gt[2]; gy = gt[3] + (cc + x0 + .5) * gt[4] + (rr + y0 + .5) * gt[5]
-            bv = {b: vals[b][rr, cc] for b in bands}; nd = _ndvi(bv) if ndvi_col else None
-            wcsv.writerows(zip([p["id"]] * rr.size, [NAMES[p["label"]]] * rr.size, [p["label"]] * rr.size, (cc + x0).tolist(), (rr + y0).tolist(),
-                               np.round(gx, 4).tolist(), np.round(gy, 4).tolist(), *[np.round(bv[b], 6).tolist() for b in bands],
-                               *([np.round(nd, 4).tolist()] if nd is not None else [])))
+            if not preview:
+                win = rb.ReadAsArray(x0, y0, sel.shape[1], sel.shape[0]); win[rr, cc] = p["label"]; rb.WriteArray(win, x0, y0)
+                vals = _features(e, bands, x0, y0, sel.shape[1], sel.shape[0])
+                gx = gt[0] + (cc + x0 + .5) * gt[1] + (rr + y0 + .5) * gt[2]; gy = gt[3] + (cc + x0 + .5) * gt[4] + (rr + y0 + .5) * gt[5]
+                bv = {b: vals[b][rr, cc] for b in bands}; nd = _ndvi(bv) if ndvi_col else None
+                wcsv.writerows(zip([p["id"]] * rr.size, [NAMES[p["label"]]] * rr.size, [p["label"]] * rr.size, (cc + x0).tolist(), (rr + y0).tolist(),
+                                   np.round(gx, 4).tolist(), np.round(gy, 4).tolist(), *[np.round(bv[b], 6).tolist() for b in bands],
+                                   *([np.round(nd, 4).tolist()] if nd is not None else [])))
             totals[p["label"]] += int(rr.size)
             PL.CreateFeature(_polygon(PL, sel, rr, cc, x0, y0, gt, R.wkt, p, int(rr.size), int(not agrees)))
             if k % 25 == 0: progress(int(100 * (k + 1) / len(pts)), "Growing buffers")
-    pds.CommitTransaction(); pds = None; rast.FlushCache(); rast = None
+    pds.CommitTransaction(); pds = None
+    if rast is not None: rast.FlushCache(); rast = None
     result = {"points": len(pts), "plant_pixels": totals[PLANT], "soil_pixels": totals[SOIL], "radius_cm": radius_cm, "max_px": max_px,
-              "point_only": point_only, "raster_path": raster_path, "csv_path": csv_path, "buffers_path": poly_path, "seconds": round(time.time() - t0, 1)}
+              "point_only": point_only, "raster_path": raster_path, "csv_path": csv_path, "buffers_path": poly_path, "seconds": round(time.time() - t0, 1),
+              "preview": preview}
+    if preview:
+        progress(100, "Buffers shown"); return result
     if os.path.abspath(out_dir) != os.path.abspath(work_dir):          # export: the checked points (and the area) go along
         for name, layer in (("ppe_labels.gpkg", LAYER), ("ppe_labels_area.gpkg", "area")):
             src = os.path.join(work_dir, name); dst = os.path.join(out_dir, name)

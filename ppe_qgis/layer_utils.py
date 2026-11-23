@@ -669,10 +669,11 @@ def show_plant_points(path, name="PPE · Plants"):
         sym.setSizeUnit(QgsUnitTypes.RenderMillimeters)
         return sym
     renderer = QgsCategorizedSymbolRenderer("status", [
-        QgsRendererCategory("plant", dot("255,230,0"), "Plant"),
-        QgsRendererCategory("check", dot("255,140,0"), "Plant · check: may be several touching plants"),
-        QgsRendererCategory("added", dot("0,200,255"), "Plant · added by you"),
-        QgsRendererCategory("weed?", dot("170,170,170", "220,0,0"), "Weed? (between rows) · not counted")])
+        QgsRendererCategory("plant", dot("255,230,0"), "Plant · counted"),
+        QgsRendererCategory("check", dot("255,140,0"), "Check · counted as 1 plant; may be several touching plants (✂ Split)"),
+        QgsRendererCategory("split", dot("150,230,0"), "Split by you · each counted"),
+        QgsRendererCategory("added", dot("0,200,255"), "Added by you · counted"),
+        QgsRendererCategory("weed?", dot("170,170,170", "220,0,0"), "Weed? (between rows) · NOT counted")])
     layer.setRenderer(renderer)
     place_layer(layer, "plants")
     layer.triggerRepaint()
@@ -719,12 +720,22 @@ def show_label_buffers(path, name="PPE · Label buffers"):
     return layer
 
 
+AREA_RED = "225,25,25"          # every area drawn in PPE (labels, count, crops) has this solid red outline
+
+
+def area_symbol():
+    """The outline of an area drawn in PPE: solid red, 0.9 mm, no fill, the same everywhere."""
+    from qgis.core import QgsFillSymbol
+    return QgsFillSymbol.createSimple({"style": "no", "outline_color": AREA_RED, "outline_width": "0.9", "outline_width_unit": "MM",
+                                       "outline_style": "solid", "joinstyle": "round"})
+
+
 def show_label_area(geometries, crs, name="PPE · Label area"):
     return show_area_layer(geometries, crs, "label_area", name)
 
 
 def show_area_layer(geometries, crs, role, name):
-    """An area drawn for a goal (dashed white outline, seen on true-colour and colour-infrared images): the label area or the count area.
+    """An area drawn for a goal (solid red outline, as every area drawn in PPE): the label area or the count area.
     geometries: QgsGeometry in `crs`; an empty list removes the layer."""
     from qgis.core import QgsFeature, QgsFillSymbol, QgsSingleSymbolRenderer, QgsVectorLayer
     remove_role(role)
@@ -735,8 +746,7 @@ def show_area_layer(geometries, crs, role, name):
     for g in geometries:
         f = QgsFeature(); f.setGeometry(g); feats.append(f)
     layer.dataProvider().addFeatures(feats); layer.updateExtents()
-    layer.setRenderer(QgsSingleSymbolRenderer(QgsFillSymbol.createSimple({"style": "no", "outline_color": "255,255,255", "outline_width": "1.0",
-                                                                          "outline_width_unit": "MM", "outline_style": "dash"})))
+    layer.setRenderer(QgsSingleSymbolRenderer(area_symbol()))
     place_layer(layer, role)
     return layer
 

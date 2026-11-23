@@ -258,17 +258,29 @@ For many images (dates, fields or flights), PPE can run a whole folder and let y
 
 Choose **Plant counter** at the top. Run and review as usual, finalize the mask, and tab 4 **Count** counts the plants.
 
+> **For the early season only.** Count before the leaves of neighbouring plants touch or overlap. Plants whose canopies overlap merge into one patch and are counted as one, so later in the season the count is too low. The Count tab says so at the top.
+
 - **One plant** gets one point. PPE first drops specks smaller than the **smallest plant** (in cm²; set it a little below your smallest seedling). Then pieces closer than **Join leaves closer than** (1 cm by default) become one plant: the leaves of one plant often show as separate pieces because the stem or petiole between them is thin. Keep this setting smaller than the gap between neighbouring plants.
 - A plant also needs a **sure core**: at least 5 pixels where every PPE vote says plant. This keeps out soil spots that a low threshold lets in.
 - **Touching plants** become one. Groups much bigger than the larger plants of the image (over 2.5 × the 75th percentile) are drawn orange and flagged **check**; they still count as one. Splitting them by size made counts much worse in tests. Count early in the season, before plants touch.
 - **Find crop rows** (on by default): PPE finds the direction and spacing of the crop rows itself, anywhere from 15 to 150 cm apart, from the plant pixels of the mask, and fits the row positions separately in each 4 m patch so plots shifted against each other still fit. Plants between the rows are marked as possible weeds (grey with a red ring) and not counted. Where rows are not clear (closed canopy, broadcast crops), nothing is marked. On our fields it found 91 cm (Tifton, Midville) and 76 cm (IH corn), and no rows on the closed Kritis canopy.
-- **Area** (optional): **Draw area** lets you click an outline on the map (right-click to finish; draw several to add them together), or choose a polygon file such as the field boundary. Plants are counted only inside it: the mask outside the area is left out before counting, so field edges, headlands and weedy corners give no points, and plants per m² uses the area's own size. The area is shown as **PPE · Count area** (dashed white) and kept as `ppe_count/ppe_count_area.gpkg`. With **Count all batch masks** the same area is used for every image.
+- **Area** (optional): **Draw area** lets you click an outline on the map (right-click to finish; draw several to add them together), or choose a polygon file such as the field boundary. Plants are counted only inside it: the mask outside the area is left out before counting, so field edges, headlands and weedy corners give no points, and plants per m² uses the area's own size. The area is shown as **PPE · Count area** with a solid red outline (every area drawn in PPE is red, while drawing and after), and the panel shows a green **✓ Area set** and kept as `ppe_count/ppe_count_area.gpkg`. With **Count all batch masks** the same area is used for every image.
 - **Plot file** (optional): plants and plants per m² for each plot.
 - **Count all batch masks** counts every mask written on the Batch tab.
 
 How close is it? On 37 PhenoBench test images (sugar beet with weeds, every plant boxed by hand; plants smaller than 1 cm² left out), with masks at threshold 0.65, the share of plants that got exactly one point was 88 % at the seedling date, 57 % at the middle date and 50 % at the late date. Plants split into several points: 2, 6 and 5 %. Before leaves were joined (4.3.0): 72, 51 and 48 % right, with 21, 19 and 12 % split. The plants still missed later in the season are mostly plants that touch, and small weeds PPE's mask does not catch.
 
-The points are in the layer **PPE · Plants**, kept at the top of the Layers panel: yellow = plant, orange = plant to check, blue = added by you, grey with a red ring = possible weed (not counted).
+The points are in the layer **PPE · Plants**, kept at the top of the Layers panel. What is counted and what is not:
+
+| Point | Meaning | Counted |
+|---|---|---|
+| yellow | plant | yes |
+| orange | check: a patch much bigger than a typical plant; may be several touching plants | yes, as **one** (split it to count each) |
+| light green | split by you | yes, each |
+| blue | added by you | yes |
+| grey with a red ring | possible weed between the rows | **no** |
+
+The panel says the same after every change, for example *Counted: 214 plants = 198 plant + 9 check (each as 1) + 4 split by you + 3 added by you. Not counted: 12 possible weeds.* `ppe_count_summary.csv` has the same columns.
 
 **Correct the count on the map.** PPE's points are a fast first count; it cannot tell every weed from the crop or separate plants that overlap, so check them and fix what is wrong:
 
@@ -277,6 +289,7 @@ The points are in the layer **PPE · Plants**, kept at the top of the Layers pan
 - **＋ Add plant**: click where a plant was missed.
 - **－ Remove point**: click a point that is not a plant (soil, a weed, a plant counted twice).
 - **Plant ↔ weed**: click a point to switch it between plant (counted) and weed (not counted).
+- **✂ Split**: click a point that holds several touching plants (orange *check* points usually do; two touching plants are often not big enough to be flagged), type how many plants you see, and PPE puts one point on each: on the thickest parts of the patch, each with its share of the pixels. The new points are light green and each is counted. PPE does not guess the number itself: on PhenoBench neither the patch size nor its shape got it right often enough. With the right number typed, the plants that got exactly one point rose from 26 to 53 % in check patches of 2 or more plants. Where leaves overlap a lot, look at the result and use **Undo last** or **＋ Add plant**.
 - **Undo last** (or Backspace), and **Done** (or Esc) to stop.
 
 Each click is saved in `ppe_plants.gpkg` at once, and the count, plants per m², `ppe_count_summary.csv` and the counts per plot are updated.
@@ -319,7 +332,7 @@ Pixels near the threshold, flagged plant parts and no-data are never used. Where
 
 **2 Check the points.** They appear as **PPE · Label points**: green for plant, orange for soil. Zoom in and fix any point that is wrong with **Plant ↔ soil**, **Remove**, **＋ Plant** or **＋ Soil**. Each click is saved and **Undo last** steps back. Points you changed or added get a white ring.
 
-**Buffer (in step 1).** The slider (0 to 50 cm in 0.5 cm steps) grows each point into a disc. It can be set before or after the points are made; it is used when you export. The disc is cut to the clear pixels of the point's own class, so a plant buffer stops at the edge of the leaf and a soil buffer stops before the canopy: a buffer never takes in the other class. As you move the slider, the panel shows how many pixels will be labelled. **Pixels per point** (optional) keeps only the nearest pixels, so one big leaf cannot dominate. A point you switched to the other class keeps only its own pixel, because PPE's mask disagrees with you there.
+**Buffer (in step 1).** The slider (0 to 50 cm in 0.5 cm steps) grows each point into a disc. It can be set before or after the points are made. A moment after you move it, the buffers are drawn on the map as **PPE · Label buffers** (outlines: green plant, orange soil), and they follow your checks too; **Export** writes them. The disc is cut to the clear pixels of the point's own class, so a plant buffer stops at the edge of the leaf and a soil buffer stops before the canopy: a buffer never takes in the other class. As you move the slider, the panel shows how many pixels will be labelled. **Pixels per point** (optional) keeps only the nearest pixels, so one big leaf cannot dominate. A point you switched to the other class keeps only its own pixel, because PPE's mask disagrees with you there.
 
 **3 Export.** Choose a folder (or PPE asks for one) and click **Export labels**. The folder gets:
 
@@ -350,7 +363,7 @@ PPE's layers come in **folded**, so the panel stays short; the arrow beside a la
 
 ## 16. Files PPE writes
 
-The output and working folders are set under **Folders** on tab 1; plot results go to the export folder of tab 4.
+The output and working folders are set under **Folders** on tab 1; plot results go to the export folder of tab 4. Each image gets its own folder inside the output folder, named after the image (`<output folder>/<image name>/`, as a batch image does), so two images never overwrite each other's mask, count or labels; labels are in `<image name>/ppe_labels`.
 
 | File | What it is |
 |---|---|

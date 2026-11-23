@@ -6,7 +6,7 @@ from qgis.gui import QgsMapTool
 
 from .layer_utils import ROLE_KEY
 
-STATUS_PLANT, STATUS_CHECK, STATUS_WEED, STATUS_ADDED = "plant", "check", "weed?", "added"
+STATUS_PLANT, STATUS_CHECK, STATUS_WEED, STATUS_ADDED, STATUS_SPLIT = "plant", "check", "weed?", "added", "split"
 PICK_PIXELS = 12            # a click picks the nearest point within this many screen pixels
 
 
@@ -18,7 +18,8 @@ def plants_layer():
 
 
 class PlantEditTool(QgsMapTool):
-    """mode: 'add', 'remove' or 'switch'. Emits changed() after every edit; Esc emits done()."""
+    """mode: 'add', 'remove', 'switch' or 'split' (4.6.6: a point of touching plants becomes one point
+    per plant). Emits changed() after every edit; Esc emits done()."""
     changed = pyqtSignal(str)
     done = pyqtSignal()
 
@@ -58,14 +59,57 @@ class PlantEditTool(QgsMapTool):
         if self.mode == "remove":
             self.undo.append(("remove", QgsFeature(f)))
             prov.deleteFeatures([f.id()]); self._changed("Point removed.")
+        elif self.mode == "split":
+            self._split(f)
         elif self.mode == "switch":
             old = f["status"]; new = STATUS_PLANT if old == STATUS_WEED else STATUS_WEED
             prov.changeAttributeValues({f.id(): {fields.indexOf("status"): new}})
             self.undo.append(("switch", (f.id(), old))); self._changed("Marked as {}.".format("weed (not counted)" if new == STATUS_WEED else "plant"))
 
+    def _split(self, f):
+        """Ask how many plants the user sees in the group, find that many lobes and replace the point by
+        one point per lobe. PPE does not guess the number: on PhenoBench neither the group's size over a
+        typical plant nor the number of lobes in its shape got it right often enough (weeds are small,
+        beets large, and a quarter of the flagged groups were one big plant)."""
+        from qgis.PyQt.QtWidgets import QInputDialog
+        if f["status"] == STATUS_WEED:
+            self.changed.emit("This point is a possible weed (not counted): switch it to plant first."); return
+        n, ok = QInputDialog.getInt(self.canvas().window(), "Split into plants",
+                                    "How many plants do you see in this group?\nPPE puts one point on each of them (on the thickest parts of the patch).",
+                                    2, 2, 50, 1)
+        if not ok: return
+        self._split_into(f, n)
+
+    def _split_into(self, f, n):
+        from .plant_count import split_group
+        path = self.layer.source().split("|")[0]; p = f.geometry().asPoint()
+        area = f["area_cm2"] if self.layer.fields().indexOf("area_cm2") >= 0 else None
+        try:
+            parts = split_group(path, p.x(), p.y(), n, area)
+        except Exception as exc:
+            self.changed.emit("Could not split it: {}".format(exc)); return
+        if len(parts) < 2:
+            self.changed.emit("Could not find separate plants there. Use + Add plant instead."); return
+        prov = self.layer.dataProvider(); fields = self.layer.fields()
+        ids = [x["plant_id"] for x in self.layer.getFeatures() if x["plant_id"] is not None]; next_id = (max(ids) if ids else 0) + 1; new = []
+        for k, (x, y, a) in enumerate(parts):
+            g = QgsFeature(fields); g.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(x, y)))
+            g["plant_id"] = next_id + k; g["status"] = STATUS_SPLIT
+            if fields.indexOf("on_row") >= 0: g["on_row"] = f["on_row"] if f["on_row"] is not None else 1
+            if fields.indexOf("area_cm2") >= 0: g["area_cm2"] = a
+            new.append(g)
+        old = QgsFeature(f)
+        ok, out = prov.addFeatures(new)
+        if not ok: self.changed.emit("Could not write the new points."); return
+        prov.deleteFeatures([f.id()])
+        self.undo.append(("split", (old, [o.id() for o in out])))
+        self._changed("Split into {} plants (each counted).".format(len(out)))
+
     def undo_last(self):
         if not self.undo: return False
         kind, data = self.undo.pop(); prov = self.layer.dataProvider()
+        if kind == "split":
+            prov.deleteFeatures(data[1]); prov.addFeatures([data[0]]); self._changed("Last change undone."); return True
         if kind == "add": prov.deleteFeatures([data])
         elif kind == "remove": prov.addFeatures([data])
         else: prov.changeAttributeValues({data[0]: {self.layer.fields().indexOf("status"): data[1]}})

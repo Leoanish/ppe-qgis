@@ -1,6 +1,7 @@
 """4.6: create labels - clear-pixel rule, cLHS spread, buffers that never cross into the other class,
 the user's checks (switched and added points), and the slider preview."""
 import json
+import math
 import os
 import shutil
 import tempfile
@@ -79,6 +80,15 @@ class CreateAndBuffer(unittest.TestCase):
         self.assertGreaterEqual(pre["plant"], r["plant_pixels"]); self.assertGreaterEqual(pre["soil"], r["soil_pixels"])   # preview counts overlaps twice
         with open(r["csv_path"]) as f: rows = sum(1 for _ in f) - 1
         self.assertEqual(rows, r["plant_pixels"] + r["soil_pixels"])
+
+    def test_quick_map_buffers_match_the_export(self):
+        a = write_labels({"points_path": self.info["points_path"], "radius_cm": 8.0, "preview": True})
+        b = write_labels({"points_path": self.info["points_path"], "radius_cm": 8.0})
+        self.assertTrue(a["buffers_path"].endswith("ppe_label_buffers_preview.gpkg"))
+        self.assertEqual((a["plant_pixels"], a["soil_pixels"]), (b["plant_pixels"], b["soil_pixels"]))
+        def n(p):
+            ds = ogr.Open(p); return ds.GetLayer().GetFeatureCount()
+        self.assertEqual(n(a["buffers_path"]), n(b["buffers_path"]))
 
     def test_cap_limits_pixels_per_point(self):
         r = write_labels({"points_path": self.info["points_path"], "radius_cm": 20.0, "max_px": 5})
@@ -190,3 +200,39 @@ class AddOrLeaveOutAnyKind(unittest.TestCase):
         self.assertTrue((a[0:5, 10:] >= 2).all())            # added: above any threshold
         self.assertTrue((a[5:10, :] == 0).all())              # left out: below any threshold
         self.assertTrue(np.allclose(a[10:, :10], 0.9))        # untouched
+
+
+class SplitTouchingPlants(unittest.TestCase):
+    """4.6.6: a 'check' group of touching plants is split into one point per plant (lobes)."""
+
+    def test_two_and_three_touching_plants(self):
+        from ppe_qgis.plant_count import count_plants, read_points, split_group, suggest_split, summarize_points
+        tmp = tempfile.mkdtemp()
+        try:
+            n = 200; yy, xx = np.mgrid[0:n, 0:n]; m = np.zeros((n, n), np.uint8)
+            singles = [(20 + 30 * i, 25 + 30 * j) for i in range(6) for j in range(2)]   # twelve lone plants, radius 8
+            pair = [(40, 130), (54, 130)]                                    # two plants touching: under the 'check' size, but can be split
+            trio = [(140, 120), (153, 130), (140, 140)]                      # three plants touching: flagged 'check'
+
+            for cx, cy in singles + pair + trio: m[(xx - cx) ** 2 + (yy - cy) ** 2 <= 64] = 1
+            mask = tif(os.path.join(tmp, "mask.tif"), m, gdal.GDT_Byte, nodata=255)
+            r = count_plants({"mask_path": mask, "output_dir": os.path.join(tmp, "c"), "min_plant_cm2": 0.05, "join_cm": 0})
+            self.assertEqual(r["plants"], 14); self.assertEqual(r["flagged_big"], 1)
+            pts, _ = read_points(r["points_path"]); px = lambda c: (500000 + (c[0] + .5) * 0.01, 3500000 - (c[1] + .5) * 0.01)
+            for group, k, status in ((pair, 2, "plant"), (trio, 3, "check")):
+                gx = np.mean([px(c)[0] for c in group]); gy = np.mean([px(c)[1] for c in group])
+                ds = ogr.Open(r["points_path"]); f = min(ds.GetLayer(), key=lambda f: (f.GetGeometryRef().GetX() - gx) ** 2 + (f.GetGeometryRef().GetY() - gy) ** 2)
+                self.assertEqual(f.GetField("status"), status)
+                parts = split_group(r["points_path"], gx, gy, k, f.GetField("area_cm2"))
+                self.assertEqual(len(parts), k)
+                for c in group:                                              # each plant centre gets a point within 4 px
+                    x, y = px(c)
+                    self.assertLess(min(math.hypot(x - a, y - b) for a, b, _ in parts), 0.04)
+            # a split point counts; the summary says what is counted
+            ds = ogr.Open(r["points_path"], 1); L = ds.GetLayer(); f = ogr.Feature(L.GetLayerDefn())
+            g = ogr.Geometry(ogr.wkbPoint); g.AddPoint_2D(500000.5, 3499999.5); f.SetGeometry(g); f.SetField("status", "split"); L.CreateFeature(f); ds = None
+            t = summarize_points(r["points_path"]); self.assertEqual(t["plants"], 15); self.assertEqual(t["split_by_user"], 1)
+            with open(t["summary_path"]) as fh: head = fh.readline()
+            self.assertIn("of_which_check_counted_as_one", head)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)

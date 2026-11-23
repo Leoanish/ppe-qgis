@@ -46,8 +46,8 @@ class PolygonDrawTool(QgsMapTool):
         self.points = []
         self.done = False
         self.band = QgsRubberBand(canvas, QgsWkbTypes.PolygonGeometry)
-        self.band.setColor(QColor(0, 200, 255, 70))
-        self.band.setStrokeColor(QColor(0, 160, 230))
+        self.band.setColor(QColor(225, 25, 25, 50))          # red while drawing, red once drawn (layer_utils.AREA_RED)
+        self.band.setStrokeColor(QColor(225, 25, 25))
         self.band.setWidth(2)
         self.setCursor(Qt.CrossCursor)
 
@@ -147,12 +147,11 @@ def show_crop_areas(areas, crs):
     provider.addFeatures(features)
     layer.updateExtents()
     layer.setCustomProperty(ROLE_KEY, "crops")
-    symbol = QgsFillSymbol.createSimple({"style": "no", "outline_color": "0,190,255,255",
-                                         "outline_width": "0.8", "outline_width_unit": "MM", "outline_style": "dash"})
-    layer.setRenderer(QgsSingleSymbolRenderer(symbol))
+    from .layer_utils import area_symbol
+    layer.setRenderer(QgsSingleSymbolRenderer(area_symbol()))
     settings = QgsPalLayerSettings()
     settings.fieldName = "crop"
-    text = QgsTextFormat(); text.setSize(11); text.setColor(QColor(0, 70, 110))
+    text = QgsTextFormat(); text.setSize(11); text.setColor(QColor(150, 10, 10))
     buffer = QgsTextBufferSettings(); buffer.setEnabled(True); buffer.setSize(1.2); buffer.setColor(QColor(255, 255, 255))
     text.setBuffer(buffer); settings.setFormat(text)
     layer.setLabeling(QgsVectorLayerSimpleLabeling(settings))

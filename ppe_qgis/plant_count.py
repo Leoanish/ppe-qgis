@@ -31,8 +31,9 @@ CORE_PX = 5               # ... of at least 5 pixels (soil spots let through by 
 STATUS_PLANT, STATUS_CHECK, STATUS_WEED, STATUS_ADDED = "plant", "check", "weed?", "added"   # point status; weed? is not counted
 JOIN_CM = 1.0             # pieces closer than this are one plant (leaves split by a thin stem or petiole)
 ROW_BAND = 0.2            # on a row = within 0.2 x row spacing of the row centre line
-EARLY_NOTE = ("Counting works best before plants touch (early season). Groups flagged 'check' may be "
-              "several touching plants; they count as one.")
+EARLY_NOTE = ("For the early season only: count before the leaves of neighbouring plants touch or overlap; plants whose "
+              "canopies overlap are counted as one. Groups flagged 'check' may be several touching plants; they count as one "
+              "unless you split them.")
 
 
 def _plant_groups(mask_path, vote_path, min_px, join_px, hole_px, progress, log):
@@ -304,7 +305,7 @@ def read_points(points_path):
 
 def summarize_points(points_path, log=None):
     """Totals (and counts per plot) from the points as they are now, after any corrections by the user.
-    Counted: plant, check and added; not counted: weed?. Rewrites ppe_count_summary.csv and ppe_plot_counts.csv."""
+    Counted: plant, check (as one plant), split and added; not counted: weed?. Rewrites ppe_count_summary.csv and ppe_plot_counts.csv."""
     log = log or (lambda m: None); out_dir = os.path.dirname(points_path)
     try:
         with open(os.path.join(out_dir, "ppe_count_info.json"), encoding="utf-8") as fh: info = json.load(fh)
@@ -312,16 +313,19 @@ def summarize_points(points_path, log=None):
         info = {}
     pts, wkt = read_points(points_path)
     counted = [(x, y, st) for x, y, st in pts if st != STATUS_WEED]
-    n = {k: sum(1 for p in pts if p[2] == k) for k in (STATUS_PLANT, STATUS_CHECK, STATUS_ADDED, STATUS_WEED)}
+    n = {k: sum(1 for p in pts if p[2] == k) for k in (STATUS_PLANT, STATUS_CHECK, STATUS_ADDED, STATUS_WEED, "split")}
     plants = len(counted); field_m2 = info.get("field_m2")
     summary = {"plants": plants, "flagged_big": n[STATUS_CHECK], "added_by_user": n[STATUS_ADDED], "weeds_not_counted": n[STATUS_WEED],
+               "plain_plants": n[STATUS_PLANT], "split_by_user": n["split"],
                "left_out_between_rows": n[STATUS_WEED], "no_core_left_out": info.get("no_core_left_out"),
                "median_plant_cm2": info.get("median_plant_cm2"), "min_plant_cm2": info.get("min_plant_cm2"),
                "plants_per_m2": (plants / field_m2) if field_m2 else None, "rows": info.get("rows"), "points_path": points_path, "note": EARLY_NOTE}
     path = os.path.join(out_dir, "ppe_count_summary.csv")
     with open(path, "w", newline="") as fh:
-        w = csv.writer(fh); w.writerow(["plants", "flagged_check", "added_by_user", "weeds_not_counted", "median_plant_cm2", "smallest_plant_cm2", "plants_per_m2", "note"])
-        w.writerow([plants, n[STATUS_CHECK], n[STATUS_ADDED], n[STATUS_WEED], _r(summary["median_plant_cm2"]), _r(summary["min_plant_cm2"]), _r(summary["plants_per_m2"], 3), EARLY_NOTE])
+        w = csv.writer(fh); w.writerow(["plants_counted", "of_which_plant", "of_which_check_counted_as_one", "of_which_split_by_user", "of_which_added_by_user",
+                                        "weeds_not_counted", "median_plant_cm2", "smallest_plant_cm2", "plants_per_m2", "note"])
+        w.writerow([plants, n[STATUS_PLANT], n[STATUS_CHECK], n["split"], n[STATUS_ADDED], n[STATUS_WEED], _r(summary["median_plant_cm2"]),
+                    _r(summary["min_plant_cm2"]), _r(summary["plants_per_m2"], 3), EARLY_NOTE])
     summary["summary_path"] = path
     if info.get("aoi_path") and os.path.isfile(info["aoi_path"]):
         xs = np.array([p[0] for p in counted]); ys = np.array([p[1] for p in counted]); big = np.array([p[2] == STATUS_CHECK for p in counted])
@@ -395,3 +399,89 @@ def count_batch(cfg, progress=None, log=None):
         w = csv.writer(fh); w.writerow(["image", "plants", "flagged_big", "left_out_between_rows", "median_plant_cm2", "plants_per_m2", "points_path"]); w.writerows(rows)
     progress(100, "Counted {} images".format(n))
     return {"batch_counts_csv": path, "rows": rows, "plants": sum(r[1] for r in rows), "images": n, "seconds": time.time() - started, "note": EARLY_NOTE}
+
+
+# ---- splitting touching plants (4.6.6) -----------------------------------------------------------
+# A 'check' point is a group much bigger than the larger plants: most likely several plants touching.
+# Splitting by size alone made counts worse (big single plants were split too), so the user decides how
+# many plants a group holds and PPE finds that many lobes. On PhenoBench 'check' groups with 2+ plants
+# (31 groups, 120 plants), splitting with the right number raised the plants with exactly one point
+# from 26 to 53 %; neither size nor shape guessed the number well (best: 10 of 42 exact).
+STATUS_SPLIT = "split"
+
+
+def _dilate(m, r=1):
+    p = np.pad(m, r); h, w = m.shape; out = np.zeros_like(m)
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            out |= p[r + dy:r + dy + h, r + dx:r + dx + w]
+    return out
+
+
+def group_at(points_path, x, y, area_cm2=None):
+    """The plant pixels of the group under a point (map coordinates), as PPE grouped them: plant
+    pixels connected through gaps up to the join distance. Returns (mask window bool array, x0, y0,
+    geotransform, pixel_cm, info)."""
+    with open(os.path.join(os.path.dirname(points_path), "ppe_count_info.json"), encoding="utf-8") as fh: info = json.load(fh)
+    ds = safe_gdal_open(info["mask_path"]); gt = ds.GetGeoTransform(); W, H = ds.RasterXSize, ds.RasterYSize
+    pixel_cm = 100.0 * math.sqrt(abs(gt[1] * gt[5])) if _pixel_area_m2(ds) else 1.0
+    a_px = (area_cm2 / pixel_cm ** 2) if area_cm2 else 400.0
+    half = int(min(2000, max(40, 3.0 * math.sqrt(a_px / math.pi))))
+    cx = int((x - gt[0]) / gt[1]); cy = int((y - gt[3]) / gt[5])
+    x0, y0 = max(0, cx - half), max(0, cy - half); x1, y1 = min(W, cx + half + 1), min(H, cy + half + 1)
+    plant = ds.GetRasterBand(1).ReadAsArray(x0, y0, x1 - x0, y1 - y0) == 1
+    if not plant.any(): return None
+    join_px = max(0, int(round((info.get("join_cm") or 0) / pixel_cm / 2.0)))
+    allowed = _dilate(plant, join_px) if join_px else plant.copy()
+    py, px = np.nonzero(plant); k = int(np.argmin((px - (cx - x0)) ** 2 + (py - (cy - y0)) ** 2))   # plant pixel nearest the point
+    seed = np.zeros_like(plant); seed[py[k], px[k]] = True
+    for _ in range(4 * half):                       # flood fill through the joined area
+        grown = _dilate(seed) & allowed
+        if (grown == seed).all(): break
+        seed = grown
+    return seed & plant, x0, y0, gt, pixel_cm, info
+
+
+def suggest_split(points_path, x, y, area_cm2):
+    """A rough number of plants: the group's size over the median plant, at least 2. Not used by the
+    split tool (too often wrong where plant sizes vary); kept for scripts."""
+    with open(os.path.join(os.path.dirname(points_path), "ppe_count_info.json"), encoding="utf-8") as fh: info = json.load(fh)
+    med = info.get("median_plant_cm2") or 0
+    return max(2, int(round(area_cm2 / med))) if med and area_cm2 else 2
+
+
+def split_group(points_path, x, y, n, area_cm2=None):
+    """Split the group under a point into n plants. Lobe centres are the n pixels farthest inside the
+    group (distance to the nearest non-plant pixel), each at least a typical plant's radius from the
+    others; every pixel then goes to its nearest centre and the centres move to the middle of their
+    pixels (a few k-means steps). Returns [(x, y, area_cm2)] in map coordinates, or [] if nothing found."""
+    g = group_at(points_path, x, y, area_cm2)
+    if g is None or n < 2: return []
+    m, x0, y0, gt, pixel_cm, info = g
+    py, px = np.nonzero(m)
+    if len(px) < n: return []
+    mem = gdal.GetDriverByName("MEM").Create("", m.shape[1], m.shape[0], 1, gdal.GDT_Byte); mem.GetRasterBand(1).WriteArray((~m).astype(np.uint8))
+    dist = gdal.GetDriverByName("MEM").Create("", m.shape[1], m.shape[0], 1, gdal.GDT_Float32)
+    gdal.ComputeProximity(mem.GetRasterBand(1), dist.GetRasterBand(1), ["VALUES=1", "DISTUNITS=PIXEL"])
+    d = dist.GetRasterBand(1).ReadAsArray()[py, px]
+    sep = math.sqrt(len(px) / n / math.pi)          # a lobe's radius if the n plants were equal
+    order = np.argsort(-d); seeds = []
+    for i in order:                                 # deepest pixels first, kept apart
+        if all((px[i] - px[j]) ** 2 + (py[i] - py[j]) ** 2 >= sep ** 2 for j in seeds): seeds.append(i)
+        if len(seeds) == n: break
+    while len(seeds) < n:                           # not enough separate lobes: farthest point from the chosen ones
+        dd = np.min([(px - px[j]) ** 2 + (py - py[j]) ** 2 for j in seeds], axis=0); seeds.append(int(np.argmax(dd)))
+    c = np.array([[px[j], py[j]] for j in seeds], np.float64); pts = np.column_stack([px, py]).astype(np.float64)
+    for _ in range(10):
+        lab = np.argmin(((pts[:, None, :] - c[None, :, :]) ** 2).sum(2), 1)
+        new = np.array([pts[lab == k].mean(0) if (lab == k).any() else c[k] for k in range(n)])
+        if np.allclose(new, c): break
+        c = new
+    lab = np.argmin(((pts[:, None, :] - c[None, :, :]) ** 2).sum(2), 1)
+    out = []
+    for k in range(n):
+        sel = lab == k
+        if not sel.any(): continue
+        cx, cy = pts[sel].mean(0) + (x0 + 0.5, y0 + 0.5)
+        out.append((gt[0] + cx * gt[1] + cy * gt[2], gt[3] + cx * gt[4] + cy * gt[5], float(sel.sum()) * pixel_cm ** 2))
+    return out

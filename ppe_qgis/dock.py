@@ -827,10 +827,13 @@ class PPEDockWidget(QDockWidget):
     def _count_tab(self):
         page, layout = self._page()
         title = QLabel("Count plants"); title.setObjectName("sectionTitle")
+        stage = QLabel("⚠  For the early season only: count before the leaves of neighbouring plants touch or overlap. "
+                       "Plants whose canopies overlap merge into one patch and are counted as one, so later in the season the count is too low.")
+        stage.setWordWrap(True); stage.setObjectName("stageWarning")
         hint = QLabel("Each plant in the finalized mask gets one point. Leaves of one plant that show as separate pieces are joined. "
-                      "This works best early in the season, before plants touch: plants that touch become one, flagged 'check' "
-                      "when much bigger than a typical plant.")
-        hint.setWordWrap(True); hint.setObjectName("ppeHint"); layout.addWidget(title); layout.addWidget(hint)
+                      "A patch much bigger than a typical plant is flagged 'check' (orange): it counts as one, and ✂ Split below "
+                      "turns it into as many plants as you see.")
+        hint.setWordWrap(True); hint.setObjectName("ppeHint"); layout.addWidget(title); layout.addWidget(stage); layout.addWidget(hint)
         card, body = self._card("Settings"); form = self._form(body)
         self.count_min = self._plain_spin(QDoubleSpinBox()); self.count_min.setRange(0.01, 10000); self.count_min.setDecimals(2); self.count_min.setValue(1.0); self.count_min.setSuffix(" cm²")
         self.count_min.setToolTip("Groups smaller than this are specks, not plants. Set it a little below your smallest seedling.")
@@ -863,18 +866,24 @@ class PPEDockWidget(QDockWidget):
         layout.addWidget(self._note(self.count_status))
         fix, fix_body = self._card("Correct the count on the map")
         fb = QVBoxLayout(fix_body); fb.setContentsMargins(0, 0, 0, 0); fb.setSpacing(6)
-        fix_hint = QLabel("PPE's points are a fast first count. Check them on the map and fix what is wrong: each click is saved "
-                          "and the count updates. Grey points with a red ring are possible weeds (between rows) and are not counted.")
+        fix_hint = QLabel("PPE's points are a fast first count. Check them on the map and fix what is wrong: each click is saved and the "
+                          "count updates. Counted: yellow (plant), orange (check: counted as ONE plant, but it may be several touching "
+                          "plants; use ✂ Split), light green (split by you) and blue (added by you). Not counted: grey with a red ring "
+                          "(possible weeds between rows).")
         fix_hint.setWordWrap(True); fix_hint.setObjectName("ppeHint"); fb.addWidget(fix_hint)
         row = QHBoxLayout(); row.setSpacing(6)
         self.plant_add_button = QPushButton("＋ Add plant"); self.plant_remove_button = QPushButton("－ Remove point")
         self.plant_switch_button = QPushButton("Plant ↔ weed")
+        self.plant_split_button = QPushButton("✂ Split")
+        self.plant_split_button.setToolTip("Click a point that holds several touching plants (orange 'check' points usually do), "
+                                           "type how many plants you see, and PPE puts one point on each.")
         self.plant_add_button.setToolTip("Click on the map where a plant was missed.")
         self.plant_remove_button.setToolTip("Click on a point that is not a plant (soil, a leaf counted twice).")
         self.plant_switch_button.setToolTip("Click on a point to switch it between plant (counted) and weed (not counted).")
-        for b in (self.plant_add_button, self.plant_remove_button, self.plant_switch_button):
-            b.setCheckable(True); b.setProperty("secondary", True); b.setEnabled(False); row.addWidget(b, 1)
-        fb.addLayout(row)
+        row2 = QHBoxLayout(); row2.setSpacing(6)
+        for b, r in ((self.plant_add_button, row), (self.plant_remove_button, row), (self.plant_switch_button, row2), (self.plant_split_button, row2)):
+            b.setCheckable(True); b.setProperty("secondary", True); b.setEnabled(False); r.addWidget(b, 1)
+        fb.addLayout(row); fb.addLayout(row2)
         row = QHBoxLayout(); row.setSpacing(6)
         self.plant_undo_button = QPushButton("Undo last"); self.plant_undo_button.setProperty("secondary", True); self.plant_undo_button.setEnabled(False)
         self.plant_done_button = QPushButton("Done"); self.plant_done_button.setProperty("secondary", True); self.plant_done_button.setEnabled(False)
@@ -885,6 +894,7 @@ class PPEDockWidget(QDockWidget):
         self.plant_add_button.clicked.connect(lambda: self._plant_edit("add"))
         self.plant_remove_button.clicked.connect(lambda: self._plant_edit("remove"))
         self.plant_switch_button.clicked.connect(lambda: self._plant_edit("switch"))
+        self.plant_split_button.clicked.connect(lambda: self._plant_edit("split"))
         self.plant_undo_button.clicked.connect(self._plant_undo)
         self.plant_done_button.clicked.connect(self._plant_edit_done)
         out = QLabel("Output, in the image's output folder: ppe_count/ppe_plants.gpkg (one point per plant: area, 'check' flag, "
@@ -910,10 +920,12 @@ class PPEDockWidget(QDockWidget):
         self._plant_tool = tool; canvas.setMapTool(tool); canvas.setFocus()
         self._plant_edit_buttons(mode)
         self.plant_edit_status.setText({"add": "Click on the map where a plant was missed.", "remove": "Click on a point to remove it.",
-                                        "switch": "Click on a point to switch it between plant and weed."}[mode] + " Esc or Done to stop.")
+                                        "switch": "Click on a point to switch it between plant and weed.",
+                                        "split": "Click a point of touching plants (orange 'check'), then type how many plants you see."}[mode] + " Esc or Done to stop.")
 
     def _plant_edit_buttons(self, mode):
-        for b, m in ((self.plant_add_button, "add"), (self.plant_remove_button, "remove"), (self.plant_switch_button, "switch")):
+        for b, m in ((self.plant_add_button, "add"), (self.plant_remove_button, "remove"), (self.plant_switch_button, "switch"),
+                     (self.plant_split_button, "split")):
             b.setChecked(mode == m)
         tool = getattr(self, "_plant_tool", None)
         self.plant_undo_button.setEnabled(tool is not None); self.plant_done_button.setEnabled(tool is not None)
@@ -940,13 +952,21 @@ class PPEDockWidget(QDockWidget):
             r = summarize_points(layer.source().split("|")[0])
         except Exception as exc:
             self.plant_edit_status.setText("Could not update the totals: {}".format(exc)); return
-        self.plant_edit_status.setText("{}  Count now: {} plants{}{} · {} weeds not counted.".format(
-            message, r["plants"], " ({} added by you)".format(r["added_by_user"]) if r["added_by_user"] else "",
-            " · {:.2f} per m²".format(r["plants_per_m2"]) if r.get("plants_per_m2") else "", r["weeds_not_counted"]))
+        self.plant_edit_status.setText("{}  {}".format(message, self._count_line(r)))
+
+    @staticmethod
+    def _count_line(r):
+        """What is counted and what is not, in one line."""
+        parts = ["{} plant".format(r.get("plain_plants", r["plants"]))]
+        if r.get("flagged_big"): parts.append("{} check (each as 1)".format(r["flagged_big"]))
+        if r.get("split_by_user"): parts.append("{} split by you".format(r["split_by_user"]))
+        if r.get("added_by_user"): parts.append("{} added by you".format(r["added_by_user"]))
+        return "Counted: {} plants = {}{}. Not counted: {} possible weeds.".format(
+            r["plants"], " + ".join(parts), " · {:.2f} per m²".format(r["plants_per_m2"]) if r.get("plants_per_m2") else "", r.get("weeds_not_counted", 0))
 
     def plants_shown(self):
         """The plant points are on the map: correcting is possible."""
-        for b in (self.plant_add_button, self.plant_remove_button, self.plant_switch_button): b.setEnabled(True)
+        for b in (self.plant_add_button, self.plant_remove_button, self.plant_switch_button, self.plant_split_button): b.setEnabled(True)
         self.plant_edit_status.setText("Check the points on the map; correct any with the buttons above.")
 
     def _count_settings(self):
@@ -984,9 +1004,9 @@ class PPEDockWidget(QDockWidget):
             text = "{} plants in {} images.\n{}".format(result["plants"], result["images"], result["batch_counts_csv"])
         else:
             rows = result.get("rows") or {}
-            text = "{} plants{}{}{}.".format(result["plants"], " · {:.2f} per m²".format(per_m2) if per_m2 else "",
-                                              " · {} flagged 'check' (may be touching plants)".format(result["flagged_big"]) if result.get("flagged_big") else "",
-                                              " · {} possible weeds between rows, not counted (grey)".format(result["weeds_not_counted"]) if result.get("weeds_not_counted") else "")
+            text = self._count_line(result)
+            if result.get("flagged_big"):
+                text += "\nOrange 'check' points count as one plant each but may be several touching plants: ✂ Split them below."
             if rows and rows.get("rows"): text += "\nCrop rows found {:.0f} cm apart.".format(rows.get("spacing_cm", 0))
             elif rows: text += "\nNo clear crop rows: nothing was marked as weed."
             if result.get("no_core_left_out"): text += "\n{} spots not counted: no pixel there where every PPE vote says plant (soil let in by the threshold).".format(result["no_core_left_out"])
@@ -1145,13 +1165,19 @@ class PPEDockWidget(QDockWidget):
         self.label_write_button.clicked.connect(self._emit_labels_write)
         self.label_radius.valueChanged.connect(self._label_preview_update)
         self.label_cap.valueChanged.connect(self._label_preview_update)
+        # 4.6.6: the buffers are drawn on the map as the slider moves (a moment after it stops)
+        self._buffer_timer = QTimer(self); self._buffer_timer.setSingleShot(True); self._buffer_timer.setInterval(500)
+        self._buffer_timer.timeout.connect(self._emit_buffers)
+        self.label_radius.valueChanged.connect(lambda *_: self._schedule_buffers())
+        self.label_cap.valueChanged.connect(lambda *_: self._schedule_buffers())
         for b, mode in self._label_edit_buttons: b.clicked.connect(lambda _=False, m=mode: self._label_edit(m))
         self.label_undo_button.clicked.connect(self._label_undo)
         self.label_done_button.clicked.connect(self._label_edit_done)
         layout.addStretch(); return self._scroll_tab(page)
 
     def _label_dir(self):
-        return os.path.join(self.output_path.text().strip(), "ppe_labels")
+        """Labels of this image: <output folder>/<image>/ppe_labels, so images never share labels."""
+        return os.path.join(self.output_path.text().strip(), self.image_name() or "image", "ppe_labels")
 
     def _emit_labels_create(self):
         config = self.build_config("run"); error = self.validate_config(config)
@@ -1159,7 +1185,7 @@ class PPEDockWidget(QDockWidget):
         self._save_settings()
         out = self._label_dir()
         if os.path.isfile(os.path.join(out, "ppe_labels.gpkg")):
-            if QMessageBox.question(self, "PPE labels", "Label points were already created in this output folder (maybe with your checks). Replace them with new points?",
+            if QMessageBox.question(self, "PPE labels", "Labels were already created for this image ({}), maybe with your checks. Replace them with new points?".format(self.image_name()),
                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes: return
         self._label_edit_done()
         area = self._area_config("labels")
@@ -1197,14 +1223,26 @@ class PPEDockWidget(QDockWidget):
         canvas = self.iface.mapCanvas(); a["prev"] = canvas.mapTool()
         tool = PolygonDrawTool(canvas); tool.finished.connect(lambda g: self._area_drawn(key, g)); tool.cancelled.connect(lambda: self._area_end(key))
         a["tool"] = tool; canvas.setMapTool(tool); canvas.setFocus()
-        a["draw"].setText("● drawing…")
-        a["status"].setText("Click the corners on the map; right-click (or double-click) to finish, Esc to cancel, Backspace undoes a corner.")
+        a["draw"].setText("● Drawing…")
+        a["status"].setText("● Drawing: click the corners on the map; right-click (or double-click) to finish, Esc to cancel, Backspace undoes a corner.")
+        self._set_state(a["status"], "drawing")
 
     def _area_drawn(self, key, geometry):
         a = self._areas[key]
         copy, crs = to_crs(geometry, self.iface.mapCanvas().mapSettings().destinationCrs(), self._image_wkt())
         a["geoms"].append(copy); a["crs"] = crs
         self._area_end(key); self._area_show(key)
+        try:
+            what = {"labels": "label points and buffers", "count": "plants counted"}.get(key, "results")
+            self.iface.messageBar().pushMessage("Plant Pixel Extractor", "✓ Area drawn (red outline). Only {} inside it.".format(what), Qgis.Success, 5)
+        except Exception:
+            _LOG.debug("PPE: ignored error", exc_info=True)
+
+    @staticmethod
+    def _set_state(label, state):
+        """'drawn' (green, bold), 'drawing' (amber, bold) or '' (hint): the same look for every area in PPE."""
+        label.setProperty("areaState", state)
+        label.style().unpolish(label); label.style().polish(label)
 
     def _area_end(self, key):
         a = self._areas.get(key)
@@ -1214,7 +1252,7 @@ class PPEDockWidget(QDockWidget):
         if tool is not None and canvas is not None and canvas.mapTool() is tool and not getattr(tool, "switched_away", False):
             if a["prev"] is not None: canvas.setMapTool(a["prev"])
             else: self.iface.actionPan().trigger()
-        a["draw"].setText("✎ Draw area"); self._area_text(key)
+        self._area_text(key)
 
     def _area_clear(self, key):
         a = self._areas[key]; a["geoms"] = []; a["file"].clear(); self._area_show(key); self._area_text(key)
@@ -1230,7 +1268,13 @@ class PPEDockWidget(QDockWidget):
     def _area_text(self, key):
         a = self._areas[key]; n = len(a["geoms"]); f = a["file"].text().strip()
         parts = (["{} drawn area{}".format(n, "s" if n > 1 else "")] if n else []) + (["the polygons in {}".format(os.path.basename(f))] if f else [])
-        a["status"].setText(a["inside"] + " + ".join(parts) + "." if parts else a["whole"])
+        if a["tool"] is not None: return
+        if parts:
+            a["status"].setText("✓ Area set (red outline on the map): " + " + ".join(parts) + ". " + a["inside"].strip().rstrip(":") + " it.")
+        else:
+            a["status"].setText(a["whole"])
+        a["draw"].setText("✎ Draw another area" if n else "✎ Draw area")
+        self._set_state(a["status"], "drawn" if parts else "")
 
     def _area_config(self, key):
         """area_wkts / area_path for a job, or None when the chosen file is missing."""
@@ -1257,6 +1301,33 @@ class PPEDockWidget(QDockWidget):
             info.get("plant_points", 0), info.get("soil_points", 0), info.get("clear_plant_pixels", 0), info.get("clear_soil_pixels", 0),
             info.get("pixel_cm", 0), " · PPE threshold {:.2f}".format(info["threshold"]) if info.get("threshold") is not None else "", info.get("points_path", "")))
         self.label_write_status.setText(""); self._label_preview_update(); self._refresh_goal_buttons()
+        if self.label_radius.value() > 0: self._buffers_pending = True      # drawn once the points are on the map
+
+    def _schedule_buffers(self):
+        if getattr(self, "_label_info", None) and hasattr(self, "_buffer_timer"): self._buffer_timer.start()
+
+    def _emit_buffers(self):
+        """Draw the buffers of the current points on the map (polygons only; Export writes everything)."""
+        info = getattr(self, "_label_info", None)
+        if not info: return
+        if self._busy:
+            self._buffers_pending = True; return
+        self._buffers_pending = False
+        if self.label_radius.value() == 0:
+            try:
+                from .layer_utils import remove_role
+                remove_role("label_buffers")
+            except Exception:
+                _LOG.debug("PPE: ignored error", exc_info=True)
+            return
+        self.labels_requested.emit({"action": "labels_buffers", "points_path": info["points_path"], "radius_cm": self.label_radius.value() / 2.0,
+                                    "max_px": self.label_cap.value(), "preview": True})
+
+    def set_buffers_shown(self, result):
+        self.label_progress.setValue(100); self.label_progress.setFormat("Buffers on the map")
+        self.label_preview.setText("Buffers of {:.1f} cm on the map (PPE · Label buffers): {:,} plant and {:,} soil pixels will be labelled{}.".format(
+            result.get("radius_cm", 0), result.get("plant_pixels", 0), result.get("soil_pixels", 0),
+            "; {} points you changed keep only their own pixel".format(result["point_only"]) if result.get("point_only") else ""))
 
     def labels_shown(self):
         for b, _ in self._label_edit_buttons: b.setEnabled(True)
@@ -1323,6 +1394,7 @@ class PPEDockWidget(QDockWidget):
         except Exception as exc:
             self.label_edit_status.setText("Could not read the points: {}".format(exc)); return
         plant = sum(1 for p in pts if p["label"] == 1); changed = sum(1 for p in pts if p["status"] in ("changed", "added"))
+        if message != "Checks saved." and self.label_radius.value() > 0: self._schedule_buffers()     # a fixed point: its buffer follows
         self.label_edit_status.setText("{}  Now {} plant and {} soil points{}.".format(message, plant, len(pts) - plant,
                                                                                     " · {} changed or added by you".format(changed) if changed else ""))
         self._label_preview_update()
@@ -1945,6 +2017,13 @@ class PPEDockWidget(QDockWidget):
         self.result = {}
         self.curve_points = []
         self.pale_frame.setVisible(False); self.pale_layer_removed(); self._close_pale_card()
+        if hasattr(self, "label_status"):          # the labels belong to the previous image: start the Labels tab afresh
+            self._label_edit_done(); self._label_info = None
+            for b, _ in self._label_edit_buttons: b.setEnabled(False)
+            self.label_progress.setValue(0); self.label_progress.setFormat("Ready")
+            self.label_status.setText("Choose the image on tab 1, then Create labels."); self.label_preview.setText("")
+            self.label_write_status.setText(""); self.label_edit_status.setText("Create the points first.")
+            self._refresh_goal_buttons()
         self.threshold_slider.blockSignals(True); self.threshold_slider.setValue(50); self.threshold_slider.blockSignals(False)
         self.threshold_slider.setEnabled(False)
         self.threshold_value.setText("0.50"); self.canopy_value.setText("—")
@@ -2168,6 +2247,11 @@ class PPEDockWidget(QDockWidget):
             "biofilm_guard": True,
         }
         config["field_info"] = self.field_info()
+        # 4.6.6: each image gets its own folder in the output folder (as a batch image does), so two
+        # images never overwrite each other's mask, count or labels. The batch keeps its own layout.
+        name = self.image_name()
+        if name and config["output_dir"] and not action.startswith("batch"):
+            config["output_root"] = config["output_dir"]; config["output_dir"] = os.path.join(config["output_dir"], name)
         if action == "apply":
             config.update({
                 "vote_path": self.result.get("vote_path", ""),
@@ -2199,6 +2283,18 @@ class PPEDockWidget(QDockWidget):
                            "left_out": list((self.result.get("left_out") or {}).keys()),
                            "added": list((self.result.get("added") or {}).keys()) if self.result.get("added_pixels") else []})
         return config
+
+    def image_name(self):
+        """A short, file-safe name of the chosen image: the file name without extension (one file), or
+        the folder name (a folder of band files, or separate band files)."""
+        mode = self.source_mode.currentData()
+        if mode == "stacked": path = self.stacked_path.text().strip(); name = os.path.splitext(os.path.basename(path))[0] if path else ""
+        elif mode == "folder": name = os.path.basename(self.folder_path.text().strip().rstrip("/\\"))
+        else:
+            paths = [e.text().strip() for e in self.band_edits.values() if e.text().strip()]
+            name = os.path.basename(os.path.dirname(paths[0])) if paths else ""
+        import re
+        return re.sub(r"[^A-Za-z0-9._ -]+", "_", name).strip(" .") or ""
 
     def validate_config(self, config):
         if not config["output_dir"]:
@@ -2635,6 +2731,7 @@ class PPEDockWidget(QDockWidget):
             button.setToolTip("Click the corners of the area on the map. Right-click to finish, Esc to cancel." if drawing else "")
             row["remove"].setEnabled(not drawing and not self._busy)
             row["status"].setProperty("drawing", drawing)
+            row["status"].setProperty("areaState", "drawing" if drawing else ("drawn" if row["geometry"] is not None else ""))
             for widget in (button, row["status"]):
                 widget.style().unpolish(widget); widget.style().polish(widget)
         self.crops_note.setProperty("drawing", self._drawing_row is not None)
@@ -2891,6 +2988,7 @@ class PPEDockWidget(QDockWidget):
             button.setEnabled(not running and bool(self.result.get("mask_path")))
         self._refresh_goal_buttons()
         self._refresh_draw_buttons()
+        if not running and getattr(self, "_buffers_pending", False): self._schedule_buffers()
         self.add_crop_button.setEnabled(not running and bool(self.result.get("vote_path")))
         batch_action = str(getattr(self, "_action", "")).startswith("batch")
         self.batch_cancel_button.setVisible(running and batch_action)
@@ -2898,7 +2996,7 @@ class PPEDockWidget(QDockWidget):
         self.batch_load_button.setEnabled(not running)
         for b in (self.batch_finalize_one, self.batch_next_inline, self.batch_slider): b.setEnabled(not running)
         if self.batch: self._fill_batch_table()
-        if running and (action in ("zones", "count", "training", "labels_create", "labels_write") or str(action).startswith("export") or str(action).startswith("batch")):
+        if running and (action in ("zones", "count", "training", "labels_create", "labels_write", "labels_buffers") or str(action).startswith("export") or str(action).startswith("batch")):
             bar = self._bar_for(action)
             bar.setValue(0)
             bar.setFormat("Starting…")
@@ -3139,6 +3237,9 @@ class PPEDockWidget(QDockWidget):
                 color: #3f4d47; background: #d5dcd8; border: 1px dashed #7d8f86; font-style: italic; font-weight: 600;
             }
             QLabel[drawing="true"], QLabel#ppeHint[drawing="true"] { color: #9a5b00; font-weight: 700; }
+            QLabel[areaState="drawn"], QLabel#ppeHint[areaState="drawn"] { color: #1d7550; font-weight: 700; }
+            QLabel#stageWarning { color: #7a4a00; background: #fff4dc; border: 1px solid #f0c36d; border-radius: 6px; padding: 6px 8px; font-weight: 600; }
+            QLabel[areaState="drawing"], QLabel#ppeHint[areaState="drawing"] { color: #9a5b00; font-weight: 700; }
             QFrame#paleCard { background: #fff6dd; border: 1px solid #f0c35a; border-left: 5px solid #e6a100; border-radius: 8px; }
             QFrame#paleCard QLabel { background: transparent; }
             QToolButton#paleTitle { text-align: left; border: none; background: transparent; color: #7a4e00; font-weight: 700; font-size: 13px; padding: 3px 0px; }
