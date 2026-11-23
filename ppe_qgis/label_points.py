@@ -78,6 +78,16 @@ class _Rasters:
         self.gt = self.mask.GetGeoTransform(); self.wkt = self.mask.GetProjection()
         self.pixel_cm = 100.0 * math.sqrt(abs(self.gt[1] * self.gt[5] - self.gt[2] * self.gt[4]))
 
+    def class_mask(self, x, y, w, h, label, edge=EDGE_PX):
+        """All pixels of PPE's mask class (plant 1 / soil 0) in a window, at least `edge` pixels from the
+        other class and from no data (4.6.7, buffer mode 'class')."""
+        x0, y0 = max(0, x - edge), max(0, y - edge); x1, y1 = min(self.w, x + w + edge), min(self.h, y + h + edge)
+        m = self.mask.GetRasterBand(1).ReadAsArray(x0, y0, x1 - x0, y1 - y0)
+        c = (m == (1 if label == PLANT else 0))
+        if self.area is not None: c &= self.area.GetRasterBand(1).ReadAsArray(x0, y0, x1 - x0, y1 - y0).astype(bool)
+        c = _erode(c, edge)
+        return c[y - y0:y - y0 + h, x - x0:x - x0 + w]
+
     def classes(self, x, y, w, h, edge=EDGE_PX):
         """Clear plant and soil in a window; reads a margin around it so the edge rule is right."""
         x0, y0 = max(0, x - edge), max(0, y - edge); x1, y1 = min(self.w, x + w + edge), min(self.h, y + h + edge)
@@ -309,22 +319,49 @@ def _disc(r_px):
     n = int(math.floor(r_px)); yy, xx = np.mgrid[-n:n + 1, -n:n + 1]; return yy, xx, np.hypot(yy, xx)
 
 
-def _same_class(R, x, y, label, r_px):
-    """Clear pixels of the point's class in the square around it, the distance of each to the point,
-    and whether PPE agrees with the point's label at the point itself."""
-    n = int(math.floor(r_px)); x0, y0 = max(0, x - n), max(0, y - n); x1, y1 = min(R.w, x + n + 1), min(R.h, y + n + 1)
-    p, s = R.classes(x0, y0, x1 - x0, y1 - y0); m = p if label == PLANT else s
-    yy, xx = np.mgrid[y0:y1, x0:x1]; d = np.hypot(yy - y, xx - x)
+BUFFER_MODES = ("sure", "class")    # sure: clear pixels only (most accurate); class: every pixel of PPE's class (fuller)
+
+
+def _geodesic(allowed, sy, sx, rmax):
+    """Distance from (sy, sx) to every allowed pixel along paths through allowed pixels only
+    (8 neighbours; 1 straight, sqrt 2 diagonal); inf where it cannot be reached within rmax."""
+    d = np.full(allowed.shape, np.inf); d[sy, sx] = 0.0; h, w = allowed.shape
+    steps = [(dy, dx, math.hypot(dy, dx)) for dy in (-1, 0, 1) for dx in (-1, 0, 1) if dy or dx]
+    for _ in range(int(3 * rmax) + 4):
+        p = np.pad(d, 1, constant_values=np.inf); new = d.copy()
+        for dy, dx, c in steps:
+            np.minimum(new, p[1 + dy:1 + dy + h, 1 + dx:1 + dx + w] + c, out=new)
+        new[~allowed] = np.inf; new[sy, sx] = 0.0; new[new > rmax] = np.inf
+        if np.array_equal(new, d): break
+        d = new
+    return d
+
+
+def _same_class(R, x, y, label, r_px, mode="sure"):
+    """The pixels a buffer may take in around a point, their distance to it and whether PPE agrees
+    with the point's label at the point itself. 4.6.7: the distance is measured along paths through
+    those pixels, so a buffer grows out from its point, stays in one piece and follows the leaf (or
+    the soil strip) instead of picking up bits of other leaves inside the disc. mode 'sure': clear
+    pixels only; 'class': every pixel of PPE's class, 1 px from the other class."""
+    n = int(math.floor(r_px)) + 1; x0, y0 = max(0, x - n), max(0, y - n); x1, y1 = min(R.w, x + n + 1), min(R.h, y + n + 1)
+    if mode == "class": m = R.class_mask(x0, y0, x1 - x0, y1 - y0, label)
+    else:
+        p, s = R.classes(x0, y0, x1 - x0, y1 - y0); m = p if label == PLANT else s
     agrees = bool(m[y - y0, x - x0])
-    return m, d, x0, y0, agrees
+    if agrees: d = _geodesic(m, y - y0, x - x0, r_px)
+    else: d = np.full(m.shape, np.inf); d[y - y0, x - x0] = 0.0
+    return m & np.isfinite(d), d, x0, y0, agrees
 
 
 def _buffer_histograms(R, points):
-    """For the slider: per point, how many same-class clear pixels lie within each radius step."""
-    r_max = _radius_px(R, MAX_BUFFER_CM); steps = int(round(MAX_BUFFER_CM / STEP_CM)) + 1; out = []
-    for c, a in points:
-        m, d, *_ = _same_class(R, int(a[0]), int(a[1]), c, r_max)
-        dist_cm = d[m] * R.pixel_cm; out.append(np.searchsorted(np.sort(dist_cm), np.arange(steps) * STEP_CM, side="right").tolist())
+    """For the slider: per point and buffer mode, how many pixels the buffer takes in at each radius step."""
+    r_max = _radius_px(R, MAX_BUFFER_CM); steps = int(round(MAX_BUFFER_CM / STEP_CM)) + 1; out = {}
+    for mode in BUFFER_MODES:
+        rows = []
+        for c, a in points:
+            m, d, *_ = _same_class(R, int(a[0]), int(a[1]), c, r_max, mode)
+            dist_cm = d[m] * R.pixel_cm; rows.append(np.searchsorted(np.sort(dist_cm), np.arange(steps) * STEP_CM, side="right").tolist())
+        out[mode] = rows
     return out
 
 
@@ -340,10 +377,12 @@ def read_points(path):
     return out
 
 
-def buffer_preview(info, points, radius_cm, max_px=0):
+def buffer_preview(info, points, radius_cm, max_px=0, mode="sure"):
     """Labelled pixels for a radius, from the counts made with the points (instant, for the slider).
     Points the user changed or added count their own pixel only. Overlaps are counted twice here."""
-    hist = info.get("buffer_pixels") or []; step = int(round(min(radius_cm, MAX_BUFFER_CM) / STEP_CM)); tot = {PLANT: 0, SOIL: 0}
+    hist = info.get("buffer_pixels") or []
+    if isinstance(hist, dict): hist = hist.get(mode) or hist.get("sure") or []
+    step = int(round(min(radius_cm, MAX_BUFFER_CM) / STEP_CM)); tot = {PLANT: 0, SOIL: 0}
     for p in points:
         i = (p["id"] or 0) - 1
         if 0 <= i < len(hist) and p["label"] == (PLANT if p["ppe_label"] == "plant" else SOIL):
@@ -367,6 +406,7 @@ def write_labels(cfg, progress=lambda p, m: None, log=lambda m: None, cancelled=
     R = _Rasters(info["mask_path"], info["vote_path"], info.get("findings_path", ""), info.get("area_path", "")); pts = read_points(cfg["points_path"])
     if not pts: raise ValueError("No points with a plant or soil label in {}.".format(cfg["points_path"]))
     radius_cm = max(0.0, min(MAX_BUFFER_CM, float(cfg.get("radius_cm", 0)))); max_px = int(cfg.get("max_px", 0) or 0)
+    mode = cfg.get("buffer_mode") if cfg.get("buffer_mode") in BUFFER_MODES else "sure"
     r_px = _radius_px(R, radius_cm); gt = R.gt
     img = dict(info.get("image") or {}); img.update({k: cfg[k] for k in ("source_mode", "stacked_path", "folder_path", "folder_bands", "bands") if k in cfg})
     e = None if preview else _engine(img); bands = [] if preview else [b for b in ("blue", "green", "red", "re", "nir") if b in e.sources]
@@ -390,7 +430,7 @@ def write_labels(cfg, progress=lambda p, m: None, log=lambda m: None, cancelled=
             if x is None or y is None:            # a point the user added: find its pixel
                 inv = gdal.InvGeoTransform(gt); x, y = (int(v) for v in gdal.ApplyGeoTransform(inv, p["X"], p["Y"]))
             if not (0 <= x < R.w and 0 <= y < R.h): continue
-            m, d, x0, y0, agrees = _same_class(R, x, y, p["label"], max(r_px, 0.5))
+            m, d, x0, y0, agrees = _same_class(R, x, y, p["label"], max(r_px, 0.5), mode)
             if agrees and radius_cm > 0:
                 sel = m & (d <= r_px)
                 if max_px and sel.sum() > max_px:
@@ -415,7 +455,7 @@ def write_labels(cfg, progress=lambda p, m: None, log=lambda m: None, cancelled=
     pds.CommitTransaction(); pds = None
     if rast is not None: rast.FlushCache(); rast = None
     result = {"points": len(pts), "plant_pixels": totals[PLANT], "soil_pixels": totals[SOIL], "radius_cm": radius_cm, "max_px": max_px,
-              "point_only": point_only, "raster_path": raster_path, "csv_path": csv_path, "buffers_path": poly_path, "seconds": round(time.time() - t0, 1),
+              "point_only": point_only, "buffer_mode": mode, "raster_path": raster_path, "csv_path": csv_path, "buffers_path": poly_path, "seconds": round(time.time() - t0, 1),
               "preview": preview}
     if preview:
         progress(100, "Buffers shown"); return result

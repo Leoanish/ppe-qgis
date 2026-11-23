@@ -90,6 +90,23 @@ class CreateAndBuffer(unittest.TestCase):
             ds = ogr.Open(p); return ds.GetLayer().GetFeatureCount()
         self.assertEqual(n(a["buffers_path"]), n(b["buffers_path"]))
 
+    def test_buffers_stay_in_one_piece_and_fuller_mode_takes_more(self):
+        from ppe_qgis.label_points import _Rasters, _same_class
+        R = _Rasters(self.mask, self.vote, ""); pts = read_points(self.info["points_path"])
+        for p in pts[:10]:
+            m, d, x0, y0, ok = _same_class(R, p["px"], p["py"], p["label"], 10.0)
+            sel = m & (d <= 10.0)
+            seen = np.zeros_like(sel); seen[p["py"] - y0, p["px"] - x0] = True       # flood from the point: reaches every buffer pixel
+            for _ in range(60):
+                p2 = np.pad(seen, 1); g = np.zeros_like(seen)
+                for dy in (-1, 0, 1):
+                    for dx in (-1, 0, 1): g |= p2[1 + dy:1 + dy + seen.shape[0], 1 + dx:1 + dx + seen.shape[1]]
+                seen = g & sel
+            self.assertTrue((seen == sel).all())
+        a = write_labels({"points_path": self.info["points_path"], "radius_cm": 10.0, "preview": True, "buffer_mode": "sure"})
+        b = write_labels({"points_path": self.info["points_path"], "radius_cm": 10.0, "preview": True, "buffer_mode": "class"})
+        self.assertGreaterEqual(b["plant_pixels"] + b["soil_pixels"], a["plant_pixels"] + a["soil_pixels"])
+
     def test_cap_limits_pixels_per_point(self):
         r = write_labels({"points_path": self.info["points_path"], "radius_cm": 20.0, "max_px": 5})
         self.assertLessEqual(r["plant_pixels"] + r["soil_pixels"], 5 * 60)
