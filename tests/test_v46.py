@@ -9,7 +9,7 @@ import unittest
 import numpy as np
 from osgeo import gdal, ogr
 
-from ppe_qgis.label_points import (EDGE_PX, buffer_preview, clear_classes, clhs, create_points, read_points, write_labels)
+from ppe_qgis.label_points import (EDGE_PX, buffer_preview, clear_classes, clhs, create_points, read_points, run_and_create, write_labels)
 try:
     from test_v43 import field, tif
 except ImportError:  # run as tests.test_v46
@@ -111,6 +111,15 @@ class CreateAndBuffer(unittest.TestCase):
         lab = gdal.Open(r["raster_path"]).ReadAsArray()
         self.assertTrue((lab[:, 120:] == 255).all()); self.assertTrue((lab[:, :120] != 255).any())
         self.assertTrue(os.path.isfile(os.path.join(out, "ppe_labels_area.gpkg")))
+
+
+    def test_one_click_runs_ppe_and_creates_points(self):
+        out = os.path.join(self.tmp, "oneclick")
+        info = run_and_create({"source_mode": "stacked", "stacked_path": self.img, "output_dir": out, "n_points": 30, "plant_share": 0.5})
+        self.assertTrue(0 < info["threshold"] < 1); self.assertTrue(os.path.isfile(info["mask_path"]))
+        pts = read_points(info["points_path"]); self.assertEqual(len(pts), 30)
+        self.assertTrue(info["points_path"].startswith(os.path.join(out, "ppe_labels")))
+        for p in pts: self.assertEqual(bool(self.green[p["py"], p["px"]]), p["label"] == 1)
 
 
 if __name__ == "__main__":

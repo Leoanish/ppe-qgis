@@ -264,6 +264,25 @@ def create_points(cfg, progress=lambda p, m: None, log=lambda m: None, cancelled
     return info
 
 
+def run_and_create(cfg, progress=lambda p, m: None, log=lambda m: None, cancelled=lambda: False):
+    """One click (4.6): run PPE on the image, finalize the mask at PPE's suggested threshold, then
+    create the points. cfg: the image and output_dir (as for a run), n_points, plant_share, labels_dir,
+    area_wkts / area_path."""
+    def part(a, b):
+        return lambda p, m="": progress(int(a + (b - a) * max(0, min(100, p)) / 100), m)
+    e = NativePPEEngine(part(0, 55), log, lambda *a: None, cancelled)
+    r = e.run(dict(cfg, action="run", work_dir=cfg.get("work_dir") or os.path.join(cfg["output_dir"], "ppe_work")))
+    if cancelled(): raise RuntimeError("Cancelled.")
+    threshold = float(r["threshold"]); c = dict(r.get("config") or {}); c.update(r); c.update(output_dir=cfg["output_dir"], threshold=threshold, action="apply")
+    a = NativePPEEngine(part(55, 62), log, lambda *x: None, cancelled).apply(c)
+    log("PPE mask finalized at its suggested threshold {:.2f} ({:.1f} % plant).".format(threshold, a.get("canopy_pct", 0)))
+    out = cfg.get("labels_dir") or os.path.join(cfg["output_dir"], "ppe_labels")
+    info = create_points(dict(cfg, mask_path=a["mask_path"], vote_path=r["vote_path"], findings_path=r.get("findings_path", ""), output_dir=out),
+                         part(62, 100), log, cancelled)
+    info.update(threshold=threshold, canopy_pct=a.get("canopy_pct"), vote_path=r["vote_path"], mask_path=a["mask_path"])
+    return info
+
+
 def _write_points(path, points, cols, R, cfg):
     if os.path.exists(path): gdal.GetDriverByName("GPKG").Delete(path)
     srs = osr.SpatialReference(); srs.ImportFromWkt(R.wkt)

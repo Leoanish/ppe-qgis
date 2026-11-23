@@ -53,7 +53,7 @@ When you update to a newer version, quit QGIS and open it again afterwards, so t
 ![PPE opened beside the map](docs/images/01_open_ppe.jpg)
 
 1. Click the **leaf button** in the toolbar, or choose **Raster → Plant Pixel Extractor**. The PPE panel opens on the right; you can drag it wider or float it.
-2. Choose the **Goal** at the top: *Plant mask* (the default), *Plant counter*, *Training data for a model* or *Create labels*. The tabs are used from left to right. Tabs 1 to 3 (Image, Run, Review) are the same for every goal; tab 4 is the goal's own step (Export, Count, Train data or Labels), and Batch is last. Finalize leads straight to tab 4. PPE remembers the goal.
+2. Choose the **Goal** at the top: *Plant mask* (the default), *Plant counter*, *Training data for a model* or *Create labels*. The tabs are used from left to right. Tabs 1 to 3 (Image, Run, Review) are the same for every goal; tab 4 is the goal's own step (Export, Count or Train data), and Batch is last. *Create labels* is simpler still: just tab 1 Image and tab 2 Labels. Finalize leads straight to tab 4. PPE remembers the goal.
 3. **Imagery source**: how your image is stored. Choose one of the following:
    - *Stacked GeoTIFF*: one file holding every band;
    - *Folder containing bands*: one file per band in a folder;
@@ -303,9 +303,9 @@ On PhenoBench (143 training images, 37 unseen test images), the model trained in
 
 ## 14. Goal Create labels: plant and soil points for your own model
 
-For anyone who wants to train their own machine-learning model, which needs labelled plant and soil pixels. Choose **Create labels** at the top, run and review as usual, finalize the mask, and tab 4 **Labels** makes the labels from PPE's own result. PPE itself is unchanged.
+For anyone who wants to train their own machine-learning model, which needs labelled plant and soil pixels. Choose **Create labels** at the top. There are only two tabs: choose the image on tab 1, then go to tab 2 **Labels**. Type how many points you want and the plant/soil split (50 % by default) and click **Create labels**. PPE runs, finalizes its mask at its own suggested threshold and places the points, all in one go (about 11 seconds on Midville, 500 points). PPE itself is unchanged.
 
-**1 Points.** Type how many points you want and the plant/soil split (50 % by default), then **Create points**. Only *clear* pixels can become a point:
+**1 Points.** Only *clear* pixels can become a point:
 
 - **plant**: in the finalized mask, every vote sure (at least 0.9), nothing found by PPE there (pale or dry plant parts, leaf edges, shade, unclear, faint sparse spots), and not on the edge of the plant;
 - **soil**: outside the mask, at most a tenth of the votes say plant, nothing found by PPE there, and not on the edge of the soil.

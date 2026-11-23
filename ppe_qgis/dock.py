@@ -781,7 +781,7 @@ class PPEDockWidget(QDockWidget):
     GOAL_TABS = {"mask": ("image", "run", "review", "export", "plots", "batch"),
                  "count": ("image", "run", "review", "count", "batch"),
                  "training": ("image", "run", "review", "training", "batch"),
-                 "labels": ("image", "run", "review", "labels")}
+                 "labels": ("image", "labels")}
 
     def _apply_goal(self, goal):
         """Show the tabs of one goal, numbered in order. The first three steps are the same for every
@@ -1054,11 +1054,10 @@ class PPEDockWidget(QDockWidget):
     def _labels_tab(self):
         page, layout = self._page()
         title = QLabel("Create labels"); title.setObjectName("sectionTitle")
-        hint = QLabel("Plant and soil label points for your own machine-learning model, taken from the finalized mask. "
-                      "Only clear pixels can become a point: plant where every vote is sure and PPE found nothing unusual, soil where "
-                      "no vote says plant; pixels near the threshold, flagged plant parts and edges are never used. "
-                      "The points spread over every band, NDVI and the whole field (conditioned Latin hypercube sampling), "
-                      "so the labels cover the full range and not only the easy pixels.")
+        hint = QLabel("Plant and soil label points for your own machine-learning model. Choose the image on tab 1, then Create labels: "
+                      "PPE runs, keeps its suggested threshold and places the points, all in one go. "
+                      "Only clear pixels can become a point (sure plant or sure soil, nothing unusual found there, not on an edge), "
+                      "spread over every band, NDVI and the whole field by conditioned Latin hypercube sampling.")
         hint.setWordWrap(True); hint.setObjectName("ppeHint"); layout.addWidget(title); layout.addWidget(hint)
         card, body = self._card("1  Points"); form = self._form(body)
         self.label_count = self._plain_spin(QSpinBox()); self.label_count.setRange(10, 100000); self.label_count.setSingleStep(100); self.label_count.setValue(500)
@@ -1079,14 +1078,14 @@ class PPEDockWidget(QDockWidget):
         ar.addWidget(self.label_area_status)
         form.addRow("Area", area)
         self._label_area = []
-        self.label_folder = QLineEdit(); self.label_folder.setPlaceholderText("Empty: ppe_labels next to the mask")
+        self.label_folder = QLineEdit(); self.label_folder.setPlaceholderText("Empty: ppe_labels in the output folder")
         form.addRow("Folder", self._path_row(self.label_folder, directory=True))
         layout.addWidget(card)
-        self.label_create_button = QPushButton("Create points"); self.label_create_button.setProperty("primary", True); self.label_create_button.setEnabled(False)
+        self.label_create_button = QPushButton("Create labels"); self.label_create_button.setProperty("primary", True)
         layout.addWidget(self.label_create_button)
         self.label_progress = QProgressBar(); self.label_progress.setRange(0, 100); self.label_progress.setValue(0); self.label_progress.setFormat("Ready")
         layout.addWidget(self.label_progress)
-        self.label_status = QLabel("Finalize the mask on tab 3, then create the points.")
+        self.label_status = QLabel("Choose the image on tab 1, then Create labels.")
         layout.addWidget(self._note(self.label_status))
         fix, fix_body = self._card("2  Check the points on the map")
         fb = QVBoxLayout(fix_body); fb.setContentsMargins(0, 0, 0, 0); fb.setSpacing(6)
@@ -1149,12 +1148,12 @@ class PPEDockWidget(QDockWidget):
         layout.addStretch(); return self._scroll_tab(page)
 
     def _label_dir(self):
-        mask = (self.result or {}).get("mask_path", "")
-        return self.label_folder.text().strip() or os.path.join(os.path.dirname(mask), "ppe_labels")
+        return self.label_folder.text().strip() or os.path.join(self.output_path.text().strip(), "ppe_labels")
 
     def _emit_labels_create(self):
-        r = self.result or {}; mask = r.get("mask_path", "")
-        if not os.path.isfile(mask): QMessageBox.warning(self, "PPE labels", "Finalize the mask on tab 3 first."); return
+        config = self.build_config("run"); error = self.validate_config(config)
+        if error: QMessageBox.warning(self, "PPE input", error); return
+        self._save_settings()
         out = self._label_dir()
         if os.path.isfile(os.path.join(out, "ppe_labels.gpkg")):
             if QMessageBox.question(self, "PPE labels", "This folder already has label points (and maybe your checks). Replace them with new points?",
@@ -1162,8 +1161,9 @@ class PPEDockWidget(QDockWidget):
         self._label_edit_done()
         area_file = self.label_area_file.text().strip()
         if area_file and not os.path.isfile(area_file): QMessageBox.warning(self, "PPE labels", "The area file does not exist."); return
-        self.labels_requested.emit({"action": "labels_create", "mask_path": mask, "vote_path": r.get("vote_path", ""), "findings_path": r.get("findings_path", ""),
-                                    "n_points": self.label_count.value(), "plant_share": self.label_share.value() / 100.0, "output_dir": out,
+        self._label_info = None; self.label_write_status.setText(""); self.label_preview.setText("")
+        self.labels_requested.emit({"action": "labels_create", "labels_dir": out,
+                                    "n_points": self.label_count.value(), "plant_share": self.label_share.value() / 100.0,
                                     "area_wkts": [g.asWkt() for g in self._label_area], "area_path": area_file})
 
     # the area the labels may come from (4.6)
@@ -1217,9 +1217,9 @@ class PPEDockWidget(QDockWidget):
     def set_labels_created(self, info):
         self._label_info = info
         self.label_progress.setValue(100); self.label_progress.setFormat("Complete")
-        self.label_status.setText("{} plant and {} soil points, chosen from {:,} clear plant and {:,} clear soil pixels ({:.1f} cm pixels).\n{}".format(
+        self.label_status.setText("{} plant and {} soil points, chosen from {:,} clear plant and {:,} clear soil pixels ({:.1f} cm pixels){}.\n{}".format(
             info.get("plant_points", 0), info.get("soil_points", 0), info.get("clear_plant_pixels", 0), info.get("clear_soil_pixels", 0),
-            info.get("pixel_cm", 0), info.get("points_path", "")))
+            info.get("pixel_cm", 0), " · PPE threshold {:.2f}".format(info["threshold"]) if info.get("threshold") is not None else "", info.get("points_path", "")))
         self.label_write_status.setText(""); self._label_preview_update(); self._refresh_goal_buttons()
 
     def labels_shown(self):
@@ -1299,7 +1299,7 @@ class PPEDockWidget(QDockWidget):
             self.train_button.setEnabled(not busy and bool(r.get("vote_path")))
             self.train_batch_button.setEnabled(not busy and bool(self.batch))
         if hasattr(self, "label_create_button"):
-            self.label_create_button.setEnabled(not busy and bool(r.get("mask_path")))
+            self.label_create_button.setEnabled(not busy)
             self.label_write_button.setEnabled(not busy and bool(getattr(self, "_label_info", None)))
 
     def _batch_tab(self):
