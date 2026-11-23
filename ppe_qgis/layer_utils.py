@@ -108,7 +108,7 @@ def canopy_at(points, threshold):
 
 # Where PPE's layers go in the Layers panel. The results are layers of their own at the top level;
 # only the working layers sit in the "Plant Pixel Extractor" group. From top to bottom:
-TOP_ORDER = ("plants", "plots", "pale", "mask", "__group__", "rgb")
+TOP_ORDER = ("labels", "label_buffers", "label_area", "plants", "plots", "pale", "mask", "__group__", "rgb")
 GROUP_ORDER = ("crops", "votes")
 
 
@@ -670,4 +670,62 @@ def show_plant_points(path, name="PPE · Plants"):
     layer.setRenderer(renderer)
     place_layer(layer, "plants")
     layer.triggerRepaint()
+    return layer
+
+
+def show_label_points(path, name="PPE · Label points"):
+    """The label points (ppe_labels.gpkg) as the top layer: plant green, soil orange; a point the user
+    changed or added has a white ring. Replaces earlier label points."""
+    from qgis.core import QgsCategorizedSymbolRenderer, QgsMarkerSymbol, QgsRendererCategory, QgsUnitTypes, QgsVectorLayer
+    remove_role("labels"); remove_role("label_buffers")
+    layer = QgsVectorLayer(path + "|layername=points", name, "ogr")
+    if not layer.isValid():
+        return None
+
+    def dot(fill, outline="0,0,0", width="0.45"):
+        sym = QgsMarkerSymbol.createSimple({"name": "circle", "color": fill, "outline_color": outline, "outline_width": width,
+                                            "size": str(PLANT_POINT_SIZE)})
+        sym.setSizeUnit(QgsUnitTypes.RenderMillimeters)
+        return sym
+    expr = "\"label\" || if(\"status\" in ('changed', 'added'), ' yours', '')"
+    layer.setRenderer(QgsCategorizedSymbolRenderer(expr, [
+        QgsRendererCategory("plant", dot("0,220,0"), "Plant"),
+        QgsRendererCategory("soil", dot("255,150,0"), "Soil"),
+        QgsRendererCategory("plant yours", dot("0,220,0", "255,255,255", "0.9"), "Plant · changed or added by you"),
+        QgsRendererCategory("soil yours", dot("255,150,0", "255,255,255", "0.9"), "Soil · changed or added by you")]))
+    place_layer(layer, "labels")
+    layer.triggerRepaint()
+    return layer
+
+
+def show_label_buffers(path, name="PPE · Label buffers"):
+    """The buffer polygons (outlines only: plant green, soil orange), just under the points."""
+    from qgis.core import QgsCategorizedSymbolRenderer, QgsFillSymbol, QgsRendererCategory, QgsVectorLayer
+    remove_role("label_buffers")
+    layer = QgsVectorLayer(path + "|layername=buffers", name, "ogr")
+    if not layer.isValid():
+        return None
+    layer.setRenderer(QgsCategorizedSymbolRenderer("label", [
+        QgsRendererCategory("plant", QgsFillSymbol.createSimple({"color": "0,220,0,40", "outline_color": "0,220,0", "outline_width": "0.4"}), "Plant buffer"),
+        QgsRendererCategory("soil", QgsFillSymbol.createSimple({"color": "255,150,0,40", "outline_color": "255,150,0", "outline_width": "0.4"}), "Soil buffer")]))
+    place_layer(layer, "label_buffers")
+    layer.triggerRepaint()
+    return layer
+
+
+def show_label_area(geometries, crs, name="PPE · Label area"):
+    """The area the labels come from (dashed magenta outline). geometries: QgsGeometry in `crs`;
+    an empty list removes the layer."""
+    from qgis.core import QgsFeature, QgsFillSymbol, QgsSingleSymbolRenderer, QgsVectorLayer
+    remove_role("label_area")
+    if not geometries or crs is None:
+        return None
+    layer = QgsVectorLayer("MultiPolygon", name, "memory"); layer.setCrs(crs)
+    feats = []
+    for g in geometries:
+        f = QgsFeature(); f.setGeometry(g); feats.append(f)
+    layer.dataProvider().addFeatures(feats); layer.updateExtents()
+    layer.setRenderer(QgsSingleSymbolRenderer(QgsFillSymbol.createSimple({"style": "no", "outline_color": "255,0,200", "outline_width": "0.8",
+                                                                          "outline_width_unit": "MM", "outline_style": "dash"})))
+    place_layer(layer, "label_area")
     return layer

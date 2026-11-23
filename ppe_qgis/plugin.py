@@ -91,6 +91,7 @@ class PPEPlugin:
         self.dock.export_requested.connect(self._start_export)
         self.dock.count_requested.connect(self._start_goal_job)
         self.dock.training_requested.connect(self._start_goal_job)
+        self.dock.labels_requested.connect(self._start_goal_job)
         self.dock.cancel_requested.connect(self.runner.cancel)
         self.dock.preview_requested.connect(self._start_preview)
         self.dock.reset_requested.connect(self._reset_layers)
@@ -334,6 +335,25 @@ class PPEPlugin:
                 except Exception as exc:
                     self.dock.append_log("Could not show the plant points: {}".format(exc))
             self._message("Counted {} plants.".format(result.get("plants", 0)), Qgis.Success)
+            return
+        if self.current_action == "labels_create":
+            self.dock.set_labels_created(result)
+            try:
+                from .layer_utils import show_label_points
+                with self._own_changes():
+                    if show_label_points(result["points_path"]) is not None: self.dock.labels_shown()
+            except Exception as exc:
+                self.dock.append_log("Could not show the label points: {}".format(exc))
+            self._message("Label points: {} plant and {} soil. Check them on the map.".format(result.get("plant_points", 0), result.get("soil_points", 0)), Qgis.Success)
+            return
+        if self.current_action == "labels_write":
+            self.dock.set_labels_written(result)
+            try:
+                from .layer_utils import show_label_buffers
+                with self._own_changes(): show_label_buffers(result["buffers_path"])
+            except Exception as exc:
+                self.dock.append_log("Could not show the label buffers: {}".format(exc))
+            self._message("Labels written: {:,} plant and {:,} soil pixels.".format(result.get("plant_pixels", 0), result.get("soil_pixels", 0)), Qgis.Success)
             return
         if self.current_action == "training":
             self.dock.set_training_done(result)

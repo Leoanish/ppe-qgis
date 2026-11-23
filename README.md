@@ -25,9 +25,10 @@ The screenshots below are from a real run in QGIS 3.34 on a five-band multispect
 11. [Tab 6 Batch: many images at once](#11-tab-6-batch-many-images-at-once)
 12. [Goal Plant counter: count plants](#12-goal-plant-counter-count-plants)
 13. [Goal Training data: tiles and labels for a model](#13-goal-training-data-tiles-and-labels-for-a-model)
-14. [The Layers panel](#14-the-layers-panel)
-15. [Files PPE writes](#15-files-ppe-writes)
-16. [Tips and troubleshooting](#16-tips-and-troubleshooting)
+14. [Goal Create labels: plant and soil points for your own model](#14-goal-create-labels-plant-and-soil-points-for-your-own-model)
+15. [The Layers panel](#15-the-layers-panel)
+16. [Files PPE writes](#16-files-ppe-writes)
+17. [Tips and troubleshooting](#17-tips-and-troubleshooting)
 
 ---
 
@@ -52,7 +53,7 @@ When you update to a newer version, quit QGIS and open it again afterwards, so t
 ![PPE opened beside the map](docs/images/01_open_ppe.jpg)
 
 1. Click the **leaf button** in the toolbar, or choose **Raster → Plant Pixel Extractor**. The PPE panel opens on the right; you can drag it wider or float it.
-2. Choose the **Goal** at the top: *Plant mask* (the default), *Plant counter* or *Training data for a model*. The tabs are used from left to right. Tabs 1 to 3 (Image, Run, Review) are the same for every goal; tab 4 is the goal's own step (Export, Count or Train data), and Batch is last. Finalize leads straight to tab 4. PPE remembers the goal.
+2. Choose the **Goal** at the top: *Plant mask* (the default), *Plant counter*, *Training data for a model* or *Create labels*. The tabs are used from left to right. Tabs 1 to 3 (Image, Run, Review) are the same for every goal; tab 4 is the goal's own step (Export, Count, Train data or Labels), and Batch is last. Finalize leads straight to tab 4. PPE remembers the goal.
 3. **Imagery source**: how your image is stored. Choose one of the following:
    - *Stacked GeoTIFF*: one file holding every band;
    - *Folder containing bands*: one file per band in a folder;
@@ -300,7 +301,34 @@ python ppe_train.py update  ppe_model.pt <new training data> <old training data>
 
 On PhenoBench (143 training images, 37 unseen test images), the model trained in 2 minutes on PPE's labels alone reached 93.6 % overlap with hand labels on the test images; the same model trained on the hand labels reached 95.4 %.
 
-## 14. The Layers panel
+## 14. Goal Create labels: plant and soil points for your own model
+
+For anyone who wants to train their own machine-learning model, which needs labelled plant and soil pixels. Choose **Create labels** at the top, run and review as usual, finalize the mask, and tab 4 **Labels** makes the labels from PPE's own result. PPE itself is unchanged.
+
+**1 Points.** Type how many points you want and the plant/soil split (50 % by default), then **Create points**. Only *clear* pixels can become a point:
+
+- **plant**: in the finalized mask, every vote sure (at least 0.9), nothing found by PPE there (pale or dry plant parts, leaf edges, shade, unclear, faint sparse spots), and not on the edge of the plant;
+- **soil**: outside the mask, at most a tenth of the votes say plant, nothing found by PPE there, and not on the edge of the soil.
+
+Pixels near the threshold, flagged plant parts and no-data are never used. Where the points go is chosen by **conditioned Latin hypercube sampling** (cLHS), separately for plant and for soil, over every band, NDVI and the position in the field. So the points cover the whole range of the image and the whole field, not just the easiest pixels. In a test, cLHS left half as many value ranges empty as random sampling did. 500 points take about 15 seconds on a 1.5 cm, 5-band field.
+
+**Area (optional).** **Draw area** lets you click an outline on the map (right-click to finish; draw several to add them together), or choose a polygon file such as the field boundary or the plots. Points and buffers then stay inside it, so field edges, headlands, roads or weedy corners never give labels.
+
+**2 Check the points.** They appear as **PPE · Label points**: green for plant, orange for soil. Zoom in and fix any point that is wrong with **Plant ↔ soil**, **Remove**, **＋ Plant** or **＋ Soil**. Each click is saved and **Undo last** steps back. Points you changed or added get a white ring.
+
+**3 Buffer and write.** The slider (0 to 50 cm in 0.5 cm steps) grows each point into a disc. The disc is cut to the clear pixels of the point's own class, so a plant buffer stops at the edge of the leaf and a soil buffer stops before the canopy: a buffer never takes in the other class. As you move the slider, the panel shows how many pixels will be labelled. **Pixels per point** (optional) keeps only the nearest pixels, so one big leaf cannot dominate. A point you switched to the other class keeps only its own pixel, because PPE's mask disagrees with you there. **Write labels** writes:
+
+- `ppe_labels.gpkg`: the points, with your label, PPE's label, status (proposed, changed, added) and band values;
+- `ppe_label_buffers.gpkg`: one polygon per point (shown as **PPE · Label buffers**);
+- `ppe_label_raster.tif`: 1 plant, 0 soil, 255 no label, aligned with the image;
+- `ppe_label_pixels.csv`: every labelled pixel with its point, label, position, band values and NDVI, ready for a model;
+- `ppe_labels_area.gpkg`: the area, when one was used.
+
+Pixels of one buffer are alike. When you test a model, keep whole points apart (column `point_id`), not single pixels, or the accuracy looks better than it is.
+
+On four fields (Kritis, Midville, IH, Tifton), we compared PPE's automatic labels with hand-checked points that fell on clear pixels. They agreed on 98, 97, 88 and 90 % of the points.
+
+## 15. The Layers panel
 
 ![Layers panel](docs/images/15_layers_panel.jpg)
 
@@ -313,7 +341,7 @@ On PhenoBench (143 training images, 37 unseen test images), the model trained in
 
 PPE's layers come in **folded**, so the panel stays short; the arrow beside a layer shows its legend. Your own layers keep their places. Removing the PPE image layer resets PPE; removing the live preview switches the slider off until the next run. Every layer can be restyled like any QGIS layer.
 
-## 15. Files PPE writes
+## 16. Files PPE writes
 
 The output and working folders are set under **Folders** on tab 1; plot results go to the export folder of tab 4.
 
@@ -330,7 +358,7 @@ The output and working folders are set under **Folders** on tab 1; plot results 
 | `ppe_training_data/` (`images/`, `labels/`, `manifest.json`, `README.txt`) | training data (Train data tab) for `ppe_train.py` |
 | `logs/ppe_YYYYMMDD_HHMMSS.log` (in the output folder) | the log of each run: attach it when you report a problem |
 
-## 16. Tips and troubleshooting
+## 17. Tips and troubleshooting
 
 - **The mask misses pale plants or flowers.** Lower the threshold a little, or draw that crop as its own area with a lower threshold. At tasselling, a corn field kept its tassels near 0.30 without letting soil in.
 - **Shaded leaves or dark gaps.** Open *What PPE found*. Shaded leaves are plant; unclear pixels can be left out with one tick and put back. On RGB-only images (no NIR) PPE tells them apart by colour: dark pixels whose strongest colour is still green are shaded leaves, the rest (mostly soil in shadow) are unclear.

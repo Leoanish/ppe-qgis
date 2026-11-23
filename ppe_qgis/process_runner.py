@@ -4,7 +4,7 @@ from datetime import datetime
 from qgis.PyQt.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 from .native_engine import Cancelled, NativePPEEngine
 
-ACTION_NAMES = {"run": "Run", "apply": "Finalize", "zones": "Preparing the crop areas", "export_aoi": "Plot export", "count": "Plant count", "training": "Training data", "preview": "Opening the image",
+ACTION_NAMES = {"run": "Run", "apply": "Finalize", "zones": "Preparing the crop areas", "export_aoi": "Plot export", "count": "Plant count", "training": "Training data", "labels_create": "Creating label points", "labels_write": "Writing labels", "preview": "Opening the image",
                 "batch_run": "Batch run", "batch_finalize": "Finalizing the batch"}
 
 
@@ -50,6 +50,10 @@ class _Worker(QObject):
                 cfg=dict(self.config)
                 if cfg.get("batch_manifest"): cfg["items"]=training_data.items_from_batch(cfg["batch_manifest"])
                 result=training_data.export_training_tiles(cfg, self._progress, self.log.emit, lambda:self.cancelled)
+            elif action in ("labels_create","labels_write"):
+                from . import label_points
+                fn=label_points.create_points if action=="labels_create" else label_points.write_labels
+                result=fn(self.config, self._progress, self.log.emit, lambda:self.cancelled)
             elif str(action).startswith("export"): result=engine.export_plant_only(self.config)
             else: result=engine.run(self.config)
             self.succeeded.emit(result)

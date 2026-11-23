@@ -77,3 +77,45 @@ class PlantEditTool(QgsMapTool):
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape: self.done.emit()
         elif event.key() in (Qt.Key_Backspace, Qt.Key_Z) and (event.key() == Qt.Key_Backspace or event.modifiers() & Qt.ControlModifier): self.undo_last()
+
+
+# ---- checking label points (4.6) ---------------------------------------------------------------
+def labels_layer():
+    for layer in QgsProject.instance().mapLayers().values():
+        if layer.customProperty(ROLE_KEY, "") == "labels":
+            return layer
+    return None
+
+
+class LabelEditTool(PlantEditTool):
+    """Check the label points: mode 'switch' (plant <-> soil), 'remove', 'add_plant' or 'add_soil'.
+    A switched point gets status 'changed' (back to 'proposed' when switched back); an added point 'added'."""
+
+    def canvasReleaseEvent(self, event):
+        if event.button() != Qt.LeftButton: return
+        prov = self.layer.dataProvider(); fields = self.layer.fields()
+        if self.mode in ("add_plant", "add_soil"):
+            f = QgsFeature(fields); f.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(self._to_layer(self.toMapCoordinates(event.pos())))))
+            ids = [x["id"] for x in self.layer.getFeatures() if x["id"] is not None]
+            f["id"] = (max(ids) if ids else 0) + 1; f["label"] = "plant" if self.mode == "add_plant" else "soil"; f["ppe_label"] = ""; f["status"] = "added"
+            ok, out = prov.addFeatures([f])
+            if ok: self.undo.append(("add", out[0].id())); self._changed("{} point added.".format(f["label"].capitalize()))
+            return
+        f = self._nearest(event)
+        if f is None:
+            self.changed.emit("No point there: click on a point."); return
+        if self.mode == "remove":
+            self.undo.append(("remove", QgsFeature(f))); prov.deleteFeatures([f.id()]); self._changed("Point removed.")
+        elif self.mode == "switch":
+            old = (f["label"], f["status"]); new = "soil" if f["label"] == "plant" else "plant"
+            status = "added" if f["status"] == "added" else ("proposed" if new == f["ppe_label"] else "changed")
+            prov.changeAttributeValues({f.id(): {fields.indexOf("label"): new, fields.indexOf("status"): status}})
+            self.undo.append(("switch", (f.id(), old))); self._changed("Now {}.".format(new))
+
+    def undo_last(self):
+        if not self.undo: return False
+        kind, data = self.undo.pop(); prov = self.layer.dataProvider(); fields = self.layer.fields()
+        if kind == "add": prov.deleteFeatures([data])
+        elif kind == "remove": prov.addFeatures([data])
+        else: prov.changeAttributeValues({data[0]: {fields.indexOf("label"): data[1][0], fields.indexOf("status"): data[1][1]}})
+        self._changed("Last change undone."); return True

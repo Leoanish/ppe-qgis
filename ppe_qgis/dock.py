@@ -139,6 +139,7 @@ class PPEDockWidget(QDockWidget):
     batch_open_requested = pyqtSignal(dict)      # open one image of a batch for review
     count_requested = pyqtSignal(dict)           # count plants in the finalized mask(s)
     training_requested = pyqtSignal(dict)        # cut training tiles + PPE labels
+    labels_requested = pyqtSignal(dict)          # create label points / write buffered labels (4.6)
     closing = pyqtSignal()
 
     def __init__(self, iface, parent=None):
@@ -186,11 +187,13 @@ class PPEDockWidget(QDockWidget):
         goal_row = QHBoxLayout(); goal_row.setContentsMargins(0, 6, 0, 0); goal_row.setSpacing(8)
         goal_label = QLabel("Goal"); goal_label.setObjectName("ppeSubtitle")
         self.goal = QComboBox()
-        for text, key in (("Plant mask", "mask"), ("Plant counter", "count"), ("Training data for a model", "training")):
+        for text, key in (("Plant mask", "mask"), ("Plant counter", "count"), ("Training data for a model", "training"),
+                          ("Create labels", "labels")):
             self.goal.addItem(text, key)
         self.goal.setToolTip("Plant mask: plant pixels, plant-only bands and plot statistics.\n"
                              "Plant counter: count plants (early season) per image and per plot.\n"
                              "Training data: image tiles with PPE labels to train a fast model, no hand labelling.\n"
+                             "Create labels: plant and soil label points (and buffers) for your own machine-learning model.\n"
                              "Every goal starts with the same steps: image, run, review.")
         goal_row.addWidget(goal_label); goal_row.addWidget(self.goal, 1)
         header_layout.addLayout(goal_row)
@@ -209,6 +212,7 @@ class PPEDockWidget(QDockWidget):
             "plots": (self._aoi_export_tab(), "Plots", "Statistics for each plot polygon"),
             "count": (self._count_tab(), "Count", "Count the plants in the finalized mask, per image and per plot"),
             "training": (self._training_tab(), "Train data", "Image tiles with PPE labels for training a fast model"),
+            "labels": (self._labels_tab(), "Labels", "Plant and soil label points for a machine-learning model"),
             "batch": (self._batch_tab(), "Batch", "Many images at once: run a folder, review each, finalize all"),
         }
         root.addWidget(self.tabs, 1)
@@ -776,7 +780,8 @@ class PPEDockWidget(QDockWidget):
     # ---- Tab 6 Batch (4.2): many images, each reviewed with the normal slider ------------------
     GOAL_TABS = {"mask": ("image", "run", "review", "export", "plots", "batch"),
                  "count": ("image", "run", "review", "count", "batch"),
-                 "training": ("image", "run", "review", "training", "batch")}
+                 "training": ("image", "run", "review", "training", "batch"),
+                 "labels": ("image", "run", "review", "labels")}
 
     def _apply_goal(self, goal):
         """Show the tabs of one goal, numbered in order. The first three steps are the same for every
@@ -1045,6 +1050,247 @@ class PPEDockWidget(QDockWidget):
             len(result.get("tiles", [])), result.get("train", 0), result.get("val", 0), 100 * shares.get("plant", 0), 100 * shares.get("soil", 0),
             100 * shares.get("unsure", 0), result.get("output_dir", "")))
 
+    # ---- goal: create labels (4.6) -----------------------------------------------------------
+    def _labels_tab(self):
+        page, layout = self._page()
+        title = QLabel("Create labels"); title.setObjectName("sectionTitle")
+        hint = QLabel("Plant and soil label points for your own machine-learning model, taken from the finalized mask. "
+                      "Only clear pixels can become a point: plant where every vote is sure and PPE found nothing unusual, soil where "
+                      "no vote says plant; pixels near the threshold, flagged plant parts and edges are never used. "
+                      "The points spread over every band, NDVI and the whole field (conditioned Latin hypercube sampling), "
+                      "so the labels cover the full range and not only the easy pixels.")
+        hint.setWordWrap(True); hint.setObjectName("ppeHint"); layout.addWidget(title); layout.addWidget(hint)
+        card, body = self._card("1  Points"); form = self._form(body)
+        self.label_count = self._plain_spin(QSpinBox()); self.label_count.setRange(10, 100000); self.label_count.setSingleStep(100); self.label_count.setValue(500)
+        self.label_count.setToolTip("How many label points in total (plant + soil).")
+        form.addRow("Number of points", self.label_count)
+        self.label_share = self._plain_spin(QSpinBox()); self.label_share.setRange(5, 95); self.label_share.setValue(50); self.label_share.setSuffix(" % plant")
+        self.label_share.setToolTip("Share of plant points; the rest are soil. 50 % gives the model both classes equally.")
+        form.addRow("Plant / soil", self.label_share)
+        area = QWidget(); ar = QVBoxLayout(area); ar.setContentsMargins(0, 0, 0, 0); ar.setSpacing(4)
+        row = QHBoxLayout(); row.setSpacing(6)
+        self.label_draw_button = QPushButton("✎ Draw area"); self.label_draw_button.setProperty("secondary", True)
+        self.label_draw_button.setToolTip("Click the corners of an area on the map, right-click to finish. Draw several to add them together.")
+        self.label_clear_area_button = QPushButton("Clear"); self.label_clear_area_button.setProperty("secondary", True)
+        row.addWidget(self.label_draw_button, 1); row.addWidget(self.label_clear_area_button); ar.addLayout(row)
+        self.label_area_file = QLineEdit(); self.label_area_file.setPlaceholderText("or a polygon file (field boundary, plots…)")
+        ar.addWidget(self._path_row(self.label_area_file))
+        self.label_area_status = QLabel("Whole image. Draw an area to leave out field edges, headlands or weedy corners."); self.label_area_status.setObjectName("ppeHint"); self.label_area_status.setWordWrap(True)
+        ar.addWidget(self.label_area_status)
+        form.addRow("Area", area)
+        self._label_area = []
+        self.label_folder = QLineEdit(); self.label_folder.setPlaceholderText("Empty: ppe_labels next to the mask")
+        form.addRow("Folder", self._path_row(self.label_folder, directory=True))
+        layout.addWidget(card)
+        self.label_create_button = QPushButton("Create points"); self.label_create_button.setProperty("primary", True); self.label_create_button.setEnabled(False)
+        layout.addWidget(self.label_create_button)
+        self.label_progress = QProgressBar(); self.label_progress.setRange(0, 100); self.label_progress.setValue(0); self.label_progress.setFormat("Ready")
+        layout.addWidget(self.label_progress)
+        self.label_status = QLabel("Finalize the mask on tab 3, then create the points.")
+        layout.addWidget(self._note(self.label_status))
+        fix, fix_body = self._card("2  Check the points on the map")
+        fb = QVBoxLayout(fix_body); fb.setContentsMargins(0, 0, 0, 0); fb.setSpacing(6)
+        fix_hint = QLabel("Green = plant, orange = soil. Zoom in and fix any point that is wrong; each click is saved. "
+                          "A point you switch keeps only its own pixel in step 3, because PPE's mask disagrees with you there.")
+        fix_hint.setWordWrap(True); fix_hint.setObjectName("ppeHint"); fb.addWidget(fix_hint)
+        row = QHBoxLayout(); row.setSpacing(6)
+        self.label_switch_button = QPushButton("Plant ↔ soil"); self.label_remove_button = QPushButton("－ Remove")
+        self.label_add_plant_button = QPushButton("＋ Plant"); self.label_add_soil_button = QPushButton("＋ Soil")
+        self.label_switch_button.setToolTip("Click on a point to switch it between plant and soil.")
+        self.label_remove_button.setToolTip("Click on a point to remove it.")
+        self.label_add_plant_button.setToolTip("Click on the map to add a plant point.")
+        self.label_add_soil_button.setToolTip("Click on the map to add a soil point.")
+        self._label_edit_buttons = ((self.label_switch_button, "switch"), (self.label_remove_button, "remove"),
+                                    (self.label_add_plant_button, "add_plant"), (self.label_add_soil_button, "add_soil"))
+        for b, _ in self._label_edit_buttons: b.setCheckable(True); b.setProperty("secondary", True); b.setEnabled(False); row.addWidget(b, 1)
+        fb.addLayout(row)
+        row = QHBoxLayout(); row.setSpacing(6)
+        self.label_undo_button = QPushButton("Undo last"); self.label_undo_button.setProperty("secondary", True); self.label_undo_button.setEnabled(False)
+        self.label_done_button = QPushButton("Done"); self.label_done_button.setProperty("secondary", True); self.label_done_button.setEnabled(False)
+        row.addWidget(self.label_undo_button, 1); row.addWidget(self.label_done_button, 1); fb.addLayout(row)
+        self.label_edit_status = QLabel("Create the points first.")
+        self.label_edit_status.setObjectName("findingTitle"); self.label_edit_status.setWordWrap(True); fb.addWidget(self.label_edit_status)
+        layout.addWidget(fix)
+        buf, buf_body = self._card("3  Buffer and write the labels")
+        bb = QVBoxLayout(buf_body); bb.setContentsMargins(0, 0, 0, 0); bb.setSpacing(6)
+        buf_hint = QLabel("Each point grows into a disc of this radius, cut to the clear pixels of its own class, so a buffer stops at "
+                          "the edge of a leaf (or of the soil) and never takes in the other class. Every pixel inside gets the point's label.")
+        buf_hint.setWordWrap(True); buf_hint.setObjectName("ppeHint"); bb.addWidget(buf_hint)
+        row = QHBoxLayout(); row.setSpacing(8)
+        self.label_radius = QSlider(Qt.Horizontal); self.label_radius.setRange(0, 100); self.label_radius.setSingleStep(1); self.label_radius.setPageStep(2)
+        self.label_radius.setValue(0); self.label_radius.setToolTip("Buffer radius, 0 to 50 cm in 0.5 cm steps (arrow keys for single steps).")
+        self.label_radius_text = QLabel("0.0 cm · points only"); self.label_radius_text.setMinimumWidth(130)
+        row.addWidget(self.label_radius, 1); row.addWidget(self.label_radius_text); bb.addLayout(row)
+        form2 = QFormLayout(); form2.setContentsMargins(0, 0, 0, 0)
+        self.label_cap = self._plain_spin(QSpinBox()); self.label_cap.setRange(0, 1000000); self.label_cap.setSingleStep(50); self.label_cap.setValue(0)
+        self.label_cap.setSpecialValueText("No limit"); self.label_cap.setToolTip("At most this many pixels per point (the nearest ones), so one big leaf cannot dominate.")
+        form2.addRow("Pixels per point", self.label_cap); bb.addLayout(form2)
+        self.label_preview = QLabel(""); self.label_preview.setObjectName("findingTitle"); self.label_preview.setWordWrap(True); bb.addWidget(self.label_preview)
+        self.label_write_button = QPushButton("Write labels"); self.label_write_button.setProperty("primary", True); self.label_write_button.setEnabled(False)
+        bb.addWidget(self.label_write_button)
+        self.label_write_status = QLabel("")
+        self.label_write_status.setWordWrap(True); self.label_write_status.setObjectName("ppeHint"); bb.addWidget(self.label_write_status)
+        layout.addWidget(buf)
+        out = QLabel("Output, in the labels folder: ppe_labels.gpkg (the points: label, PPE's label, status, band values), "
+                     "ppe_label_buffers.gpkg (one polygon per point), ppe_label_raster.tif (1 plant, 0 soil, 255 no label, aligned with the image) "
+                     "and ppe_label_pixels.csv (every labelled pixel with its band values and NDVI, ready for a model). "
+                     "Pixels of one buffer are alike: test a model on whole points (column point_id), not on single pixels.")
+        out.setWordWrap(True); out.setObjectName("ppeHint"); layout.addWidget(out)
+        self.label_create_button.clicked.connect(self._emit_labels_create)
+        self.label_draw_button.clicked.connect(self._label_draw_area)
+        self.label_clear_area_button.clicked.connect(self._label_clear_area)
+        self.label_area_file.textChanged.connect(self._label_area_text)
+        self.label_write_button.clicked.connect(self._emit_labels_write)
+        self.label_radius.valueChanged.connect(self._label_preview_update)
+        self.label_cap.valueChanged.connect(self._label_preview_update)
+        for b, mode in self._label_edit_buttons: b.clicked.connect(lambda _=False, m=mode: self._label_edit(m))
+        self.label_undo_button.clicked.connect(self._label_undo)
+        self.label_done_button.clicked.connect(self._label_edit_done)
+        layout.addStretch(); return self._scroll_tab(page)
+
+    def _label_dir(self):
+        mask = (self.result or {}).get("mask_path", "")
+        return self.label_folder.text().strip() or os.path.join(os.path.dirname(mask), "ppe_labels")
+
+    def _emit_labels_create(self):
+        r = self.result or {}; mask = r.get("mask_path", "")
+        if not os.path.isfile(mask): QMessageBox.warning(self, "PPE labels", "Finalize the mask on tab 3 first."); return
+        out = self._label_dir()
+        if os.path.isfile(os.path.join(out, "ppe_labels.gpkg")):
+            if QMessageBox.question(self, "PPE labels", "This folder already has label points (and maybe your checks). Replace them with new points?",
+                                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes: return
+        self._label_edit_done()
+        area_file = self.label_area_file.text().strip()
+        if area_file and not os.path.isfile(area_file): QMessageBox.warning(self, "PPE labels", "The area file does not exist."); return
+        self.labels_requested.emit({"action": "labels_create", "mask_path": mask, "vote_path": r.get("vote_path", ""), "findings_path": r.get("findings_path", ""),
+                                    "n_points": self.label_count.value(), "plant_share": self.label_share.value() / 100.0, "output_dir": out,
+                                    "area_wkts": [g.asWkt() for g in self._label_area], "area_path": area_file})
+
+    # the area the labels may come from (4.6)
+    def _label_draw_area(self):
+        if self._busy: self._busy_warning(); return
+        if getattr(self, "_label_area_tool", None) is not None: return
+        self._label_edit_done()
+        canvas = self.iface.mapCanvas(); self._label_area_prev = canvas.mapTool()
+        tool = PolygonDrawTool(canvas); tool.finished.connect(self._label_area_drawn); tool.cancelled.connect(lambda: self._label_area_end())
+        self._label_area_tool = tool; canvas.setMapTool(tool); canvas.setFocus()
+        self.label_draw_button.setText("● drawing…")
+        self.label_area_status.setText("Click the corners on the map; right-click (or double-click) to finish, Esc to cancel, Backspace undoes a corner.")
+
+    def _label_area_drawn(self, geometry):
+        copy, crs = to_crs(geometry, self.iface.mapCanvas().mapSettings().destinationCrs(), self._image_wkt())
+        self._label_area.append(copy); self._label_area_crs = crs
+        self._label_area_end(); self._label_area_show()
+
+    def _label_area_end(self):
+        tool = getattr(self, "_label_area_tool", None); self._label_area_tool = None
+        canvas = self.iface.mapCanvas()
+        if tool is not None and canvas.mapTool() is tool and not getattr(tool, "switched_away", False):
+            prev = getattr(self, "_label_area_prev", None)
+            if prev is not None: canvas.setMapTool(prev)
+            else: self.iface.actionPan().trigger()
+        self.label_draw_button.setText("✎ Draw area"); self._label_area_text()
+
+    def _label_clear_area(self):
+        self._label_area = []; self.label_area_file.clear(); self._label_area_show(); self._label_area_text()
+
+    def _label_area_show(self):
+        try:
+            from .layer_utils import show_label_area
+            show_label_area(self._label_area, getattr(self, "_label_area_crs", None))
+        except Exception as err:
+            self.append_log("Could not show the label area: {}".format(err))
+
+    def _label_area_text(self, *_):
+        n = len(self._label_area); f = self.label_area_file.text().strip()
+        parts = (["{} drawn area{}".format(n, "s" if n > 1 else "")] if n else []) + (["the polygons in {}".format(os.path.basename(f))] if f else [])
+        self.label_area_status.setText("Points and buffers only inside " + " + ".join(parts) + "." if parts
+                                       else "Whole image. Draw an area to leave out field edges, headlands or weedy corners.")
+
+    def _emit_labels_write(self):
+        info = getattr(self, "_label_info", None)
+        if not info: QMessageBox.warning(self, "PPE labels", "Create the points first."); return
+        self._label_edit_done()
+        self.labels_requested.emit({"action": "labels_write", "points_path": info["points_path"], "radius_cm": self.label_radius.value() / 2.0,
+                                    "max_px": self.label_cap.value()})
+
+    def set_labels_created(self, info):
+        self._label_info = info
+        self.label_progress.setValue(100); self.label_progress.setFormat("Complete")
+        self.label_status.setText("{} plant and {} soil points, chosen from {:,} clear plant and {:,} clear soil pixels ({:.1f} cm pixels).\n{}".format(
+            info.get("plant_points", 0), info.get("soil_points", 0), info.get("clear_plant_pixels", 0), info.get("clear_soil_pixels", 0),
+            info.get("pixel_cm", 0), info.get("points_path", "")))
+        self.label_write_status.setText(""); self._label_preview_update(); self._refresh_goal_buttons()
+
+    def labels_shown(self):
+        for b, _ in self._label_edit_buttons: b.setEnabled(True)
+        self.label_edit_status.setText("Check the points on the map; fix any with the buttons above.")
+
+    def set_labels_written(self, result):
+        self.label_progress.setValue(100); self.label_progress.setFormat("Complete")
+        self.label_write_status.setText("{:,} plant and {:,} soil pixels from {} points (buffer {:.1f} cm){}.\n{}\n{}".format(
+            result.get("plant_pixels", 0), result.get("soil_pixels", 0), result.get("points", 0), result.get("radius_cm", 0),
+            "; {} points you changed keep only their own pixel".format(result["point_only"]) if result.get("point_only") else "",
+            result.get("raster_path", ""), result.get("csv_path", "")))
+
+    def _label_preview_update(self, *_):
+        cm = self.label_radius.value() / 2.0
+        self.label_radius_text.setText("{:.1f} cm{}".format(cm, " · points only" if cm == 0 else ""))
+        info = getattr(self, "_label_info", None)
+        if not info: self.label_preview.setText(""); return
+        try:
+            from .label_points import buffer_preview, read_points
+            t = buffer_preview(info, read_points(info["points_path"]), cm, self.label_cap.value())
+            self.label_preview.setText("About {:,} plant and {:,} soil pixels will be labelled.".format(t["plant"], t["soil"]))
+        except Exception as exc:
+            self.label_preview.setText("Could not count the pixels: {}".format(exc))
+
+    def _label_edit(self, mode):
+        from .plant_edit import LabelEditTool, labels_layer
+        layer = labels_layer()
+        if layer is None:
+            for b, _ in self._label_edit_buttons: b.setChecked(False)
+            self.label_edit_status.setText("Create the points first."); return
+        canvas = self.iface.mapCanvas(); old = getattr(self, "_label_tool", None)
+        if old is None: self._label_prev_tool = canvas.mapTool()
+        tool = LabelEditTool(canvas, layer, mode); tool.undo = old.undo if old is not None else []
+        tool.changed.connect(self._label_changed); tool.done.connect(self._label_edit_done)
+        self._label_tool = tool; canvas.setMapTool(tool); canvas.setFocus()
+        for b, m in self._label_edit_buttons: b.setChecked(m == mode)
+        self.label_undo_button.setEnabled(True); self.label_done_button.setEnabled(True)
+        self.label_edit_status.setText({"switch": "Click on a point to switch it between plant and soil.", "remove": "Click on a point to remove it.",
+                                        "add_plant": "Click on the map to add a plant point.", "add_soil": "Click on the map to add a soil point."}[mode]
+                                       + " Esc or Done to stop.")
+
+    def _label_undo(self):
+        tool = getattr(self, "_label_tool", None)
+        if tool is None or not tool.undo_last(): self.label_edit_status.setText("Nothing to undo.")
+
+    def _label_edit_done(self):
+        tool = getattr(self, "_label_tool", None); self._label_tool = None
+        canvas = self.iface.mapCanvas() if self.iface is not None else None
+        if tool is not None and canvas is not None and canvas.mapTool() is tool:
+            prev = getattr(self, "_label_prev_tool", None)
+            if prev is not None: canvas.setMapTool(prev)
+            else: self.iface.actionPan().trigger()
+        if hasattr(self, "_label_edit_buttons"):
+            for b, _ in self._label_edit_buttons: b.setChecked(False)
+            self.label_undo_button.setEnabled(False); self.label_done_button.setEnabled(False)
+        if tool is not None: self._label_changed("Checks saved.")
+
+    def _label_changed(self, message):
+        info = getattr(self, "_label_info", None)
+        if not info: return
+        try:
+            from .label_points import read_points
+            pts = read_points(info["points_path"])
+        except Exception as exc:
+            self.label_edit_status.setText("Could not read the points: {}".format(exc)); return
+        plant = sum(1 for p in pts if p["label"] == 1); changed = sum(1 for p in pts if p["status"] in ("changed", "added"))
+        self.label_edit_status.setText("{}  Now {} plant and {} soil points{}.".format(message, plant, len(pts) - plant,
+                                                                                    " · {} changed or added by you".format(changed) if changed else ""))
+        self._label_preview_update()
+
     def _refresh_goal_buttons(self):
         busy = getattr(self, "_busy", False); r = self.result or {}
         if hasattr(self, "count_button"):
@@ -1052,6 +1298,9 @@ class PPEDockWidget(QDockWidget):
             self.count_batch_button.setEnabled(not busy and bool(getattr(self, "_batch_masks", None)))
             self.train_button.setEnabled(not busy and bool(r.get("vote_path")))
             self.train_batch_button.setEnabled(not busy and bool(self.batch))
+        if hasattr(self, "label_create_button"):
+            self.label_create_button.setEnabled(not busy and bool(r.get("mask_path")))
+            self.label_write_button.setEnabled(not busy and bool(getattr(self, "_label_info", None)))
 
     def _batch_tab(self):
         page, layout = self._page()
@@ -2577,7 +2826,7 @@ class PPEDockWidget(QDockWidget):
         self.batch_load_button.setEnabled(not running)
         for b in (self.batch_finalize_one, self.batch_next_inline, self.batch_slider): b.setEnabled(not running)
         if self.batch: self._fill_batch_table()
-        if running and (action in ("zones", "count", "training") or str(action).startswith("export") or str(action).startswith("batch")):
+        if running and (action in ("zones", "count", "training", "labels_create", "labels_write") or str(action).startswith("export") or str(action).startswith("batch")):
             bar = self._bar_for(action)
             bar.setValue(0)
             bar.setFormat("Starting…")
@@ -2592,6 +2841,7 @@ class PPEDockWidget(QDockWidget):
         if action.startswith("batch"): return self.batch_progress
         if action == "count": return self.count_progress
         if action == "training": return self.train_progress
+        if action.startswith("labels"): return self.label_progress
         if action == "export_aoi": return self.aoi_progress
         if action == "zones": return self.crop_progress
         if action.startswith("export"): return self.export_progress
