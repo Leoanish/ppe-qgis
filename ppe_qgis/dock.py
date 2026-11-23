@@ -811,7 +811,16 @@ class PPEDockWidget(QDockWidget):
         return index + 1 if index >= 0 else None
 
     def _goal_changed(self):
+        old = getattr(self, "_goal", None)
         self._apply_goal(self.goal.currentData()); self.settings.setValue("ppe_qgis/goal", self._goal); self._refresh_goal_buttons()
+        if old != self._goal:
+            if old == "labels": self._label_edit_done(); self._label_area_end()
+            if old == "count" and getattr(self, "_plant_tool", None) is not None: self._plant_edit_done()
+            try:
+                from .layer_utils import switch_goal_layers
+                switch_goal_layers(old, self._goal)
+            except Exception as err:
+                self.append_log("Could not switch the layers to the new goal: {}".format(err))
 
     # ---- goal: plant counter -------------------------------------------------------------------
     def _count_tab(self):

@@ -53,7 +53,7 @@ When you update to a newer version, quit QGIS and open it again afterwards, so t
 ![PPE opened beside the map](docs/images/01_open_ppe.jpg)
 
 1. Click the **leaf button** in the toolbar, or choose **Raster → Plant Pixel Extractor**. The PPE panel opens on the right; you can drag it wider or float it.
-2. Choose the **Goal** at the top: *Plant mask* (the default), *Plant counter*, *Training data for a model* or *Create labels*. The tabs are used from left to right. Tabs 1 to 3 (Image, Run, Review) are the same for every goal; tab 4 is the goal's own step (Export, Count or Train data), and Batch is last. *Create labels* is simpler still: just tab 1 Image and tab 2 Labels. Finalize leads straight to tab 4. PPE remembers the goal.
+2. Choose the **Goal** at the top: *Plant mask* (the default), *Plant counter*, *Training data for a model* or *Create labels*. The tabs are used from left to right. Tabs 1 to 3 (Image, Run, Review) are the same for every goal; tab 4 is the goal's own step (Export, Count or Train data), and Batch is last. *Create labels* is simpler still: just tab 1 Image and tab 2 Labels. Changing the goal also tidies the map: the layers of the other goals are hidden (not deleted) and this goal's layers come back as you left them. The image stays, and your own layers are never touched. Finalize leads straight to tab 4. PPE remembers the goal.
 3. **Imagery source**: how your image is stored. Choose one of the following:
    - *Stacked GeoTIFF*: one file holding every band;
    - *Folder containing bands*: one file per band in a folder;

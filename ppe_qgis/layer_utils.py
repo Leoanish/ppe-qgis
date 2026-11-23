@@ -729,3 +729,50 @@ def show_label_area(geometries, crs, name="PPE · Label area"):
                                                                           "outline_width_unit": "MM", "outline_style": "dash"})))
     place_layer(layer, "label_area")
     return layer
+
+
+# ---- which layers belong to which goal (4.6.2) -------------------------------------------------
+# Switching the goal hides the layers of the other goals and shows this goal's again, as the user
+# last left them in this goal. Nothing is deleted: switching back brings them back. The image is
+# common to every goal; the vote, mask, findings, crop and plot layers to the goals with Run/Review.
+_MASK_ROLES = {"rgb", "votes", "mask", "pale", "crops"}
+GOAL_ROLES = {"mask": _MASK_ROLES | {"plots"},
+              "count": _MASK_ROLES | {"plots", "plants"},
+              "training": set(_MASK_ROLES),
+              "labels": {"rgb", "labels", "label_buffers", "label_area"}}
+GOAL_VIS_KEY = "ppe/goal_visible/"
+
+
+def _ppe_nodes():
+    """PPE's own layers and sub-groups (with their role), top level and inside the PPE group;
+    the layers inside a sub-group follow the sub-group."""
+    root = QgsProject.instance().layerTreeRoot(); out = []
+    for node in root.children():
+        role = _node_role(node)
+        if role == "__group__":
+            out += [(n, _node_role(n)) for n in node.children() if _node_role(n)]
+        elif role:
+            out.append((node, role))
+    return out
+
+
+def switch_goal_layers(old_goal, new_goal):
+    """Hide the layers that do not belong to new_goal and show those that do (as they were when the
+    user last left new_goal). Returns how many layers were hidden."""
+    roles = GOAL_ROLES.get(new_goal)
+    if roles is None: return 0
+    hidden = 0
+    for node, role in _ppe_nodes():
+        if old_goal in GOAL_ROLES:
+            node.setCustomProperty(GOAL_VIS_KEY + old_goal, bool(node.itemVisibilityChecked()))
+        if role in roles:
+            saved = node.customProperty(GOAL_VIS_KEY + new_goal, None)
+            if saved is not None:
+                node.setItemVisibilityChecked(saved in (True, "true", "True", 1, "1"))
+        else:
+            if node.itemVisibilityChecked(): hidden += 1
+            node.setItemVisibilityChecked(False)
+    group = QgsProject.instance().layerTreeRoot().findGroup(GROUP_NAME)
+    if group is not None:                  # the PPE group itself: shown only when one of its layers is
+        group.setItemVisibilityChecked(any(n.itemVisibilityChecked() for n in group.children()))
+    return hidden
