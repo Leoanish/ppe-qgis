@@ -122,5 +122,14 @@ class CreateAndBuffer(unittest.TestCase):
         for p in pts: self.assertEqual(bool(self.green[p["py"], p["px"]]), p["label"] == 1)
 
 
+    def test_export_to_another_folder_takes_the_checked_points(self):
+        exp = os.path.join(self.tmp, "my export")
+        r = write_labels({"points_path": self.info["points_path"], "radius_cm": 5.0, "export_dir": exp})
+        self.assertEqual(r["export_dir"], exp)
+        for name in ("ppe_labels.gpkg", "ppe_label_buffers.gpkg", "ppe_label_raster.tif", "ppe_label_pixels.csv", "ppe_labels_info.json"):
+            self.assertTrue(os.path.isfile(os.path.join(exp, name)), name)
+        self.assertEqual(len(read_points(os.path.join(exp, "ppe_labels.gpkg"))), len(read_points(self.info["points_path"])))
+
+
 if __name__ == "__main__":
     unittest.main()

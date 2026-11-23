@@ -303,7 +303,7 @@ On PhenoBench (143 training images, 37 unseen test images), the model trained in
 
 ## 14. Goal Create labels: plant and soil points for your own model
 
-For anyone who wants to train their own machine-learning model, which needs labelled plant and soil pixels. Choose **Create labels** at the top. There are only two tabs: choose the image on tab 1, then go to tab 2 **Labels**. Type how many points you want and the plant/soil split (50 % by default) and click **Create labels**. PPE runs, finalizes its mask at its own suggested threshold and places the points, all in one go (about 11 seconds on Midville, 500 points). PPE itself is unchanged.
+For anyone who wants to train their own machine-learning model, which needs labelled plant and soil pixels. Choose **Create labels** at the top. There are only two tabs: choose the image on tab 1 and click **Continue** (or go to tab 2 **Labels**). Type how many points you want and the plant/soil split (50 % by default) and click **Create labels**. PPE runs, finalizes its mask at its own suggested threshold and places the points, all in one go (about 11 seconds on Midville, 500 points). PPE itself is unchanged.
 
 **1 Points.** Only *clear* pixels can become a point:
 
@@ -312,17 +312,21 @@ For anyone who wants to train their own machine-learning model, which needs labe
 
 Pixels near the threshold, flagged plant parts and no-data are never used. Where the points go is chosen by **conditioned Latin hypercube sampling** (cLHS), separately for plant and for soil, over every band, NDVI and the position in the field. So the points cover the whole range of the image and the whole field, not just the easiest pixels. In a test, cLHS left half as many value ranges empty as random sampling did. 500 points take about 15 seconds on a 1.5 cm, 5-band field.
 
-**Area (optional).** **Draw area** lets you click an outline on the map (right-click to finish; draw several to add them together), or choose a polygon file such as the field boundary or the plots. Points and buffers then stay inside it, so field edges, headlands, roads or weedy corners never give labels.
+**Area (optional, in step 1).** **Draw area** lets you click an outline on the map (right-click to finish; draw several to add them together), or choose a polygon file such as the field boundary or the plots. Points and buffers then stay inside it, so field edges, headlands, roads or weedy corners never give labels.
 
 **2 Check the points.** They appear as **PPE · Label points**: green for plant, orange for soil. Zoom in and fix any point that is wrong with **Plant ↔ soil**, **Remove**, **＋ Plant** or **＋ Soil**. Each click is saved and **Undo last** steps back. Points you changed or added get a white ring.
 
-**3 Buffer and write.** The slider (0 to 50 cm in 0.5 cm steps) grows each point into a disc. The disc is cut to the clear pixels of the point's own class, so a plant buffer stops at the edge of the leaf and a soil buffer stops before the canopy: a buffer never takes in the other class. As you move the slider, the panel shows how many pixels will be labelled. **Pixels per point** (optional) keeps only the nearest pixels, so one big leaf cannot dominate. A point you switched to the other class keeps only its own pixel, because PPE's mask disagrees with you there. **Write labels** writes:
+**Buffer (in step 1).** The slider (0 to 50 cm in 0.5 cm steps) grows each point into a disc. It can be set before or after the points are made; it is used when you export. The disc is cut to the clear pixels of the point's own class, so a plant buffer stops at the edge of the leaf and a soil buffer stops before the canopy: a buffer never takes in the other class. As you move the slider, the panel shows how many pixels will be labelled. **Pixels per point** (optional) keeps only the nearest pixels, so one big leaf cannot dominate. A point you switched to the other class keeps only its own pixel, because PPE's mask disagrees with you there.
+
+**3 Export.** Choose a folder (or PPE asks for one) and click **Export labels**. The folder gets:
 
 - `ppe_labels.gpkg`: the points, with your label, PPE's label, status (proposed, changed, added) and band values;
 - `ppe_label_buffers.gpkg`: one polygon per point (shown as **PPE · Label buffers**);
 - `ppe_label_raster.tif`: 1 plant, 0 soil, 255 no label, aligned with the image;
 - `ppe_label_pixels.csv`: every labelled pixel with its point, label, position, band values and NDVI, ready for a model;
 - `ppe_labels_area.gpkg`: the area, when one was used.
+
+Export again whenever you like, for example after more checks or with another buffer: the working copy stays in `ppe_labels` in the output folder.
 
 Pixels of one buffer are alike. When you test a model, keep whole points apart (column `point_id`), not single pixels, or the accuracy looks better than it is.
 

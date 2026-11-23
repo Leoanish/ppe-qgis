@@ -1087,8 +1087,22 @@ class PPEDockWidget(QDockWidget):
         ar.addWidget(self.label_area_status)
         form.addRow("Area", area)
         self._label_area = []
-        self.label_folder = QLineEdit(); self.label_folder.setPlaceholderText("Empty: ppe_labels in the output folder")
-        form.addRow("Folder", self._path_row(self.label_folder, directory=True))
+        buf = QWidget(); bl = QVBoxLayout(buf); bl.setContentsMargins(0, 0, 0, 0); bl.setSpacing(2)
+        row = QHBoxLayout(); row.setSpacing(8)
+        self.label_radius = QSlider(Qt.Horizontal); self.label_radius.setRange(0, 100); self.label_radius.setSingleStep(1); self.label_radius.setPageStep(2)
+        self.label_radius.setValue(0); self.label_radius.setToolTip("Buffer radius, 0 to 50 cm in 0.5 cm steps (arrow keys for single steps). "
+                                                                    "Each point grows into a disc cut to the clear pixels of its own class, so a buffer "
+                                                                    "stops at the edge of a leaf (or of the soil) and never takes in the other class.")
+        self.label_radius_text = QLabel("0.0 cm · points only"); self.label_radius_text.setMinimumWidth(120)
+        row.addWidget(self.label_radius, 1); row.addWidget(self.label_radius_text); bl.addLayout(row)
+        buf_hint = QLabel("Grows each point into its own class only: it stops at the edge of a leaf or of the soil.")
+        buf_hint.setWordWrap(True); buf_hint.setObjectName("ppeHint"); bl.addWidget(buf_hint)
+        form.addRow("Buffer", buf)
+        self.label_cap = self._plain_spin(QSpinBox()); self.label_cap.setRange(0, 1000000); self.label_cap.setSingleStep(50); self.label_cap.setValue(0)
+        self.label_cap.setSpecialValueText("No limit"); self.label_cap.setToolTip("At most this many pixels per point (the nearest ones), so one big leaf cannot dominate.")
+        form.addRow("Pixels per point", self.label_cap)
+        self.label_preview = QLabel(""); self.label_preview.setObjectName("findingTitle"); self.label_preview.setWordWrap(True)
+        form.addRow("", self.label_preview)
         layout.addWidget(card)
         self.label_create_button = QPushButton("Create labels"); self.label_create_button.setProperty("primary", True)
         layout.addWidget(self.label_create_button)
@@ -1099,7 +1113,7 @@ class PPEDockWidget(QDockWidget):
         fix, fix_body = self._card("2  Check the points on the map")
         fb = QVBoxLayout(fix_body); fb.setContentsMargins(0, 0, 0, 0); fb.setSpacing(6)
         fix_hint = QLabel("Green = plant, orange = soil. Zoom in and fix any point that is wrong; each click is saved. "
-                          "A point you switch keeps only its own pixel in step 3, because PPE's mask disagrees with you there.")
+                          "A point you switch keeps only its own pixel (no buffer), because PPE's mask disagrees with you there.")
         fix_hint.setWordWrap(True); fix_hint.setObjectName("ppeHint"); fb.addWidget(fix_hint)
         row = QHBoxLayout(); row.setSpacing(6)
         self.label_switch_button = QPushButton("Plant ↔ soil"); self.label_remove_button = QPushButton("－ Remove")
@@ -1119,31 +1133,21 @@ class PPEDockWidget(QDockWidget):
         self.label_edit_status = QLabel("Create the points first.")
         self.label_edit_status.setObjectName("findingTitle"); self.label_edit_status.setWordWrap(True); fb.addWidget(self.label_edit_status)
         layout.addWidget(fix)
-        buf, buf_body = self._card("3  Buffer and write the labels")
-        bb = QVBoxLayout(buf_body); bb.setContentsMargins(0, 0, 0, 0); bb.setSpacing(6)
-        buf_hint = QLabel("Each point grows into a disc of this radius, cut to the clear pixels of its own class, so a buffer stops at "
-                          "the edge of a leaf (or of the soil) and never takes in the other class. Every pixel inside gets the point's label.")
-        buf_hint.setWordWrap(True); buf_hint.setObjectName("ppeHint"); bb.addWidget(buf_hint)
-        row = QHBoxLayout(); row.setSpacing(8)
-        self.label_radius = QSlider(Qt.Horizontal); self.label_radius.setRange(0, 100); self.label_radius.setSingleStep(1); self.label_radius.setPageStep(2)
-        self.label_radius.setValue(0); self.label_radius.setToolTip("Buffer radius, 0 to 50 cm in 0.5 cm steps (arrow keys for single steps).")
-        self.label_radius_text = QLabel("0.0 cm · points only"); self.label_radius_text.setMinimumWidth(130)
-        row.addWidget(self.label_radius, 1); row.addWidget(self.label_radius_text); bb.addLayout(row)
-        form2 = QFormLayout(); form2.setContentsMargins(0, 0, 0, 0)
-        self.label_cap = self._plain_spin(QSpinBox()); self.label_cap.setRange(0, 1000000); self.label_cap.setSingleStep(50); self.label_cap.setValue(0)
-        self.label_cap.setSpecialValueText("No limit"); self.label_cap.setToolTip("At most this many pixels per point (the nearest ones), so one big leaf cannot dominate.")
-        form2.addRow("Pixels per point", self.label_cap); bb.addLayout(form2)
-        self.label_preview = QLabel(""); self.label_preview.setObjectName("findingTitle"); self.label_preview.setWordWrap(True); bb.addWidget(self.label_preview)
-        self.label_write_button = QPushButton("Write labels"); self.label_write_button.setProperty("primary", True); self.label_write_button.setEnabled(False)
-        bb.addWidget(self.label_write_button)
+        exp, exp_body = self._card("3  Export")
+        eb = QVBoxLayout(exp_body); eb.setContentsMargins(0, 0, 0, 0); eb.setSpacing(6)
+        self.label_export_folder = QLineEdit(); self.label_export_folder.setPlaceholderText("Choose a folder (asked when you export)")
+        eb.addWidget(self._path_row(self.label_export_folder, directory=True))
+        self.label_write_button = QPushButton("Export labels"); self.label_write_button.setProperty("primary", True); self.label_write_button.setEnabled(False)
+        self.label_write_button.setToolTip("Writes the checked points with the buffer of step 1 to the folder: points, buffers, label raster and pixel table.")
+        eb.addWidget(self.label_write_button)
         self.label_write_status = QLabel("")
-        self.label_write_status.setWordWrap(True); self.label_write_status.setObjectName("ppeHint"); bb.addWidget(self.label_write_status)
-        layout.addWidget(buf)
-        out = QLabel("Output, in the labels folder: ppe_labels.gpkg (the points: label, PPE's label, status, band values), "
-                     "ppe_label_buffers.gpkg (one polygon per point), ppe_label_raster.tif (1 plant, 0 soil, 255 no label, aligned with the image) "
-                     "and ppe_label_pixels.csv (every labelled pixel with its band values and NDVI, ready for a model). "
+        self.label_write_status.setWordWrap(True); self.label_write_status.setObjectName("ppeHint"); eb.addWidget(self.label_write_status)
+        out = QLabel("Exported: ppe_labels.gpkg (points: label, PPE's label, status, band values), ppe_label_buffers.gpkg (one polygon per point), "
+                     "ppe_label_raster.tif (1 plant, 0 soil, 255 no label, aligned with the image), ppe_label_pixels.csv (every labelled pixel "
+                     "with its band values and NDVI, ready for a model) and the area, when one was used. "
                      "Pixels of one buffer are alike: test a model on whole points (column point_id), not on single pixels.")
-        out.setWordWrap(True); out.setObjectName("ppeHint"); layout.addWidget(out)
+        out.setWordWrap(True); out.setObjectName("ppeHint"); eb.addWidget(out)
+        layout.addWidget(exp)
         self.label_create_button.clicked.connect(self._emit_labels_create)
         self.label_draw_button.clicked.connect(self._label_draw_area)
         self.label_clear_area_button.clicked.connect(self._label_clear_area)
@@ -1157,7 +1161,7 @@ class PPEDockWidget(QDockWidget):
         layout.addStretch(); return self._scroll_tab(page)
 
     def _label_dir(self):
-        return self.label_folder.text().strip() or os.path.join(self.output_path.text().strip(), "ppe_labels")
+        return os.path.join(self.output_path.text().strip(), "ppe_labels")
 
     def _emit_labels_create(self):
         config = self.build_config("run"); error = self.validate_config(config)
@@ -1165,7 +1169,7 @@ class PPEDockWidget(QDockWidget):
         self._save_settings()
         out = self._label_dir()
         if os.path.isfile(os.path.join(out, "ppe_labels.gpkg")):
-            if QMessageBox.question(self, "PPE labels", "This folder already has label points (and maybe your checks). Replace them with new points?",
+            if QMessageBox.question(self, "PPE labels", "Label points were already created in this output folder (maybe with your checks). Replace them with new points?",
                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes: return
         self._label_edit_done()
         area_file = self.label_area_file.text().strip()
@@ -1218,10 +1222,15 @@ class PPEDockWidget(QDockWidget):
 
     def _emit_labels_write(self):
         info = getattr(self, "_label_info", None)
-        if not info: QMessageBox.warning(self, "PPE labels", "Create the points first."); return
+        if not info: QMessageBox.warning(self, "PPE labels", "Create the labels first."); return
+        folder = self.label_export_folder.text().strip()
+        if not folder:
+            folder = QFileDialog.getExistingDirectory(self, "Export the labels to", self.output_path.text().strip())
+            if not folder: return
+            self.label_export_folder.setText(folder)
         self._label_edit_done()
         self.labels_requested.emit({"action": "labels_write", "points_path": info["points_path"], "radius_cm": self.label_radius.value() / 2.0,
-                                    "max_px": self.label_cap.value()})
+                                    "max_px": self.label_cap.value(), "export_dir": folder})
 
     def set_labels_created(self, info):
         self._label_info = info
@@ -1237,10 +1246,10 @@ class PPEDockWidget(QDockWidget):
 
     def set_labels_written(self, result):
         self.label_progress.setValue(100); self.label_progress.setFormat("Complete")
-        self.label_write_status.setText("{:,} plant and {:,} soil pixels from {} points (buffer {:.1f} cm){}.\n{}\n{}".format(
+        self.label_write_status.setText("Exported {:,} plant and {:,} soil pixels from {} points (buffer {:.1f} cm){} to\n{}".format(
             result.get("plant_pixels", 0), result.get("soil_pixels", 0), result.get("points", 0), result.get("radius_cm", 0),
             "; {} points you changed keep only their own pixel".format(result["point_only"]) if result.get("point_only") else "",
-            result.get("raster_path", ""), result.get("csv_path", "")))
+            result.get("export_dir", "")))
 
     def _label_preview_update(self, *_):
         cm = self.label_radius.value() / 2.0
@@ -1621,7 +1630,7 @@ class PPEDockWidget(QDockWidget):
         self.ortho_type.currentIndexChanged.connect(lambda _index: self._request_preview())
         self.rgb_order.currentIndexChanged.connect(lambda _index: self._request_preview())
         self.tabs.currentChanged.connect(lambda index: self._request_preview() if index == 1 else None)
-        self.continue_button.clicked.connect(lambda: self.show_tab("run"))
+        self.continue_button.clicked.connect(lambda: self.show_tab(self.GOAL_TABS.get(getattr(self, "_goal", "mask"), ("image", "run"))[1]))
         self.review_button.clicked.connect(lambda: self.show_tab("review"))
         self.goal.currentIndexChanged.connect(self._goal_changed)
         self.generate_button.clicked.connect(self._emit_generate)

@@ -359,8 +359,9 @@ def write_labels(cfg, progress=lambda p, m: None, log=lambda m: None, cancelled=
     max_px (0 = no cap), and the info of create_points (mask, vote, findings, image).
     Writes next to the points: ppe_label_buffers.gpkg (one polygon per point), ppe_label_raster.tif
     (1 plant, 0 soil, 255 no label), ppe_label_pixels.csv (every labelled pixel with its band values)."""
-    t0 = time.time(); out_dir = os.path.dirname(cfg["points_path"])
-    with open(os.path.join(out_dir, "ppe_labels_info.json"), encoding="utf-8") as f: info = json.load(f)
+    t0 = time.time(); work_dir = os.path.dirname(cfg["points_path"])
+    with open(os.path.join(work_dir, "ppe_labels_info.json"), encoding="utf-8") as f: info = json.load(f)
+    out_dir = cfg.get("export_dir") or work_dir; os.makedirs(out_dir, exist_ok=True)
     R = _Rasters(info["mask_path"], info["vote_path"], info.get("findings_path", ""), info.get("area_path", "")); pts = read_points(cfg["points_path"])
     if not pts: raise ValueError("No points with a plant or soil label in {}.".format(cfg["points_path"]))
     radius_cm = max(0.0, min(MAX_BUFFER_CM, float(cfg.get("radius_cm", 0)))); max_px = int(cfg.get("max_px", 0) or 0)
@@ -410,6 +411,14 @@ def write_labels(cfg, progress=lambda p, m: None, log=lambda m: None, cancelled=
     pds.CommitTransaction(); pds = None; rast.FlushCache(); rast = None
     result = {"points": len(pts), "plant_pixels": totals[PLANT], "soil_pixels": totals[SOIL], "radius_cm": radius_cm, "max_px": max_px,
               "point_only": point_only, "raster_path": raster_path, "csv_path": csv_path, "buffers_path": poly_path, "seconds": round(time.time() - t0, 1)}
+    if os.path.abspath(out_dir) != os.path.abspath(work_dir):          # export: the checked points (and the area) go along
+        for name, layer in (("ppe_labels.gpkg", LAYER), ("ppe_labels_area.gpkg", "area")):
+            src = os.path.join(work_dir, name); dst = os.path.join(out_dir, name)
+            if not os.path.isfile(src): continue
+            if os.path.exists(dst): gdal.GetDriverByName("GPKG").Delete(dst)
+            gdal.VectorTranslate(dst, src, format="GPKG", layers=[layer])   # reads through SQLite, so edits still in the journal come along
+        with open(os.path.join(out_dir, "ppe_labels_info.json"), "w", encoding="utf-8") as f: json.dump(info, f)
+    result["export_dir"] = out_dir
     with open(os.path.join(out_dir, "ppe_label_buffers_info.json"), "w", encoding="utf-8") as f: json.dump(result, f)
     log("Labels: {:,} plant and {:,} soil pixels from {} points (buffer {:.1f} cm){}.".format(
         totals[PLANT], totals[SOIL], len(pts), radius_cm, "; {} points where PPE disagrees with your label keep only their own pixel".format(point_only) if point_only else ""))
