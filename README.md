@@ -162,15 +162,15 @@ After each run PPE sorts out six kinds of pixel worth a look: five you can leave
    Tick or untick each kind to see it alone or compare it with the others. All the layers read the same file, so this costs no disk space.
 4. Here, the tassels lie along the corn rows.
 
-**Leave a kind out, or put it back, with one click:**
+**Leave a kind out, or add it, with one click.** Every kind has two buttons: **− Leave out** takes the pixels of that kind out of the mask, and **+ Add** puts in the pixels of that kind that the slider leaves out (the card says how much each would add). Press a button again to undo. A kind is either left out or added, never both. Faint plants in sparse spots sit below the threshold by definition, so they have only **+ Add**. A pressed button turns dark green.
 
 ![Leaving out unclear pixels](docs/images/11_leave_out.jpg)
 
-1. Tick **Leave out of the mask**.
+1. Press **− Leave out**.
 2. The card says what is left out: the kinds, their share of the plant and, without crop areas, the exact number of pixels.
 3. The **live preview** drops those pixels at once; they show as holes. It is still the same live layer, and they stay out whatever you do with the slider (or the crop sliders), so you tune the threshold with them already left out.
 
-**Finalize mask** writes the mask without them, then reports the pixels it left out (counted in the mask file) and the canopy before and after. Untick, or **Put all back**, to return them, then finalize again. The mask is always rebuilt from the vote, so nothing is lost either way. Each choice is written to its own file (for example `ppe_plant_mask_0.45_without_unclear.tif`), and the plot export and run record say what was left out.
+**Finalize mask** writes the mask without them, then reports the pixels it left out (counted in the mask file) and the canopy before and after. Press the button again, or **Put all back**, to return them, then finalize again. The mask is always rebuilt from the vote, so nothing is lost either way. Each choice is written to its own file (for example `ppe_plant_mask_0.45_without_unclear.tif`), and the plot export and run record say what was left out.
 
 Which checks run depends only on the bands: plant parts, leaf edges and dry parts need NIR, red and green; shaded leaves and unclear pixels need a brightness (red, green and blue, or NIR alone) and are told apart by NDVI; a camera RGB image gets only unclear (dark) pixels. When the near-infrared band barely separates leaves from soil (an uncalibrated band), the checks that compare near-infrared brightness are not run and NDVI decides between shaded and unclear. Faint plants in sparse spots need only the vote; when more than 30 % of the 3 m squares are thin, the whole field is thin and PPE says to move the slider instead. The card lists anything not checked.
 
@@ -179,8 +179,10 @@ Which checks run depends only on the bands: plant parts, leaf edges and dry part
 ![Adding faint plants in sparse spots on Tifton](docs/images/12_sparse_spots.jpg)
 
 1. If the field has thin patches, the card lists **Faint plants in sparse spots** and how much more plant they would add.
-2. Tick **Add to the mask**. The live preview shows them at once, and the canopy on the panel goes up; they stay in whatever the slider.
+2. Press **+ Add**. The live preview shows them at once, and the canopy on the panel goes up; they stay in whatever the slider.
 3. **Finalize mask** writes them into the mask (for example `ppe_plant_mask_0.80_with_sparse.tif`) and reports the pixels added.
+
+The same **+ Add** works for every other kind: for example, add shaded leaves that a high threshold dropped, or leaf edges you count as plant. On Kritis, leaving out leaf edges and adding shaded leaves at 0.45 took 954,588 leaf-edge pixels out and put 465 shaded-leaf pixels in (canopy 83.2 % → 81.7 %).
 
 On Tifton, compared with a reference mask over 354 cells of 3 m × 3 m, adding them at the suggested threshold raised the pixel match (IoU) from 91.3 to 91.9 %, cut the canopy error per cell from 3.4 to 2.9 points, and raised the agreement of the plant NDVI mean from R² 0.83 to 0.92 and of the median from 0.86 to 0.93. In the thin patches alone the match rose from 78 to 87 %. Bringing back faint pixels along the crop rows was also tried and did less, so rows are not used. It is not available with crop areas: lower that crop's slider instead.
 

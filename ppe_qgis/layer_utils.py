@@ -527,20 +527,32 @@ def replace_preview_layer(path, layers):
 
 PREVIEW_BASE_KEY = "ppe/preview_base"
 _FINDING_FILE_NAMES = {1: "plant_parts", 2: "leaf_edges", 3: "shaded", 4: "unclear", 5: "dry", 6: "sparse"}
-_ADD_CODES = (6,)
+_ADD_CODES = (6,)   # kept for older callers; since 4.6.5 every kind can be added
+
+
+def _derived_vrt(path, ds, pixel_function, sources):
+    """A one-band Float32 VRT computed by a built-in GDAL pixel function over `sources` (XML snippets)."""
+    nodata = ds.GetRasterBand(1).GetNoDataValue()
+    xml = ('<VRTDataset rasterXSize="{w}" rasterYSize="{h}">\n  <SRS>{srs}</SRS>\n  <GeoTransform>{gt}</GeoTransform>\n'
+           '  <VRTRasterBand dataType="Float32" band="1" subClass="VRTDerivedRasterBand">\n{nd}'
+           '    <PixelFunctionType>{fn}</PixelFunctionType>\n{src}  </VRTRasterBand>\n</VRTDataset>\n').format(
+        w=ds.RasterXSize, h=ds.RasterYSize, srs=escape(ds.GetProjection() or ""), gt=", ".join(repr(v) for v in ds.GetGeoTransform()),
+        nd="    <NoDataValue>{}</NoDataValue>\n".format(nodata) if nodata is not None else "", fn=pixel_function, src="".join(sources))
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(xml)
+    return path
 
 
 def preview_source(base_path, findings_path, clip_codes, add_codes=(), add_vote_from=None):
-    """The raster the live preview draws. With finding kinds left out it is a small VRT that
-    multiplies the vote (or vote by crop area) by 0 where a left-out kind is and by 1 elsewhere,
-    so the preview drops those pixels at every threshold. Nothing is copied; the VRT only points
-    to the two files. Without kinds left out it is the vote itself.
-    Added kinds (faint plants in sparse spots) multiply the vote by 1 / add_vote_from, the lowest vote
-    they hold, so they reach 1 and show at every threshold. Not with crop areas: their preview holds
-    vote + 10 x crop number, which a factor would break."""
-    clip = sorted({int(c) for c in (clip_codes or []) if int(c) in _FINDING_FILE_NAMES and int(c) not in _ADD_CODES})
+    """The raster the live preview draws. Kinds left out: a small VRT multiplies the vote by 0 where
+    such a kind is and by 1 elsewhere, so the preview drops them at every threshold. Kinds added
+    (4.6.5: any kind): a second VRT adds 2 to the vote there, so they show at every threshold
+    (the preview colours everything from the threshold up to 1000). Nothing is copied; the VRTs only
+    point to the files. Without choices it is the vote itself. Not added with crop areas: their
+    preview holds vote + 10 x crop number. (add_vote_from is no longer needed; kept for callers.)"""
+    clip = sorted({int(c) for c in (clip_codes or []) if int(c) in _FINDING_FILE_NAMES})
     zoned = os.path.basename(str(base_path or "")).startswith("ppe_vote_by_crop")
-    add = [] if zoned or not add_vote_from else sorted({int(c) for c in (add_codes or []) if int(c) in _ADD_CODES})
+    add = [] if zoned else sorted({int(c) for c in (add_codes or []) if int(c) in _FINDING_FILE_NAMES and int(c) not in clip})
     if not (clip or add) or not base_path or not findings_path or not os.path.isfile(findings_path):
         return base_path
     ds = gdal.Open(base_path)
@@ -549,34 +561,28 @@ def preview_source(base_path, findings_path, clip_codes, add_codes=(), add_vote_
     f_ds = gdal.Open(findings_path)
     if f_ds is None or f_ds.RasterXSize != ds.RasterXSize or f_ds.RasterYSize != ds.RasterYSize:
         return base_path
-    nodata = ds.GetRasterBand(1).GetNoDataValue()
-    factor = 1.0 / max(0.05, float(add_vote_from or 1.0))
-    lut = ",".join("{}:{}".format(c, 0 if c in clip else (repr(factor) if c in add else 1)) for c in (0,) + tuple(sorted(_FINDING_FILE_NAMES)) + (255,))
-    xml = (
-        '<VRTDataset rasterXSize="{w}" rasterYSize="{h}">\n'
-        '  <SRS>{srs}</SRS>\n  <GeoTransform>{gt}</GeoTransform>\n'
-        '  <VRTRasterBand dataType="Float32" band="1" subClass="VRTDerivedRasterBand">\n'
-        '{nd}'
-        '    <PixelFunctionType>mul</PixelFunctionType>\n'
-        '    <SimpleSource><SourceFilename relativeToVRT="0">{vote}</SourceFilename><SourceBand>1</SourceBand></SimpleSource>\n'
-        # NODATA 254 (a value findings never hold) so the no-data code 255 goes through the LUT as 1
-        '    <ComplexSource><SourceFilename relativeToVRT="0">{find}</SourceFilename><SourceBand>1</SourceBand>'
-        '<NODATA>254</NODATA><LUT>{lut}</LUT></ComplexSource>\n'
-        '  </VRTRasterBand>\n</VRTDataset>\n').format(
-            w=ds.RasterXSize, h=ds.RasterYSize, srs=escape(ds.GetProjection() or ""),
-            gt=", ".join(repr(v) for v in ds.GetGeoTransform()),
-            nd="    <NoDataValue>{}</NoDataValue>\n".format(nodata) if nodata is not None else "",
-            vote=escape(os.path.abspath(base_path)), find=escape(os.path.abspath(findings_path)), lut=lut)
-    stem = os.path.splitext(os.path.basename(base_path))[0]
-    path = os.path.join(os.path.dirname(os.path.abspath(base_path)),
-                        "{}_preview{}{}.vrt".format(stem, "_without_" + "_".join(_FINDING_FILE_NAMES[c] for c in clip) if clip else "",
-                                                     "_with_" + "_".join(_FINDING_FILE_NAMES[c] for c in add) if add else ""))
+    codes = (0,) + tuple(sorted(_FINDING_FILE_NAMES)) + (255,)
+    find = escape(os.path.abspath(findings_path))
+
+    def lut_source(values):
+        # NODATA 254 (a value findings never hold) so the no-data code 255 goes through the LUT
+        return ('    <ComplexSource><SourceFilename relativeToVRT="0">{}</SourceFilename><SourceBand>1</SourceBand>'
+                '<NODATA>254</NODATA><LUT>{}</LUT></ComplexSource>\n').format(find, ",".join("{}:{}".format(c, values(c)) for c in codes))
+    stem = os.path.splitext(os.path.basename(base_path))[0]; folder = os.path.dirname(os.path.abspath(base_path))
+    name = "{}_preview{}{}".format(stem, "_without_" + "_".join(_FINDING_FILE_NAMES[c] for c in clip) if clip else "",
+                                   "_with_" + "_".join(_FINDING_FILE_NAMES[c] for c in add) if add else "")
+    vote = '    <SimpleSource><SourceFilename relativeToVRT="0">{}</SourceFilename><SourceBand>1</SourceBand></SimpleSource>\n'.format(
+        escape(os.path.abspath(base_path)))
     try:
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write(xml)
+        current = vote
+        if clip:
+            inner = _derived_vrt(os.path.join(folder, name + ("_cut" if add else "") + ".vrt"), ds, "mul",
+                                 [vote, lut_source(lambda c: 0 if c in clip else 1)])
+            if not add: return inner
+            current = '    <SimpleSource><SourceFilename relativeToVRT="0">{}</SourceFilename><SourceBand>1</SourceBand></SimpleSource>\n'.format(escape(inner))
+        return _derived_vrt(os.path.join(folder, name + ".vrt"), ds, "sum", [current, lut_source(lambda c: 2 if c in add else 0)])
     except OSError:
         return base_path
-    return path
 
 
 def set_preview_source(layer, base_path=None, findings_path="", clip_codes=(), add_codes=(), add_vote_from=None):

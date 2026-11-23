@@ -666,7 +666,7 @@ FINDING_NAMES = {1: "plant parts that are not green", 2: "leaf edges over soil",
 FINDING_FILE_NAMES = {1: "plant_parts", 2: "leaf_edges", 3: "shaded", 4: "unclear", 5: "dry", 6: "sparse"}
 FINDING_COLUMNS = {1: "plant_parts_pct", 2: "leaf_edges_pct", 3: "shaded_leaves_pct", 4: "unclear_pct", 5: "dry_parts_pct",
                    6: "sparse_faint_pct"}
-ADD_CODES = (6,)                 # kinds that can be added to the mask (the others can be left out)
+ADD_CODES = (6,)                 # kinds PPE finds below the threshold on purpose (faint plants); since 4.6.5 every kind can be added or left out
 FINDING_CODES = tuple(sorted(FINDING_NAMES))
 LEVEL_SURE = 0.9                 # vote at or above: green plant; at or below 1 - this: ground
 REFERENCE_LEAF_NDVI = 0.88       # Kritis green leaves, where the NDVI cut-offs were first tuned
@@ -2359,8 +2359,8 @@ class NativePPEEngine:
         if zones is not None and (zones.RasterXSize != self.width or zones.RasterYSize != self.height): zones=None
         if zones is not None: zone_t[0]=threshold
         cut=np.maximum(0, np.array(zone_t if zones is not None else [threshold], dtype=float)-.05)
-        clip=sorted({int(c) for c in (cfg.get("clip_codes") or []) if int(c) in FINDING_NAMES and int(c) not in ADD_CODES})
-        add=sorted({int(c) for c in (cfg.get("add_codes") or []) if int(c) in ADD_CODES})
+        clip=sorted({int(c) for c in (cfg.get("clip_codes") or []) if int(c) in FINDING_NAMES})
+        add=sorted({int(c) for c in (cfg.get("add_codes") or []) if int(c) in FINDING_NAMES and int(c) not in clip})   # 4.6.5: any kind; leaving out wins
         # Each choice of left-out findings gets its own file, so QGIS can never show an older copy of the mask.
         mask_path=os.path.join(out_dir,("ppe_plant_mask_by_crop" if zones is not None else "ppe_plant_mask_{:.2f}".format(threshold))
                                +("_without_"+"_".join(FINDING_FILE_NAMES[k] for k in clip) if clip else "")
@@ -2369,7 +2369,7 @@ class NativePPEEngine:
         findings=safe_gdal_open(cfg["findings_path"]) if (clip or add) and cfg.get("findings_path") and os.path.isfile(cfg["findings_path"]) else None
         if findings is not None and (findings.RasterXSize != self.width or findings.RasterYSize != self.height): findings=None
         if (clip or add) and findings is None: raise ValueError("The findings layer of this run is missing, so nothing can be left out of or added to the mask. Run PPE again.")
-        added=0
+        added=0; added_by=np.zeros(max(FINDING_CODES)+1,np.int64)
         removed=np.zeros(max(FINDING_CODES)+1,np.int64)
         for y in range(0,self.height,512):
             h=min(512,self.height-y); x=ds.GetRasterBand(1).ReadAsArray(0,y,self.width,h); valid=(x != NODATA)&np.isfinite(x)
@@ -2379,6 +2379,7 @@ class NativePPEEngine:
                 f=findings.GetRasterBand(1).ReadAsArray(0,y,self.width,h)
                 if add:
                     extra=valid&~plant&np.isin(f,add); added += int(extra.sum()); plant |= extra
+                    added_by += np.bincount(np.clip(f[extra].astype(np.intp),0,added_by.size-1),minlength=added_by.size)[:added_by.size]
                 out_of_mask=plant&np.isin(f,clip)
                 removed += np.bincount(np.clip(f[out_of_mask].astype(np.intp),0,removed.size-1),minlength=removed.size)[:removed.size]; plant &= ~out_of_mask
             m=np.where(valid,plant.astype(np.uint8),255).astype(np.uint8); out.GetRasterBand(1).WriteArray(m,0,y)
@@ -2389,9 +2390,9 @@ class NativePPEEngine:
                 "clip_codes":clip,"left_out":{FINDING_NAMES[k]:int(removed[k]) for k in clip},
                 "left_out_pct":100.0*removed.sum()/max(1,valid_count.sum()),
                 "left_out_pixels":int(removed.sum()),"canopy_before_clip_pct":100*(count.sum()+removed.sum()-added)/max(1,valid_count.sum()),
-                "add_codes":add,"added_pixels":added,"added":{FINDING_NAMES[k]:added for k in add}}
+                "add_codes":add,"added_pixels":added,"added":{FINDING_NAMES[k]:int(added_by[k]) for k in add}}
         if add:
-            self.log_cb("Added to the mask: {} ({:,} pixels).".format(", ".join(FINDING_NAMES[k] for k in add), added))
+            self.log_cb("Added to the mask: {} ({:,} pixels).".format(", ".join("{} {:,}".format(FINDING_NAMES[k], int(added_by[k])) for k in add), added))
         if clip:
             self.log_cb("Left out of the mask: " + ", ".join("{} ({:,} pixels)".format(FINDING_NAMES[k], int(removed[k])) for k in clip) + ".")
         if zones is not None:

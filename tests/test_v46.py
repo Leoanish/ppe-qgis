@@ -147,3 +147,46 @@ class CreateAndBuffer(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AddOrLeaveOutAnyKind(unittest.TestCase):
+    """4.6.5: every kind PPE finds can be left out (-) or added (+)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        vote = np.full((20, 20), 0.9, np.float32); vote[:, 10:] = 0.2        # left half plant, right half soil at 0.5
+        f = np.zeros((20, 20), np.uint8); f[0:5, :] = 3; f[5:10, :] = 2      # shaded leaves and leaf edges, both halves
+        cls.vote = tif(os.path.join(cls.tmp, "vote.tif"), vote, gdal.GDT_Float32)
+        cls.find = tif(os.path.join(cls.tmp, "find.tif"), f, gdal.GDT_Byte)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def apply(self, clip, add):
+        from ppe_qgis.native_engine import NativePPEEngine
+        out = tempfile.mkdtemp(dir=self.tmp)
+        r = NativePPEEngine(log=lambda m: None).apply({"vote_path": self.vote, "findings_path": self.find, "threshold": 0.5, "output_dir": out,
+                                                       "clip_codes": clip, "add_codes": add})
+        return r, gdal.Open(r["mask_path"]).ReadAsArray()
+
+    def test_add_any_kind_below_the_threshold(self):
+        r, m = self.apply([], [3])
+        self.assertTrue((m[0:5, 10:] == 1).all())            # shaded leaves on the soil side were added
+        self.assertTrue((m[5:, 10:] == 0).all())             # nothing else
+        self.assertEqual(r["added_pixels"], 50); self.assertEqual(r["add_codes"], [3])
+
+    def test_leave_out_and_add_together_and_leaving_out_wins(self):
+        r, m = self.apply([2], [3, 2])
+        self.assertTrue((m[5:10, :10] == 0).all())            # leaf edges left out of the plant side
+        self.assertTrue((m[0:5, 10:] == 1).all())             # shaded leaves added
+        self.assertEqual(r["add_codes"], [3]); self.assertEqual(r["clip_codes"], [2])
+
+    def test_live_preview_shows_added_kinds_at_any_threshold(self):
+        from ppe_qgis.layer_utils import preview_source
+        path = preview_source(self.vote, self.find, [2], [3])
+        a = gdal.Open(path).ReadAsArray()
+        self.assertTrue((a[0:5, 10:] >= 2).all())            # added: above any threshold
+        self.assertTrue((a[5:10, :] == 0).all())              # left out: below any threshold
+        self.assertTrue(np.allclose(a[10:, :10], 0.9))        # untouched

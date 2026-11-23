@@ -1521,9 +1521,8 @@ class PPEDockWidget(QDockWidget):
         self.batch["open"] = entry["name"]
         if choice:
             self.threshold_slider.setValue(round(float(choice["threshold"]) * 100))
-            for code, row in self.finding_rows.items():
-                on = code in (choice.get("clip_codes") or []) or code in (choice.get("add_codes") or [])
-                row["clip"].blockSignals(True); row["clip"].setChecked(on); row["clip"].blockSignals(False)
+            for code in self.finding_rows:
+                self.set_finding_state(code, "out" if code in (choice.get("clip_codes") or []) else ("in" if code in (choice.get("add_codes") or []) else None))
             self._clip_toggled(0, False)
         names = [e["name"] for e in self._batch_entries() if e.get("status") == "done"]
         i = names.index(entry["name"]) + 1 if entry["name"] in names else 0
@@ -2299,7 +2298,8 @@ class PPEDockWidget(QDockWidget):
             "small and pale plants get fewer votes. These are the pixels a threshold 0.20 lower adds there. On a field with a "
             "reference mask, adding them matched it better in the thin parts and over the whole field."),
     }
-    ADD_CODES = (6,)            # kinds the user can add to the mask (the others can be left out)
+    ADD_CODES = (6,)            # kinds PPE finds below the threshold on purpose; their share is what adding brings in
+    # 4.6.5: every kind has both buttons, − Leave out of the mask and + Add to the mask
 
     def _pale_card(self):
         frame = QFrame(); frame.setObjectName("paleCard")
@@ -2312,20 +2312,27 @@ class PPEDockWidget(QDockWidget):
         self.pale_title.setToolTip("Click to open or close the details")
         box.addWidget(self.pale_title)
         self.pale_body = QWidget(); body = QVBoxLayout(self.pale_body); body.setContentsMargins(0, 2, 0, 2); body.setSpacing(8)
-        intro = QLabel("Nothing here changes the mask until you tick <b>Leave out of the mask</b> (or, for faint plants "
-                       "in sparse spots, <b>Add to the mask</b>). The live preview drops (or adds) those pixels at once and "
-                       "keeps them so whatever the slider; <b>Finalize mask</b> writes the mask that way. Untick to undo.")
+        intro = QLabel("Nothing here changes the mask until you press <b>− Leave out</b> (takes that kind out of the mask) or "
+                       "<b>+ Add</b> (puts in the pixels of that kind the slider leaves out). The live preview changes at once and "
+                       "keeps it so whatever the slider; <b>Finalize mask</b> writes the mask that way. Press the button again to undo.")
         intro.setObjectName("paleText"); intro.setWordWrap(True); intro.setTextFormat(Qt.RichText); body.addWidget(intro)
         self.finding_rows = {}
         for code in sorted(self.FINDING_TEXT):
             holder = QWidget(); line = QVBoxLayout(holder); line.setContentsMargins(0, 0, 0, 0); line.setSpacing(2)
             title = QLabel(""); title.setObjectName("findingTitle"); title.setWordWrap(True); title.setTextFormat(Qt.RichText)
             note = QLabel(""); note.setObjectName("paleText"); note.setWordWrap(True)
-            clip = QCheckBox("Add to the mask" if code in self.ADD_CODES else "Leave out of the mask")
-            clip.toggled.connect(lambda on, code=code: self._clip_toggled(code, on))
-            line.addWidget(title); line.addWidget(note); line.addWidget(clip)
+            buttons_row = QHBoxLayout(); buttons_row.setSpacing(6)
+            minus = QPushButton("−  Leave out"); plus = QPushButton("+  Add")
+            minus.setToolTip("Take this kind out of the mask (the pixels of it the slider keeps).")
+            plus.setToolTip("Put this kind into the mask (the pixels of it the slider leaves out).")
+            for b, state in ((minus, "out"), (plus, "in")):
+                b.setCheckable(True); b.setProperty("secondary", True)
+                b.clicked.connect(lambda on, code=code, state=state: self._finding_choice(code, state if on else None))
+                buttons_row.addWidget(b, 1)
+            if code in self.ADD_CODES: minus.setVisible(False)     # faint plants sit below the threshold: nothing to leave out
+            line.addWidget(title); line.addWidget(note); line.addLayout(buttons_row)
             body.addWidget(holder); holder.setVisible(False)
-            self.finding_rows[code] = {"holder": holder, "title": title, "note": note, "clip": clip}
+            self.finding_rows[code] = {"holder": holder, "title": title, "note": note, "minus": minus, "plus": plus}
         self.clip_status = QLabel(""); self.clip_status.setObjectName("paleText"); self.clip_status.setWordWrap(True); self.clip_status.setVisible(False)
         body.addWidget(self.clip_status)
         # which checks could not run on this image, and why (a weak NIR band, missing bands, ...)
@@ -2393,18 +2400,46 @@ class PPEDockWidget(QDockWidget):
             kinds.append((code, [1, 2] if (early and code == 2) else [code]))
         return kinds
 
+    def finding_state(self, code):
+        """'out' (left out of the mask), 'in' (added to the mask) or None for one kind."""
+        row = self.finding_rows.get(code)
+        if row is None: return None
+        return "out" if row["minus"].isChecked() else ("in" if row["plus"].isChecked() else None)
+
+    def set_finding_state(self, code, state):
+        row = self.finding_rows.get(code)
+        if row is None: return
+        for b, st in ((row["minus"], "out"), (row["plus"], "in")):
+            b.blockSignals(True); b.setChecked(state == st); b.blockSignals(False)
+
+    def _finding_choice(self, code, state):
+        """− or + pressed (or pressed again to undo): the two buttons of a kind exclude each other."""
+        self.set_finding_state(code, state); self._clip_toggled(code, state is not None)
+
     def clip_codes(self):
         """Finding codes left out of the mask (leaf edges include plant parts early in the season)."""
-        codes = [code for code, row in self.finding_rows.items() if row["clip"].isChecked() and code not in self.ADD_CODES]
+        codes = [code for code in self.finding_rows if self.finding_state(code) == "out"]
         if 2 in codes and self._early_stage(): codes.append(1)
         return sorted(set(codes))
 
     def add_codes(self):
-        """Kinds added to the mask (faint plants in sparse spots). Not with crop areas, which set
-        their own thresholds."""
+        """Kinds added to the mask (4.6.5: any kind). Not with crop areas, which set their own thresholds."""
         if not hasattr(self, "finding_rows") or self.zone_info:
             return []
-        return [code for code in self.ADD_CODES if code in self.finding_rows and self.finding_rows[code]["clip"].isChecked()]
+        codes = [code for code in self.finding_rows if self.finding_state(code) == "in"]
+        if 2 in codes and self._early_stage(): codes.append(1)
+        return sorted(set(codes) - set(self.clip_codes()))
+
+    def finding_below_now(self):
+        """Percent more plant each kind would add: its pixels below the threshold, as a share of the plant now."""
+        hist = (self.result or {}).get("findings_hist")
+        if not hist: return {}
+        import numpy as np
+        h = np.asarray(hist); levels = h.shape[1] - 1; start = int(np.ceil(max(0.0, self.threshold() - 0.05) * levels - 1e-9))
+        plant = h[:, start:].sum()
+        out = {c: (100.0 * h[c, :start].sum() / plant if c < h.shape[0] and plant else 0.0) for c in self.FINDING_TEXT}
+        if self._early_stage(): out[2] += out.get(1, 0.0); out[1] = 0.0
+        return out
 
     def added_pixels_now(self):
         hist = (self.result or {}).get("findings_hist")
@@ -2424,8 +2459,7 @@ class PPEDockWidget(QDockWidget):
             self.crop_preview_changed.emit()
 
     def _put_all_back(self):
-        for row in self.finding_rows.values():
-            row["clip"].blockSignals(True); row["clip"].setChecked(False); row["clip"].blockSignals(False)
+        for code in self.finding_rows: self.set_finding_state(code, None)
         self._clip_toggled(0, False)
 
     def _show_clip_result(self, result):
@@ -2461,10 +2495,10 @@ class PPEDockWidget(QDockWidget):
         added = [self.FINDING_TEXT[c][1].lower() for c in self.add_codes()]
         lines = []
         if added:
-            shares = self.finding_shares_now()
+            below = self.finding_below_now()
             lines.append("Added to the live preview: {} ({:,} pixels, {:.1f} % more plant at {:.2f}). They stay in whatever the slider; "
                          "Finalize mask writes them into the mask.".format(", ".join(added), self.added_pixels_now(),
-                                                                           sum(shares.get(c, 0.0) for c in self.add_codes()), self.threshold()))
+                                                                           sum(below.get(c, 0.0) for c in self.add_codes()), self.threshold()))
         if names:
             shares = self.finding_shares_now(); left = sum(shares.get(c, 0.0) for c in self.clip_codes())
             pixels = self.left_out_pixels_now()
@@ -2483,10 +2517,10 @@ class PPEDockWidget(QDockWidget):
         stage = self.field_stage.currentText() if self.field_stage.currentIndex() > 0 else ""
         crops = [row["name"].text().strip() for row in self.crop_rows if row["name"].text().strip()]
         parts = likely_parts(crops[0] if len(crops) == 1 else None, stage)[0]
-        shown = []
+        shown = []; below = self.finding_below_now()
         for code, row in self.finding_rows.items():
             share = shares.get(code, 0.0)
-            visible = share >= self.FINDING_SHOW or row["clip"].isChecked()
+            visible = share >= self.FINDING_SHOW or self.finding_state(code) is not None
             row["holder"].setVisible(visible)
             if visible:
                 mark, name, note = self.FINDING_TEXT[code]
@@ -2494,10 +2528,11 @@ class PPEDockWidget(QDockWidget):
                 # the square has the colour of this kind on the map (Show them on the map)
                 row["title"].setText('<span style="color:#{:02x}{:02x}{:02x}; font-size:15px;">■</span>&nbsp;{}&nbsp;&nbsp;{} — {}'.format(
                     rgb[0], rgb[1], rgb[2], mark, name,
-                    "adds {:.1f} % more plant".format(share) if code in self.ADD_CODES else "{:.1f} % of the plant".format(share)))
-                if code in self.ADD_CODES and self.zone_info:
-                    note = note + " Not available with crop areas: lower that crop's slider instead."
-                row["clip"].setEnabled(not (code in self.ADD_CODES and self.zone_info))
+                    "adds {:.1f} % more plant".format(share) if code in self.ADD_CODES else
+                    "{:.1f} % of the plant · + would add {:.1f} %".format(share, below.get(code, 0.0))))
+                if self.zone_info:
+                    note = note + " + Add is not available with crop areas: lower that crop's slider instead."
+                row["plus"].setEnabled(not self.zone_info)
                 row["note"].setText(note.format(parts=parts))
                 shown.append(name)
         r = self.result or {}
@@ -2805,7 +2840,8 @@ class PPEDockWidget(QDockWidget):
         canopy = self._whole_canopy(threshold) if self.zone_info else canopy_at(self.curve_points, threshold)
         shares_now = self.finding_shares_now() if hasattr(self, "finding_rows") else {}
         left = sum(shares_now.get(c, 0.0) for c in self.clip_codes()) if hasattr(self, "finding_rows") else 0.0
-        more = sum(shares_now.get(c, 0.0) for c in self.add_codes()) if hasattr(self, "finding_rows") else 0.0
+        below_now = self.finding_below_now() if hasattr(self, "finding_rows") else {}
+        more = sum(below_now.get(c, 0.0) for c in self.add_codes()) if hasattr(self, "finding_rows") else 0.0
         if canopy is not None and (left or more):
             canopy = canopy * (1.0 - left / 100.0 + more / 100.0)   # both shares are shares of the plant
         self.canopy_value.setText("—" if canopy is None else "{:.1f}%".format(canopy))
@@ -2899,8 +2935,7 @@ class PPEDockWidget(QDockWidget):
         if hasattr(self, "batch_review_box"): self.batch_review_box.setVisible(False)
         self.pale_layer_removed()                 # a new run removes the old findings layer
         self._close_pale_card()
-        for row in self.finding_rows.values():
-            row["clip"].blockSignals(True); row["clip"].setChecked(False); row["clip"].blockSignals(False)
+        for code in self.finding_rows: self.set_finding_state(code, None)
         self.result = dict(result)
         self.curve_points = list(curve_points)
         threshold = float(result.get("threshold", 0.5))
@@ -3092,6 +3127,7 @@ class PPEDockWidget(QDockWidget):
             QPushButton[primary="true"] { background: #1d7550; color: #ffffff; border-color: #1d7550; }
             QPushButton[primary="true"]:hover { background: #17613f; }
             QPushButton[secondary="true"] { background: #eaf3ee; color: #1f5a42; border-color: #c9ddd1; }
+            QPushButton[secondary="true"]:checked { background: #1d7550; color: #ffffff; border-color: #1d7550; }
             QPushButton[danger="true"] { color: #a13c3c; background: #fff5f5; border-color: #e8c3c3; }
             QPushButton#removeButton { padding: 0px; color: #8a4040; background: #ffffff; border-color: #e3caca; font-size: 13px; }
             QPushButton#removeButton:hover { background: #fff3f3; border-color: #c46a6a; }
