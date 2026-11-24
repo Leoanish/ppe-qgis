@@ -7,7 +7,6 @@ from qgis.core import (
     QgsCoordinateTransform,
     QgsFeature,
     QgsField,
-    QgsFillSymbol,
     QgsGeometry,
     QgsPalLayerSettings,
     QgsPointXY,
@@ -26,7 +25,7 @@ try:
 except ImportError:  # pragma: no cover
     QVariant = None
 
-from .layer_utils import ROLE_KEY, _project_group, place_layer, raise_plot_layer, remove_role
+from .layer_utils import ROLE_KEY, place_layer, remove_role
 
 CROP_LAYER_NAME = "PPE · Crop areas"
 
@@ -151,9 +150,15 @@ def show_crop_areas(areas, crs):
     layer.setRenderer(QgsSingleSymbolRenderer(area_symbol()))
     settings = QgsPalLayerSettings()
     settings.fieldName = "crop"
-    text = QgsTextFormat(); text.setSize(11); text.setColor(QColor(150, 10, 10))
-    buffer = QgsTextBufferSettings(); buffer.setEnabled(True); buffer.setSize(1.2); buffer.setColor(QColor(255, 255, 255))
-    text.setBuffer(buffer); settings.setFormat(text)
+    text = QgsTextFormat()
+    text.setSize(11)
+    text.setColor(QColor(150, 10, 10))
+    buffer = QgsTextBufferSettings()
+    buffer.setEnabled(True)
+    buffer.setSize(1.2)
+    buffer.setColor(QColor(255, 255, 255))
+    text.setBuffer(buffer)
+    settings.setFormat(text)
     layer.setLabeling(QgsVectorLayerSimpleLabeling(settings))
     layer.setLabelsEnabled(True)
     return place_layer(layer, "crops")

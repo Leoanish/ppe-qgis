@@ -91,8 +91,13 @@ class BandFilesDialog(QDialog):
         header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         header.setStretchLastSection(True)
         for i, entry in enumerate(scan["files"]):
-            holder = QWidget(); line = QHBoxLayout(holder); line.setContentsMargins(6, 0, 6, 0); line.setAlignment(Qt.AlignCenter)
-            check = QCheckBox(); check.setChecked(bool(entry["use"])); line.addWidget(check)
+            holder = QWidget()
+            line = QHBoxLayout(holder)
+            line.setContentsMargins(6, 0, 6, 0)
+            line.setAlignment(Qt.AlignCenter)
+            check = QCheckBox()
+            check.setChecked(bool(entry["use"]))
+            line.addWidget(check)
             readable = entry["size"] is not None
             check.setEnabled(readable)
             name = QTableWidgetItem(entry["file"])
@@ -103,8 +108,12 @@ class BandFilesDialog(QDialog):
                 combo.addItem(label, key)
             combo.setCurrentIndex(max(0, combo.findData(entry["band"] or "")))
             combo.setEnabled(readable)
-            note = QTableWidgetItem(entry["note"]); note.setToolTip(entry["note"])
-            table.setCellWidget(i, 0, holder); table.setItem(i, 1, name); table.setCellWidget(i, 2, combo); table.setItem(i, 3, note)
+            note = QTableWidgetItem(entry["note"])
+            note.setToolTip(entry["note"])
+            table.setCellWidget(i, 0, holder)
+            table.setItem(i, 1, name)
+            table.setCellWidget(i, 2, combo)
+            table.setItem(i, 3, note)
             row = {"entry": entry, "check": check, "combo": combo}
             self.rows.append(row)
             check.toggled.connect(self._validate)
@@ -120,7 +129,8 @@ class BandFilesDialog(QDialog):
         if scan.get("other_files"):
             other = QLabel("{} other file(s) in the folder are not rasters (for example .aux.xml or plot files) and are "
                            "not listed.".format(scan["other_files"]))
-            other.setWordWrap(True); other.setStyleSheet("color: #5f6f68;")
+            other.setWordWrap(True)
+            other.setStyleSheet("color: #5f6f68;")
             layout.addWidget(other)
         self.status = QLabel("")
         self.status.setWordWrap(True)

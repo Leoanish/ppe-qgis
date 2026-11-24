@@ -238,3 +238,39 @@ class WeedReview(unittest.TestCase):
             self.assertIsNone(toggle_weed_piece(w, find, vote, *xy(100, 10))["state"])    # soil: nothing there
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+class WeedLabels(unittest.TestCase):
+    def test_weeds_are_never_plant_labels_and_can_be_a_class(self):
+        from ppe_qgis.label_points import clear_classes, clear_weeds, WEED
+        from ppe_qgis.training_data import label_array
+        mask = np.zeros((40, 40), np.uint8); mask[5:20, 5:20] = 1; mask[25:35, 25:35] = 1
+        vote = mask.astype(np.float32); f = np.zeros((40, 40), np.uint8); f[25:35, 25:35] = 7      # the second plant is a weed
+        p, s = clear_classes(mask, vote, f); w = clear_weeds(mask, vote, f)
+        self.assertFalse((p & (f == 7)).any()); self.assertTrue(p[10, 10]); self.assertTrue(w[30, 30]); self.assertFalse(w[10, 10])
+        y = label_array(vote, f)
+        self.assertEqual(y[30, 30], 255); self.assertEqual(y[10, 10], 1)            # training data: a weed is unsure, never plant
+
+
+class LabelsFromReviewedResult(unittest.TestCase):
+    def test_labels_use_the_finalized_mask_and_its_weeds(self):
+        from ppe_qgis.label_points import run_and_create, read_points
+        tmp = tempfile.mkdtemp()
+        try:
+            m, _ = rows_field(); mask = tif(os.path.join(tmp, "mask.tif"), m, gdal.GDT_Byte, nodata=255)
+            vote = tif(os.path.join(tmp, "vote.tif"), m.astype(np.float32), gdal.GDT_Float32)
+            f = np.zeros(m.shape, np.uint8); f[30:60, :200] = np.where(m[30:60, :200] == 1, 7, 0)     # the user's weeds: the left of row 1
+            find = tif(os.path.join(tmp, "f.tif"), f, gdal.GDT_Byte, nodata=255)
+            rgb = os.path.join(tmp, "rgb.tif"); d = gdal.GetDriverByName("GTiff").Create(rgb, m.shape[1], m.shape[0], 3, gdal.GDT_Byte)
+            d.SetGeoTransform(gdal.Open(mask).GetGeoTransform()); d.SetProjection(gdal.Open(mask).GetProjection())
+            for b, a in enumerate((60 + m * 0, 60 + m * 120, 60 + m * 0)): d.GetRasterBand(b + 1).WriteArray(a.astype(np.uint8))
+            d = None
+            info = run_and_create({"use_result": True, "mask_path": mask, "vote_path": vote, "findings_path": find, "threshold": 0.5,
+                                   "source_mode": "stacked", "stacked_path": rgb, "ortho_type": "rgb", "output_dir": tmp, "n_points": 40, "plant_share": 0.5})
+            self.assertTrue(info["from_result"]); pts = read_points(info["points_path"])
+            for p in pts:
+                if p["label"] == 1: self.assertEqual(f[p["py"], p["px"]], 0)          # no plant label on a reviewed weed
+                if p["label"] == 2: self.assertEqual(f[p["py"], p["px"]], 7)
+            self.assertGreater(info["weed_points"], 0)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)

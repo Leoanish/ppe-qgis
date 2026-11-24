@@ -144,9 +144,13 @@ class CreateAndBuffer(unittest.TestCase):
         out = os.path.join(self.tmp, "oneclick")
         info = run_and_create({"source_mode": "stacked", "stacked_path": self.img, "output_dir": out, "n_points": 30, "plant_share": 0.5})
         self.assertTrue(0 < info["threshold"] < 1); self.assertTrue(os.path.isfile(info["mask_path"]))
-        pts = read_points(info["points_path"]); self.assertEqual(len(pts), 30)
+        pts = read_points(info["points_path"]); self.assertEqual(len(pts), 30 + info["weed_points"])   # 4.10.1: weed points on top
+        self.assertEqual(sum(1 for p in pts if p["label"] == 2), info["weed_points"])
         self.assertTrue(info["points_path"].startswith(os.path.join(out, "ppe_labels")))
-        for p in pts: self.assertEqual(bool(self.green[p["py"], p["px"]]), p["label"] == 1)
+        for p in pts: self.assertEqual(bool(self.green[p["py"], p["px"]]), p["label"] in (1, 2))      # plant and weed points on green
+        info2 = run_and_create({"source_mode": "stacked", "stacked_path": self.img, "output_dir": out + "2", "n_points": 30, "plant_share": 0.5,
+                                "label_weeds": False})
+        self.assertEqual(len(read_points(info2["points_path"])), 30); self.assertEqual(info2["weed_points"], 0)
 
 
     def test_export_to_another_folder_takes_the_checked_points(self):

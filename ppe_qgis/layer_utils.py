@@ -10,6 +10,7 @@ def escape(text):
     """Escape &, < and > for XML text (what xml.sax.saxutils.escape did)."""
     return _html_escape(text, quote=False)
 
+
 from osgeo import gdal, osr
 
 from qgis.PyQt.QtGui import QColor
@@ -58,10 +59,11 @@ def validate_aligned(paths):
         if current[:2] != reference[:2]:
             return False, "Raster dimensions differ: {} is {}×{}, expected {}×{}.".format(path, current[0], current[1], reference[0], reference[1])
         tolerance = max(1e-10, max(abs(value) for value in reference[2]) * 1e-12)
-        if any(abs(a-b) > tolerance for a, b in zip(current[2], reference[2])):
+        if any(abs(a - b) > tolerance for a, b in zip(current[2], reference[2])):
             return False, "Raster pixel grids differ in origin, resolution, or rotation: {}.".format(path)
         left, right = osr.SpatialReference(), osr.SpatialReference()
-        left.ImportFromWkt(reference[3]); right.ImportFromWkt(current[3])
+        left.ImportFromWkt(reference[3])
+        right.ImportFromWkt(current[3])
         if not bool(left.IsSame(right)):
             return False, "Raster coordinate reference systems differ: {}.".format(path)
     return True, ""
@@ -130,7 +132,9 @@ def _node_role(node):
 
 
 def _move(parent, node, index):
-    clone = node.clone(); parent.insertChildNode(index, clone); parent.removeChildNode(node)
+    clone = node.clone()
+    parent.insertChildNode(index, clone)
+    parent.removeChildNode(node)
 
 
 def arrange_layers():
@@ -143,7 +147,8 @@ def arrange_layers():
     group = root.findGroup(GROUP_NAME)
     if group is not None:
         if not group.children():
-            root.removeChildNode(group); group = None
+            root.removeChildNode(group)
+            group = None
         else:
             ranked = sorted([n for n in group.children() if _node_role(n) in GROUP_ORDER], key=lambda n: GROUP_ORDER.index(_node_role(n)))
             for index, node in enumerate(ranked):
@@ -354,9 +359,12 @@ def style_bright_rejection(layer, opacity=0.72):
         QgsColorRampShader.ColorRampItem(0.999999, QColor(0, 0, 0, 0), "Retained"),
         QgsColorRampShader.ColorRampItem(1.000001, QColor(235, 91, 64, 235), "Rejected bright-neutral pixel"),
     ])
-    shader = QgsRasterShader(); shader.setRasterShaderFunction(ramp)
+    shader = QgsRasterShader()
+    shader.setRasterShaderFunction(ramp)
     renderer = QgsSingleBandPseudoColorRenderer(layer.dataProvider(), 1, shader)
-    renderer.setOpacity(float(opacity)); layer.setRenderer(renderer); layer.triggerRepaint()
+    renderer.setOpacity(float(opacity))
+    layer.setRenderer(renderer)
+    layer.triggerRepaint()
 
 
 def zoom_to_layer(iface, layer):
@@ -460,12 +468,20 @@ def set_plot_labels(layer, id_field="", show=True):
         return
     settings = QgsPalLayerSettings()
     if id_field:
-        settings.fieldName = id_field; settings.isExpression = False
+        settings.fieldName = id_field
+        settings.isExpression = False
     else:
-        settings.fieldName = "$id"; settings.isExpression = True
-    text = QgsTextFormat(); text.setSize(9); text.setColor(QColor(20, 20, 20))
-    buffer = QgsTextBufferSettings(); buffer.setEnabled(True); buffer.setSize(1.0); buffer.setColor(QColor(255, 255, 255))
-    text.setBuffer(buffer); settings.setFormat(text)
+        settings.fieldName = "$id"
+        settings.isExpression = True
+    text = QgsTextFormat()
+    text.setSize(9)
+    text.setColor(QColor(20, 20, 20))
+    buffer = QgsTextBufferSettings()
+    buffer.setEnabled(True)
+    buffer.setSize(1.0)
+    buffer.setColor(QColor(255, 255, 255))
+    text.setBuffer(buffer)
+    settings.setFormat(text)
     try:
         settings.placement = Qgis.LabelPlacement.OverPoint
     except AttributeError:
@@ -569,7 +585,8 @@ def preview_source(base_path, findings_path, clip_codes, add_codes=(), add_vote_
         # NODATA 254 (a value findings never hold) so the no-data code 255 goes through the LUT
         return ('    <ComplexSource><SourceFilename relativeToVRT="0">{}</SourceFilename><SourceBand>1</SourceBand>'
                 '<NODATA>254</NODATA><LUT>{}</LUT></ComplexSource>\n').format(find, ",".join("{}:{}".format(c, values(c)) for c in codes))
-    stem = os.path.splitext(os.path.basename(base_path))[0]; folder = os.path.dirname(os.path.abspath(base_path))
+    stem = os.path.splitext(os.path.basename(base_path))[0]
+    folder = os.path.dirname(os.path.abspath(base_path))
     name = "{}_preview{}{}".format(stem, "_without_" + "_".join(_FINDING_FILE_NAMES[c] for c in clip) if clip else "",
                                    "_with_" + "_".join(_FINDING_FILE_NAMES[c] for c in add) if add else "")
     vote = '    <SimpleSource><SourceFilename relativeToVRT="0">{}</SourceFilename><SourceBand>1</SourceBand></SimpleSource>\n'.format(
@@ -579,7 +596,8 @@ def preview_source(base_path, findings_path, clip_codes, add_codes=(), add_vote_
         if clip:
             inner = _derived_vrt(os.path.join(folder, name + ("_cut" if add else "") + ".vrt"), ds, "mul",
                                  [vote, lut_source(lambda c: 0 if c in clip else 1)])
-            if not add: return inner
+            if not add:
+                return inner
             current = '    <SimpleSource><SourceFilename relativeToVRT="0">{}</SourceFilename><SourceBand>1</SourceBand></SimpleSource>\n'.format(escape(inner))
         return _derived_vrt(os.path.join(folder, name + ".vrt"), ds, "sum", [current, lut_source(lambda c: 2 if c in add else 0)])
     except OSError:
@@ -700,16 +718,27 @@ def _label_split_points(layer):
     from qgis.PyQt.QtGui import QColor, QFont
     if layer.fields().indexOf("split_of") < 0:
         return
-    st = QgsPalLayerSettings(); st.isExpression = True; st.fieldName = SPLIT_LABEL_EXPRESSION
+    st = QgsPalLayerSettings()
+    st.isExpression = True
+    st.fieldName = SPLIT_LABEL_EXPRESSION
     try:
         st.placement = QgsPalLayerSettings.OverPoint
     except AttributeError:
         pass
-    st.xOffset = 2.2; st.yOffset = -1.6
-    fmt = QgsTextFormat(); fmt.setFont(QFont("Arial")); fmt.setSize(8); fmt.setColor(QColor(0, 0, 0))
-    buf = QgsTextBufferSettings(); buf.setEnabled(True); buf.setSize(0.8); buf.setColor(QColor(255, 255, 255)); fmt.setBuffer(buf)
+    st.xOffset = 2.2
+    st.yOffset = -1.6
+    fmt = QgsTextFormat()
+    fmt.setFont(QFont("Arial"))
+    fmt.setSize(8)
+    fmt.setColor(QColor(0, 0, 0))
+    buf = QgsTextBufferSettings()
+    buf.setEnabled(True)
+    buf.setSize(0.8)
+    buf.setColor(QColor(255, 255, 255))
+    fmt.setBuffer(buf)
     st.setFormat(fmt)
-    layer.setLabeling(QgsVectorLayerSimpleLabeling(st)); layer.setLabelsEnabled(True)
+    layer.setLabeling(QgsVectorLayerSimpleLabeling(st))
+    layer.setLabelsEnabled(True)
     layer.setMapTipTemplate(
         "<b>Plant [% \"plant_id\" %]</b>: [% \"status\" %]<br>"
         "[% CASE WHEN coalesce(\"split_of\", 0) > 0 THEN 'part of patch ' || \"split_of\" || ', split into ' || "
@@ -735,7 +764,8 @@ def show_label_points(path, name="PPE · Label points"):
     """The label points (ppe_labels.gpkg) as the top layer: plant green, soil orange; a point the user
     changed or added has a white ring. Replaces earlier label points."""
     from qgis.core import QgsCategorizedSymbolRenderer, QgsMarkerSymbol, QgsRendererCategory, QgsUnitTypes, QgsVectorLayer
-    remove_role("labels"); remove_role("label_buffers")
+    remove_role("labels")
+    remove_role("label_buffers")
     layer = QgsVectorLayer(path + "|layername=points", name, "ogr")
     if not layer.isValid():
         return None
@@ -749,8 +779,10 @@ def show_label_points(path, name="PPE · Label points"):
     layer.setRenderer(QgsCategorizedSymbolRenderer(expr, [
         QgsRendererCategory("plant", dot("0,220,0"), "Plant"),
         QgsRendererCategory("soil", dot("255,150,0"), "Soil"),
+        QgsRendererCategory("weed", dot("160,70,255"), "Weed"),
         QgsRendererCategory("plant yours", dot("0,220,0", "255,255,255", "0.9"), "Plant · changed or added by you"),
-        QgsRendererCategory("soil yours", dot("255,150,0", "255,255,255", "0.9"), "Soil · changed or added by you")]))
+        QgsRendererCategory("soil yours", dot("255,150,0", "255,255,255", "0.9"), "Soil · changed or added by you"),
+        QgsRendererCategory("weed yours", dot("160,70,255", "255,255,255", "0.9"), "Weed · changed or added by you")]))
     place_layer(layer, "labels")
     layer.triggerRepaint()
     return layer
@@ -765,7 +797,8 @@ def show_label_buffers(path, name="PPE · Label buffers"):
         return None
     layer.setRenderer(QgsCategorizedSymbolRenderer("label", [
         QgsRendererCategory("plant", QgsFillSymbol.createSimple({"color": "0,220,0,40", "outline_color": "0,220,0", "outline_width": "0.4"}), "Plant buffer"),
-        QgsRendererCategory("soil", QgsFillSymbol.createSimple({"color": "255,150,0,40", "outline_color": "255,150,0", "outline_width": "0.4"}), "Soil buffer")]))
+        QgsRendererCategory("soil", QgsFillSymbol.createSimple({"color": "255,150,0,40", "outline_color": "255,150,0", "outline_width": "0.4"}), "Soil buffer"),
+        QgsRendererCategory("weed", QgsFillSymbol.createSimple({"color": "160,70,255,40", "outline_color": "160,70,255", "outline_width": "0.4"}), "Weed buffer")]))
     place_layer(layer, "label_buffers")
     layer.triggerRepaint()
     return layer
@@ -788,15 +821,19 @@ def show_label_area(geometries, crs, name="PPE · Label area"):
 def show_area_layer(geometries, crs, role, name):
     """An area drawn for a goal (solid red outline, as every area drawn in PPE): the label area or the count area.
     geometries: QgsGeometry in `crs`; an empty list removes the layer."""
-    from qgis.core import QgsFeature, QgsFillSymbol, QgsSingleSymbolRenderer, QgsVectorLayer
+    from qgis.core import QgsFeature, QgsSingleSymbolRenderer, QgsVectorLayer
     remove_role(role)
     if not geometries or crs is None:
         return None
-    layer = QgsVectorLayer("MultiPolygon", name, "memory"); layer.setCrs(crs)
+    layer = QgsVectorLayer("MultiPolygon", name, "memory")
+    layer.setCrs(crs)
     feats = []
     for g in geometries:
-        f = QgsFeature(); f.setGeometry(g); feats.append(f)
-    layer.dataProvider().addFeatures(feats); layer.updateExtents()
+        f = QgsFeature()
+        f.setGeometry(g)
+        feats.append(f)
+    layer.dataProvider().addFeatures(feats)
+    layer.updateExtents()
     layer.setRenderer(QgsSingleSymbolRenderer(area_symbol()))
     place_layer(layer, role)
     return layer
@@ -817,7 +854,8 @@ GOAL_VIS_KEY = "ppe/goal_visible/"
 def _ppe_nodes():
     """PPE's own layers and sub-groups (with their role), top level and inside the PPE group;
     the layers inside a sub-group follow the sub-group."""
-    root = QgsProject.instance().layerTreeRoot(); out = []
+    root = QgsProject.instance().layerTreeRoot()
+    out = []
     for node in root.children():
         role = _node_role(node)
         if role == "__group__":
@@ -831,7 +869,8 @@ def switch_goal_layers(old_goal, new_goal):
     """Hide the layers that do not belong to new_goal and show those that do (as they were when the
     user last left new_goal). Returns how many layers were hidden."""
     roles = GOAL_ROLES.get(new_goal)
-    if roles is None: return 0
+    if roles is None:
+        return 0
     hidden = 0
     for node, role in _ppe_nodes():
         if old_goal in GOAL_ROLES:
@@ -841,7 +880,8 @@ def switch_goal_layers(old_goal, new_goal):
             if saved is not None:
                 node.setItemVisibilityChecked(saved in (True, "true", "True", 1, "1"))
         else:
-            if node.itemVisibilityChecked(): hidden += 1
+            if node.itemVisibilityChecked():
+                hidden += 1
             node.setItemVisibilityChecked(False)
     group = QgsProject.instance().layerTreeRoot().findGroup(GROUP_NAME)
     if group is not None:                  # the PPE group itself: shown only when one of its layers is
@@ -860,15 +900,21 @@ def style_label_buffers(layer, radius_cm):
     if layer is None or not layer.isValid():
         return
     r = max(0.0, float(radius_cm)) + 1e-4
-    ramp = QgsColorRampShader(); ramp.setColorRampType(QgsColorRampShader.Discrete)
+    ramp = QgsColorRampShader()
+    ramp.setColorRampType(QgsColorRampShader.Discrete)
     ramp.setColorRampItemList([
         QgsColorRampShader.ColorRampItem(r, QColor(0, 230, 0, 170), "Plant label (within {:.1f} cm)".format(radius_cm)),
         QgsColorRampShader.ColorRampItem(LABEL_BUFFER_SOIL_OFFSET - 0.5, QColor(0, 0, 0, 0), ""),
         QgsColorRampShader.ColorRampItem(LABEL_BUFFER_SOIL_OFFSET + r, QColor(255, 150, 0, 170), "Soil label (within {:.1f} cm)".format(radius_cm)),
+        QgsColorRampShader.ColorRampItem(2 * LABEL_BUFFER_SOIL_OFFSET - 0.5, QColor(0, 0, 0, 0), ""),
+        QgsColorRampShader.ColorRampItem(2 * LABEL_BUFFER_SOIL_OFFSET + r, QColor(160, 70, 255, 170), "Weed label (within {:.1f} cm)".format(radius_cm)),
         QgsColorRampShader.ColorRampItem(1e9, QColor(0, 0, 0, 0), "")])
-    shader = QgsRasterShader(); shader.setRasterShaderFunction(ramp)
+    shader = QgsRasterShader()
+    shader.setRasterShaderFunction(ramp)
     renderer = QgsSingleBandPseudoColorRenderer(layer.dataProvider(), 1, shader)
-    layer.setRenderer(renderer); _force_nearest(layer); layer.triggerRepaint()
+    layer.setRenderer(renderer)
+    _force_nearest(layer)
+    layer.triggerRepaint()
 
 
 def show_label_buffer_raster(path, radius_cm, name="PPE · Label buffers"):
@@ -898,18 +944,22 @@ def remove_crop_only_mask():
     """Take the crop-only mask off the map (before its file is written again: Windows keeps open files locked)."""
     project = QgsProject.instance()
     old = [l.id() for l in project.mapLayers().values() if l.customProperty(ROLE_KEY, "") == "crop_mask"]
-    if old: project.removeMapLayers(old)
+    if old:
+        project.removeMapLayers(old)
 
 
 def show_crop_only_mask(path):
     """4.9.0: the crop-only mask (the plant mask without the weeds of the reviewed count) on the map,
     in the mask colour, replacing an older one; the plant mask itself is unticked so the change is seen."""
-    project = QgsProject.instance(); remove_crop_only_mask()
+    project = QgsProject.instance()
+    remove_crop_only_mask()
     layer = _add_raster(path, CROP_MASK_NAME, "crop_mask", None, True)
-    if layer is None: return None
+    if layer is None:
+        return None
     style_plant_mask(layer)
     for l in project.mapLayers().values():
-        if l.customProperty(ROLE_KEY, "") == "mask": set_layer_visible(l, False)
+        if l.customProperty(ROLE_KEY, "") == "mask":
+            set_layer_visible(l, False)
     return layer
 
 
@@ -918,6 +968,7 @@ def reload_findings_layers():
     for layer in QgsProject.instance().mapLayers().values():
         if layer.customProperty(ROLE_KEY, "") in ("pale", "votes"):
             try:
-                layer.dataProvider().reloadData(); layer.triggerRepaint()
+                layer.dataProvider().reloadData()
+                layer.triggerRepaint()
             except (AttributeError, RuntimeError):
                 pass

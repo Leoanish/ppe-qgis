@@ -11,6 +11,7 @@ from datetime import datetime
 
 import numpy as np
 from osgeo import gdal, ogr, osr
+from .version import PLUGIN_VERSION
 
 _LOG = logging.getLogger(__name__)    # errors PPE deliberately ignores are kept here (debug level)
 
@@ -95,27 +96,27 @@ def compute_vi(name, b):
     u, e = b.get("blue"), b.get("re")
     with np.errstate(invalid="ignore", over="ignore"):
         return {
-            "ndvi": lambda: _ratio(n-r, n+r), "gndvi": lambda: _ratio(n-g, n+g),
-            "ndre": lambda: _ratio(n-e, n+e), "savi": lambda: _ratio(1.5*(n-r), n+r+0.5),
-            "osavi": lambda: _ratio(1.16*(n-r), n+r+0.16),
-            "msavi": lambda: (2*n+1-np.sqrt(np.maximum(0, (2*n+1)**2-8*(n-r))))/2,
-            "evi": lambda: 2.5*_ratio(n-r, n+6*r-7.5*u+1),
-            "evi2": lambda: 2.5*_ratio(n-r, n+2.4*r+1),
-            "cigreen": lambda: _ratio(n, g)-1, "cire": lambda: _ratio(n, e)-1,
-            "clre": lambda: _ratio(n, e)-1, "vari": lambda: _ratio(g-r, g+r-u),
-            "exg": lambda: 2*g-r-u, "ngrdi": lambda: _ratio(g-r, g+r),
-            "nirv": lambda: n*_ratio(n-r, n+r), "rvi": lambda: _ratio(n, r),
-            "msr": lambda: _ratio(_ratio(n, r)-1, np.sqrt(np.maximum(0, _ratio(n, r)+1))),
-            "rdvi": lambda: _ratio(n-r, np.sqrt(np.maximum(0, n+r))), "dvi": lambda: n-e,
-            "cvi": lambda: _ratio(n, e)*_ratio(r, g), "psri": lambda: _ratio(r-g, e),
-            "tvi": lambda: .5*(120*(n-g)-200*(r-g)),
-            "mcari": lambda: ((e-r)-.2*(e-g))*_ratio(e, r),
-            "tcari": lambda: 3*((e-r)-.2*(e-g))*_ratio(e, r),
-            "gli": lambda: _ratio(2*g-r-u, 2*g+r+u),
-            "brightness": lambda: (r+g+u)/3, "sr": lambda: _ratio(n, r),
-            "ndwi": lambda: _ratio(g-n, g+n), "grvi": lambda: _ratio(g, r),
-            "rgri": lambda: _ratio(r, g), "arvi": lambda: _ratio(n-(2*r-u), n+(2*r-u)),
-            "ndrer": lambda: _ratio(e-r, e+r),
+            "ndvi": lambda: _ratio(n - r, n + r), "gndvi": lambda: _ratio(n - g, n + g),
+            "ndre": lambda: _ratio(n - e, n + e), "savi": lambda: _ratio(1.5 * (n - r), n + r + 0.5),
+            "osavi": lambda: _ratio(1.16 * (n - r), n + r + 0.16),
+            "msavi": lambda: (2 * n + 1 - np.sqrt(np.maximum(0, (2 * n + 1)**2 - 8 * (n - r)))) / 2,
+            "evi": lambda: 2.5 * _ratio(n - r, n + 6 * r - 7.5 * u + 1),
+            "evi2": lambda: 2.5 * _ratio(n - r, n + 2.4 * r + 1),
+            "cigreen": lambda: _ratio(n, g) - 1, "cire": lambda: _ratio(n, e) - 1,
+            "clre": lambda: _ratio(n, e) - 1, "vari": lambda: _ratio(g - r, g + r - u),
+            "exg": lambda: 2 * g - r - u, "ngrdi": lambda: _ratio(g - r, g + r),
+            "nirv": lambda: n * _ratio(n - r, n + r), "rvi": lambda: _ratio(n, r),
+            "msr": lambda: _ratio(_ratio(n, r) - 1, np.sqrt(np.maximum(0, _ratio(n, r) + 1))),
+            "rdvi": lambda: _ratio(n - r, np.sqrt(np.maximum(0, n + r))), "dvi": lambda: n - e,
+            "cvi": lambda: _ratio(n, e) * _ratio(r, g), "psri": lambda: _ratio(r - g, e),
+            "tvi": lambda: .5 * (120 * (n - g) - 200 * (r - g)),
+            "mcari": lambda: ((e - r) - .2 * (e - g)) * _ratio(e, r),
+            "tcari": lambda: 3 * ((e - r) - .2 * (e - g)) * _ratio(e, r),
+            "gli": lambda: _ratio(2 * g - r - u, 2 * g + r + u),
+            "brightness": lambda: (r + g + u) / 3, "sr": lambda: _ratio(n, r),
+            "ndwi": lambda: _ratio(g - n, g + n), "grvi": lambda: _ratio(g, r),
+            "rgri": lambda: _ratio(r, g), "arvi": lambda: _ratio(n - (2 * r - u), n + (2 * r - u)),
+            "ndrer": lambda: _ratio(e - r, e + r),
         }[name]().astype(np.float32, copy=False)
 
 
@@ -166,7 +167,8 @@ def infer_band(filename):
     if hit:
         wl = float(hit.group(1))
         for slot, (lo, hi) in (("blue", (420, 510)), ("green", (510, 590)), ("red", (620, 690)), ("re", (690, 760)), ("nir", (760, 1000))):
-            if lo <= wl < hi: return slot
+            if lo <= wl < hi:
+                return slot
     return None
 
 
@@ -188,33 +190,47 @@ def scan_band_folder(folder):
     Returns {"files": [{"path", "file", "band", "use", "note", "size"}], "other_files": n} where
     band is blue/green/red/re/nir or None, use is PPE's proposal, size is (columns, rows).
     """
-    files = []; other = 0; taken = {}; grid = None
+    files = []
+    other = 0
+    taken = {}
+    grid = None
     for name in sorted(os.listdir(folder)):
         path = os.path.join(folder, name)
         if not os.path.isfile(path) or name.startswith("."):
             continue
         if not name.lower().endswith((".tif", ".tiff")):
-            other += 1; continue
+            other += 1
+            continue
         entry = {"path": path, "file": name, "band": None, "use": False, "note": "", "size": None}
         try:
             ds = gdal.Open(path)
         except Exception:
             ds = None
         if ds is None:
-            entry["note"] = "cannot be opened as a raster"; files.append(entry); continue
+            entry["note"] = "cannot be opened as a raster"
+            files.append(entry)
+            continue
         entry["size"] = (ds.RasterXSize, ds.RasterYSize)
         if is_thermal_name(name):
-            entry["note"] = "thermal band: not used for plant and soil"; files.append(entry); continue
+            entry["note"] = "thermal band: not used for plant and soil"
+            files.append(entry)
+            continue
         if ds.RasterCount != 1:
-            entry["note"] = "holds {} bands: a stacked file, not one band".format(ds.RasterCount); files.append(entry); continue
-        band = infer_band(name); how = "from the file name"
+            entry["note"] = "holds {} bands: a stacked file, not one band".format(ds.RasterCount)
+            files.append(entry)
+            continue
+        band = infer_band(name)
+        how = "from the file name"
         if band is None:
-            band = next(iter(named_band_map(ds)), None); how = "from the band name inside the file"
+            band = next(iter(named_band_map(ds)), None)
+            how = "from the band name inside the file"
         if band is None:
             wavelength = dataset_wavelengths(ds, {"ortho_type": "ms"})[0]
             if wavelength is not None:
                 for slot, (lo, hi) in (("blue", (420, 510)), ("green", (510, 590)), ("red", (620, 690)), ("re", (690, 760)), ("nir", (760, 1000))):
-                    if lo <= wavelength < hi: band = slot; how = "from its wavelength ({:g} nm)".format(wavelength)
+                    if lo <= wavelength < hi:
+                        band = slot
+                        how = "from its wavelength ({:g} nm)".format(wavelength)
         entry["band"] = band
         if band is None:
             entry["note"] = "band not recognised: choose it if this is a band file"
@@ -223,8 +239,10 @@ def scan_band_folder(folder):
         elif grid is not None and entry["size"] != grid:
             entry["note"] = "{} x {} pixels, unlike the other band files".format(*entry["size"])
         else:
-            entry["use"] = True; entry["note"] = "{} {}".format(BAND_LABELS.get(band, band), how)
-            taken[band] = name; grid = grid or entry["size"]
+            entry["use"] = True
+            entry["note"] = "{} {}".format(BAND_LABELS.get(band, band), how)
+            taken[band] = name
+            grid = grid or entry["size"]
         files.append(entry)
     return {"files": files, "other_files": other}
 
@@ -237,76 +255,101 @@ def describe_image(cfg):
     "unnamed3" (three bands with no names), "unnamed" or "none"; bands are the canonical
     band names found, in blue-to-NIR order.
     """
-    mode = cfg.get("source_mode", "stacked"); found = []; count = 0; named = True
+    mode = cfg.get("source_mode", "stacked")
+    found = []
+    count = 0
+    named = True
     try:
         if mode == "stacked":
             ds = gdal.Open(cfg.get("stacked_path", ""))
-            if ds is None: return {"kind": "none", "bands": [], "count": 0, "named": False}
+            if ds is None:
+                return {"kind": "none", "bands": [], "count": 0, "named": False}
             count = ds.RasterCount
-            if count > 15: return {"kind": "hsi", "bands": [], "count": count, "named": True}
+            if count > 15:
+                return {"kind": "hsi", "bands": [], "count": count, "named": True}
             found = list(named_band_map(ds))
             if len(found) < min(3, count):
                 waves = dataset_wavelengths(ds, {"ortho_type": "ms"})
                 slots = []
                 for w in waves:
-                    if w is None: continue
+                    if w is None:
+                        continue
                     for slot, (lo, hi) in (("blue", (420, 510)), ("green", (510, 590)), ("red", (620, 690)), ("re", (690, 760)), ("nir", (760, 1000))):
-                        if lo <= w < hi and slot not in slots: slots.append(slot)
-                if len(slots) > len(found): found = slots
+                        if lo <= w < hi and slot not in slots:
+                            slots.append(slot)
+                if len(slots) > len(found):
+                    found = slots
             if len(found) < min(3, count):
                 named = False
-                if count == 3: return {"kind": "unnamed3", "bands": [], "count": 3, "named": False}
-                if count == 5: found = list(CANONICAL)          # read in the standard blue..NIR order
-                else: return {"kind": "unnamed", "bands": [], "count": count, "named": False}
+                if count == 3:
+                    return {"kind": "unnamed3", "bands": [], "count": 3, "named": False}
+                if count == 5:
+                    found = list(CANONICAL)          # read in the standard blue..NIR order
+                else:
+                    return {"kind": "unnamed", "bands": [], "count": count, "named": False}
         elif mode == "folder" and cfg.get("folder_bands"):
-            found = [k for k, v in cfg["folder_bands"].items() if v]; count = len(found)
+            found = [k for k, v in cfg["folder_bands"].items() if v]
+            count = len(found)
         elif mode == "folder":
             folder = cfg.get("folder_path", "")
             for name in sorted(os.listdir(folder)):
-                if not name.lower().endswith((".tif", ".tiff")): continue
+                if not name.lower().endswith((".tif", ".tiff")):
+                    continue
                 band = infer_band(name)
                 if band is None:
                     ds = gdal.Open(os.path.join(folder, name))
                     if ds is not None and ds.RasterCount == 1:
                         band = next(iter(named_band_map(ds)), None)
-                if band and band not in found: found.append(band)
+                if band and band not in found:
+                    found.append(band)
             count = len(found)
         else:
-            found = [k for k, v in (cfg.get("bands") or {}).items() if v]; count = len(found)
+            found = [k for k, v in (cfg.get("bands") or {}).items() if v]
+            count = len(found)
     except Exception:
         return {"kind": "none", "bands": [], "count": count, "named": False}
     found = [b for b in CANONICAL if b in found]
-    if not found: kind = "none"
-    elif "nir" in found or "re" in found: kind = "ms"
-    elif set(found) >= {"red", "green", "blue"}: kind = "rgb"
-    else: kind = "limited"
+    if not found:
+        kind = "none"
+    elif "nir" in found or "re" in found:
+        kind = "ms"
+    elif set(found) >= {"red", "green", "blue"}:
+        kind = "rgb"
+    else:
+        kind = "limited"
     return {"kind": kind, "bands": found, "count": count, "named": named}
 
 
 def _wavelength_number(value):
     hit = re.search(r"(?<!\d)(\d{3,4}(?:\.\d+)?)(?:\s*nm)?", str(value), re.I)
-    if hit: return float(hit.group(1))
+    if hit:
+        return float(hit.group(1))
     hit = re.search(r"(?<!\d)(0?\.\d+)(?:\s*(?:um|µm))", str(value), re.I)
-    return float(hit.group(1))*1000.0 if hit else None
+    return float(hit.group(1)) * 1000.0 if hit else None
 
 
 def dataset_wavelengths(ds, cfg=None):
     """Read per-band wavelengths from descriptions/metadata or an explicit HSI grid."""
     cfg = cfg or {}
-    values = [None]*ds.RasterCount
+    values = [None] * ds.RasterCount
     for index in range(ds.RasterCount):
-        band = ds.GetRasterBand(index+1); candidates = [band.GetDescription()]
+        band = ds.GetRasterBand(index + 1)
+        candidates = [band.GetDescription()]
         candidates.extend(value for key, value in band.GetMetadata().items() if "wavelength" in key.lower() or "band_name" in key.lower())
         for value in candidates:
             wavelength = _wavelength_number(value)
-            if wavelength is not None: values[index] = wavelength; break
+            if wavelength is not None:
+                values[index] = wavelength
+                break
     for domain in ("ENVI", "", "IMAGERY"):
         metadata = ds.GetMetadata(domain) or {}
         for key, value in metadata.items():
-            if "wavelength" not in key.lower(): continue
+            if "wavelength" not in key.lower():
+                continue
             parsed = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", str(value))]
             if len(parsed) == ds.RasterCount:
-                if max(parsed) < 10: parsed = [x*1000 for x in parsed]
+                if max(parsed) < 10:
+                    parsed = [x * 1000 for x in parsed]
                 values = [values[i] if values[i] is not None else parsed[i] for i in range(ds.RasterCount)]
 
     # Explicit HSI grid is ONLY processed for hyperspectral imagery (ortho_type == 'hsi' or >15 bands)
@@ -319,15 +362,15 @@ def dataset_wavelengths(ds, cfg=None):
         if cfg.get("hsi_grid_confirmed"):
             if start < 300 or end <= start or interval <= 0:
                 raise ValueError("The HSI wavelength grid requires valid minimum, maximum, and interval values.")
-            calculated_end = start + (ds.RasterCount-1)*interval
-            if abs(calculated_end-end) > max(.1, interval*.5):
+            calculated_end = start + (ds.RasterCount - 1) * interval
+            if abs(calculated_end - end) > max(.1, interval * .5):
                 raise ValueError("The HSI wavelength grid does not match {} bands: its calculated last band is {:.3f} nm, not {:.3f} nm.".format(ds.RasterCount, calculated_end, end))
-            return [start+i*interval for i in range(ds.RasterCount)]
+            return [start + i * interval for i in range(ds.RasterCount)]
         if sum(x is not None for x in values) < 3:
             if start >= 300 and interval > 0 and end > start:
-                calculated_end = start+(ds.RasterCount-1)*interval
-                if abs(calculated_end-end) <= max(.1, interval*.5):
-                    values = [start+i*interval for i in range(ds.RasterCount)]
+                calculated_end = start + (ds.RasterCount - 1) * interval
+                if abs(calculated_end - end) <= max(.1, interval * .5):
+                    values = [start + i * interval for i in range(ds.RasterCount)]
     return values
 
 
@@ -335,10 +378,13 @@ def named_band_map(ds):
     """Resolve canonical names from explicit GDAL colors and band descriptions."""
     colors = {gdal.GCI_RedBand: "red", gdal.GCI_GreenBand: "green", gdal.GCI_BlueBand: "blue"}
     found = {}
-    for index in range(1, ds.RasterCount+1):
-        band = ds.GetRasterBand(index); name = colors.get(band.GetColorInterpretation())
-        if name is None: name = infer_band(band.GetDescription() or "")
-        if name and name not in found: found[name] = index
+    for index in range(1, ds.RasterCount + 1):
+        band = ds.GetRasterBand(index)
+        name = colors.get(band.GetColorInterpretation())
+        if name is None:
+            name = infer_band(band.GetDescription() or "")
+        if name and name not in found:
+            found[name] = index
     return found
 
 
@@ -376,26 +422,40 @@ def safe_gdal_open(path):
 
 def otsu(x, bins=256):
     x = x[np.isfinite(x)]
-    if x.size < 10: return np.nan
+    if x.size < 10:
+        return np.nan
     lo, hi = float(x.min()), float(x.max())
-    if hi-lo < 1e-12: return lo
+    if hi - lo < 1e-12:
+        return lo
     h, edges = np.histogram(x, bins=bins, range=(lo, hi))
-    p = h.astype(float)/max(1, h.sum()); w1 = np.cumsum(p); w2 = 1-w1
-    mid = (edges[:-1]+edges[1:])/2; mu = np.cumsum(p*mid); mt = np.sum(p*mid)
-    score = (mt*w1-mu)**2/(w1*w2+1e-12)
+    p = h.astype(float) / max(1, h.sum())
+    w1 = np.cumsum(p)
+    w2 = 1 - w1
+    mid = (edges[:-1] + edges[1:]) / 2
+    mu = np.cumsum(p * mid)
+    mt = np.sum(p * mid)
+    score = (mt * w1 - mu)**2 / (w1 * w2 + 1e-12)
     return float(mid[int(np.argmax(score))])
 
 
 def separability(x, bins=256):
     """How clearly a layer splits into two groups: Otsu's between-group variance over the total
     variance (0 = one blurred group, 1 = two sharp groups), after trimming the extreme 0.5 percent."""
-    x = np.asarray(x, np.float64); x = x[np.isfinite(x)]
-    if x.size < 50: return float("nan")
+    x = np.asarray(x, np.float64)
+    x = x[np.isfinite(x)]
+    if x.size < 50:
+        return float("nan")
     lo, hi = np.percentile(x, (0.5, 99.5))
-    if hi - lo < 1e-12: return 0.0
-    h, e = np.histogram(np.clip(x, lo, hi), bins=bins); p = h / float(h.sum()); m = (e[:-1] + e[1:]) / 2
-    w = np.cumsum(p); mu = np.cumsum(p * m); mt = mu[-1]
-    between = (mt * w - mu) ** 2 / (w * (1 - w) + 1e-12); total = float(np.sum(p * (m - mt) ** 2))
+    if hi - lo < 1e-12:
+        return 0.0
+    h, e = np.histogram(np.clip(x, lo, hi), bins=bins)
+    p = h / float(h.sum())
+    m = (e[:-1] + e[1:]) / 2
+    w = np.cumsum(p)
+    mu = np.cumsum(p * m)
+    mt = mu[-1]
+    between = (mt * w - mu) ** 2 / (w * (1 - w) + 1e-12)
+    total = float(np.sum(p * (m - mt) ** 2))
     return float(between.max() / total) if total > 0 else 0.0
 
 
@@ -408,7 +468,8 @@ def unit_free_spread(x):
     scores low, a layer that spreads soil and plants well apart scores high (0 to 1).
     """
     x = x[np.isfinite(x)]
-    if x.size < 20: return 0.0
+    if x.size < 20:
+        return 0.0
     p1, p25, p75, p99 = np.percentile(x, (1, 25, 75, 99))
     return float((p75 - p25) / (p99 - p1)) if p99 - p1 > 1e-12 else 0.0
 
@@ -434,16 +495,20 @@ def cdf_threshold(x, rng=None, limit=None):
     they are kept so older scripts still run.
     """
     x = x[np.isfinite(x)]
-    if x.size < 30: return np.nan
+    if x.size < 30:
+        return np.nan
     lo, hi = np.percentile(x, (0.5, 99.5))
-    x = np.sort(x[(x >= lo) & (x <= hi)]); span = float(x[-1] - x[0]) if x.size else 0.0
-    if x.size < 30 or span <= 0: return np.nan
+    x = np.sort(x[(x >= lo) & (x <= hi)])
+    span = float(x[-1] - x[0]) if x.size else 0.0
+    if x.size < 30 or span <= 0:
+        return np.nan
     rank = (np.arange(x.size) + 0.5) / x.size
     gap = (x - x[0]) / span - rank
     below, above = int(np.argmin(gap)), int(np.argmax(gap))
     d_below, d_above = -float(gap[below]), float(gap[above])
     weak, strong = min(d_below, d_above), max(d_below, d_above)
-    if strong <= 0: return np.nan
+    if strong <= 0:
+        return np.nan
     if weak >= 0.5 * strong and x[above] != x[below]:
         return float(min(x[above], x[below])), float(max(x[above], x[below]))
     return float(x[below] if d_below >= d_above else x[above])
@@ -458,18 +523,26 @@ def kmeans_threshold(x, split, k=10, limit=100000):
     restarts) and one-dimensional sorting keeps it fast.
     """
     x = x[np.isfinite(x)]
-    if x.size < 100 or not np.isfinite(split): return np.nan
-    if x.size > limit: x = x[:: int(math.ceil(x.size / float(limit)))]
-    x = np.sort(x.astype(np.float64)); k = max(2, min(k, x.size // 20))
-    centers = np.quantile(x, (np.arange(k) + 0.5) / k); csum = np.concatenate(([0.0], np.cumsum(x)))
+    if x.size < 100 or not np.isfinite(split):
+        return np.nan
+    if x.size > limit:
+        x = x[:: int(math.ceil(x.size / float(limit)))]
+    x = np.sort(x.astype(np.float64))
+    k = max(2, min(k, x.size // 20))
+    centers = np.quantile(x, (np.arange(k) + 0.5) / k)
+    csum = np.concatenate(([0.0], np.cumsum(x)))
     for _ in range(100):
         cuts = np.concatenate(([0], np.searchsorted(x, (centers[:-1] + centers[1:]) / 2.0), [x.size]))
-        counts = np.diff(cuts); sums = np.diff(csum[cuts])
-        updated = np.where(counts > 0, sums / np.maximum(counts, 1), centers); updated.sort()
-        if np.max(np.abs(updated - centers)) < 1e-9: break
+        counts = np.diff(cuts)
+        sums = np.diff(csum[cuts])
+        updated = np.where(counts > 0, sums / np.maximum(counts, 1), centers)
+        updated.sort()
+        if np.max(np.abs(updated - centers)) < 1e-9:
+            break
         centers = updated
     plant = centers > split
-    if plant.all() or not plant.any(): return float(split)
+    if plant.all() or not plant.any():
+        return float(split)
     return float((centers[~plant].max() + centers[plant].min()) / 2.0)
 
 
@@ -489,18 +562,26 @@ def half_mix_threshold(name, bands, x, share=0.5):
     on both (IH: 51 to 58 %, reference 65; Tifton: 41 to 39 %, reference 37).
     """
     good = np.isfinite(x)
-    if good.sum() < 60: return np.nan
+    if good.sum() < 60:
+        return np.nan
     t = otsu(x[good])
-    if not np.isfinite(t): return np.nan
-    hi = good & (x >= t); lo = good & (x < t)
-    if hi.sum() < 15 or lo.sum() < 15: return np.nan
-    hi_cut = float(np.median(x[hi])); lo_cut = float(np.median(x[lo]))
-    top = hi & (x >= hi_cut); bottom = lo & (x <= lo_cut)
+    if not np.isfinite(t):
+        return np.nan
+    hi = good & (x >= t)
+    lo = good & (x < t)
+    if hi.sum() < 15 or lo.sum() < 15:
+        return np.nan
+    hi_cut = float(np.median(x[hi]))
+    lo_cut = float(np.median(x[lo]))
+    top = hi & (x >= hi_cut)
+    bottom = lo & (x <= lo_cut)
     mix = {}
     for key, values in bands.items():
-        a = np.nanmedian(values[top]); b = np.nanmedian(values[bottom])
-        if not (np.isfinite(a) and np.isfinite(b)): return np.nan
-        mix[key] = np.array([share*a + (1.0-share)*b], dtype=np.float32)
+        a = np.nanmedian(values[top])
+        b = np.nanmedian(values[bottom])
+        if not (np.isfinite(a) and np.isfinite(b)):
+            return np.nan
+        mix[key] = np.array([share * a + (1.0 - share) * b], dtype=np.float32)
     value = float(compute_vi(name, mix)[0])
     return value if np.isfinite(value) and min(lo_cut, hi_cut) <= value <= max(lo_cut, hi_cut) else np.nan
 
@@ -523,45 +604,66 @@ def single_class_check(bands):
     Returns "soil", "plant" or None, with the referee name and the two percentiles.
     """
     name = "ndvi" if all(k in bands for k in ("nir", "red")) else ("ngrdi" if all(k in bands for k in ("red", "green")) else None)
-    if name is None: return None, None, None, None
-    x = compute_vi(name, bands); x = x[np.isfinite(x)]
-    if x.size < 60: return None, name, None, None
+    if name is None:
+        return None, None, None, None
+    x = compute_vi(name, bands)
+    x = x[np.isfinite(x)]
+    if x.size < 60:
+        return None, name, None, None
     low, high = (float(v) for v in np.percentile(x, (1, 99)))
     soil_max, plant_min = ONE_CLASS_LIMITS[name]
-    if high < soil_max: return "soil", name, low, high
-    if low > plant_min: return "plant", name, low, high
+    if high < soil_max:
+        return "soil", name, low, high
+    if low > plant_min:
+        return "plant", name, low, high
     return None, name, low, high
 
 
 def multi_otsu(x, bins=256):
     x = x[np.isfinite(x)]
-    if x.size < 80 or float(np.ptp(x)) < 1e-10: return None
-    h, edges = np.histogram(x, bins=bins); p = h.astype(float)/h.sum()
-    m = (edges[:-1]+edges[1:])/2; wp = np.cumsum(p); mp = np.cumsum(p*m); total = mp[-1]
+    if x.size < 80 or float(np.ptp(x)) < 1e-10:
+        return None
+    h, edges = np.histogram(x, bins=bins)
+    p = h.astype(float) / h.sum()
+    m = (edges[:-1] + edges[1:]) / 2
+    wp = np.cumsum(p)
+    mp = np.cumsum(p * m)
+    total = mp[-1]
     best = (-np.inf, 0, 0)
-    for i in range(bins-2):
+    for i in range(bins - 2):
         w0 = wp[i]
-        if w0 < .02: continue
-        mu0 = mp[i]/w0
-        js = np.arange(i+1, bins-1); w1 = wp[js]-wp[i]; w2 = 1-wp[js]
+        if w0 < .02:
+            continue
+        mu0 = mp[i] / w0
+        js = np.arange(i + 1, bins - 1)
+        w1 = wp[js] - wp[i]
+        w2 = 1 - wp[js]
         good = (w1 >= .02) & (w2 >= .02)
-        if not good.any(): continue
-        mu1 = (mp[js]-mp[i])/np.maximum(w1, 1e-12); mu2 = (total-mp[js])/np.maximum(w2, 1e-12)
-        vb = w0*(mu0-total)**2+w1*(mu1-total)**2+w2*(mu2-total)**2; vb[~good] = -np.inf
+        if not good.any():
+            continue
+        mu1 = (mp[js] - mp[i]) / np.maximum(w1, 1e-12)
+        mu2 = (total - mp[js]) / np.maximum(w2, 1e-12)
+        vb = w0 * (mu0 - total)**2 + w1 * (mu1 - total)**2 + w2 * (mu2 - total)**2
+        vb[~good] = -np.inf
         q = int(np.argmax(vb))
-        if vb[q] > best[0]: best = (float(vb[q]), i, int(js[q]))
-    _, i, j = best; t1, t2 = float(edges[i+1]), float(edges[j+1])
-    return None if best[0] <= 0 or t2-t1 < .01*np.ptp(x) else (t1, t2, max(t2-t1, float(np.std(x))))
+        if vb[q] > best[0]:
+            best = (float(vb[q]), i, int(js[q]))
+    _, i, j = best
+    t1, t2 = float(edges[i + 1]), float(edges[j + 1])
+    return None if best[0] <= 0 or t2 - t1 < .01 * np.ptp(x) else (t1, t2, max(t2 - t1, float(np.std(x))))
 
 
 def _smooth_grid2d(grid):
     """3 x 3 mean over the tile grid that ignores tiles with no value."""
     pad = np.pad(grid, 1, mode="constant", constant_values=np.nan)
-    total = np.zeros(grid.shape, np.float64); count = np.zeros(grid.shape, np.float64)
+    total = np.zeros(grid.shape, np.float64)
+    count = np.zeros(grid.shape, np.float64)
     for dy in (0, 1, 2):
         for dx in (0, 1, 2):
-            part = pad[dy:dy + grid.shape[0], dx:dx + grid.shape[1]]; good = np.isfinite(part)
-            total += np.where(good, part, 0.0); count += good
+            part = pad[dy:dy + grid.shape[0], dx:dx + grid.shape[1]]
+            good = np.isfinite(part)
+            total += np.where(good, part, 0.0)
+            count += good
     return np.where(count > 0, total / np.maximum(count, 1), 0.0).astype(np.float32)
 
 
@@ -591,12 +693,15 @@ def suggest_threshold(votes, bands, valid, grid_h, grid_w):
     ok = valid & np.isfinite(v) & np.isfinite(X).all(0)
     if ok.sum() < 500:
         return None
-    pure_p = ok & (v >= 0.99); pure_s = ok & (v <= 0.01)
+    pure_p = ok & (v >= 0.99)
+    pure_s = ok & (v <= 0.01)
     if pure_p.sum() < SUGGEST_MIN_PURE or pure_s.sum() < SUGGEST_MIN_PURE:
         return None
-    all_p = np.median(X[:, pure_p], 1); all_s = np.median(X[:, pure_s], 1)
+    all_p = np.median(X[:, pure_p], 1)
+    all_s = np.median(X[:, pure_s], 1)
     rows, cols = v.shape
-    ys = np.linspace(0, rows, grid_h + 1).astype(int); xs = np.linspace(0, cols, grid_w + 1).astype(int)
+    ys = np.linspace(0, rows, grid_h + 1).astype(int)
+    xs = np.linspace(0, cols, grid_w + 1).astype(int)
     frac = np.full(v.shape, np.nan)
     for j in range(grid_h):
         for i in range(grid_w):
@@ -607,9 +712,12 @@ def suggest_threshold(votes, bands, valid, grid_h, grid_w):
             T = X[(slice(None),) + sl]
             p = np.median(T[:, pure_p[sl]], 1) if pure_p[sl].sum() >= SUGGEST_MIN_PURE else all_p
             q = np.median(T[:, pure_s[sl]], 1) if pure_s[sl].sum() >= SUGGEST_MIN_PURE else all_s
-            d = p - q; dd = float(d @ d)
+            d = p - q
+            dd = float(d @ d)
             if not dd > 0:
-                p, q = all_p, all_s; d = p - q; dd = float(d @ d)
+                p, q = all_p, all_s
+                d = p - q
+                dd = float(d @ d)
                 if not dd > 0:
                     continue
             f = np.clip(np.tensordot(d, T - q[:, None, None], 1) / dd, 0, 1)
@@ -619,9 +727,11 @@ def suggest_threshold(votes, bands, valid, grid_h, grid_w):
     use = np.isfinite(frac)
     if use.sum() < 500:
         return None
-    half = frac[use] >= 0.5; vv = v[use]
+    half = frac[use] >= 0.5
+    vv = v[use]
     iou = np.array([((vv >= t - 0.05) & half).sum() / max(1, ((vv >= t - 0.05) | half).sum()) for t in SUGGEST_THRESHOLDS])
-    best = int(np.argmax(iou)); good = SUGGEST_THRESHOLDS[iou >= iou[best] - 0.01]
+    best = int(np.argmax(iou))
+    good = SUGGEST_THRESHOLDS[iou >= iou[best] - 0.01]
     return {"threshold": float(SUGGEST_THRESHOLDS[best]), "low": float(good.min()), "high": float(good.max()),
             "agreement": float(100 * iou[best]), "half_plant_cover": float(100 * half.mean()),
             "pixels_used": float(use.sum() / ok.sum())}
@@ -689,7 +799,8 @@ FINDING_MIN_CONTRAST = 1.3       # NIR is "strong" when green leaves reflect 1.3
 FINDING_DARK_SHARE = 0.5         # dark = under half as bright as this image's green leaves
 DRY_MIN_VOTE = 0.10              # dry parts only where the vote can reach a mask (the slider starts at 0.15)
 DARK_MIN_VOTE = 0.10             # without NDVI, a dark pixel counts only where some voters call it plant
-FINDING_PLANT_NDVI = FIXED_NDVI["plant"]; FINDING_CANOPY_NDVI = FIXED_NDVI["canopy"]   # kept for older callers
+FINDING_PLANT_NDVI = FIXED_NDVI["plant"]
+FINDING_CANOPY_NDVI = FIXED_NDVI["canopy"]   # kept for older callers
 # Weak split warning (4.1): Otsu's separability (between-group variance over total variance, 0 to 1)
 # of the top layer, on the sample. Under this, plants and ground are not clearly two groups (very few
 # or tiny plants, RGB-only images) and the mask needs a closer look. Message only.
@@ -716,9 +827,11 @@ def _bright(bands):
 
 def fit_levels(ndvi, vote, green_red=None, nir=None, min_pixels=200):
     """The image's green-leaf and ground levels from the pixels the voters agree on (kept for scripts)."""
-    ndvi = np.asarray(ndvi, np.float64); vote = np.asarray(vote, np.float64)
+    ndvi = np.asarray(ndvi, np.float64)
+    vote = np.asarray(vote, np.float64)
     ok = np.isfinite(ndvi) & np.isfinite(vote)
-    plant = ok & (vote >= LEVEL_SURE); soil = ok & (vote <= 1.0 - LEVEL_SURE)
+    plant = ok & (vote >= LEVEL_SURE)
+    soil = ok & (vote <= 1.0 - LEVEL_SURE)
     if plant.sum() < min_pixels or soil.sum() < min_pixels:
         return None
     leaf, ground = float(np.median(ndvi[plant])), float(np.median(ndvi[soil]))
@@ -727,9 +840,11 @@ def fit_levels(ndvi, vote, green_red=None, nir=None, min_pixels=200):
     out = {"soil_ndvi": ground, "leaf_ndvi": leaf, "plant_pixels": int(plant.sum()), "soil_pixels": int(soil.sum())}
     if nir is not None:
         nir = np.asarray(nir, np.float64)
-        out["leaf_nir"] = float(np.nanmedian(nir[plant])); out["soil_nir"] = float(np.nanmedian(nir[soil]))
+        out["leaf_nir"] = float(np.nanmedian(nir[plant]))
+        out["soil_nir"] = float(np.nanmedian(nir[soil]))
     if green_red is not None:
-        gr = np.asarray(green_red, np.float64)[plant]; gr = gr[np.isfinite(gr)]
+        gr = np.asarray(green_red, np.float64)[plant]
+        gr = gr[np.isfinite(gr)]
         if gr.size >= min_pixels:
             out["leaf_green_red"] = float(np.median(gr))
     return out
@@ -741,7 +856,8 @@ def _near(mask, r):
         return mask.copy()
     m = np.pad(mask.astype(np.int32), r)
     c = np.pad(m.cumsum(0).cumsum(1), ((1, 0), (1, 0)))
-    k = 2 * r + 1; h, w = mask.shape
+    k = 2 * r + 1
+    h, w = mask.shape
     return (c[k:k + h, k:k + w] - c[0:h, k:k + w] - c[k:k + h, 0:w] + c[0:h, 0:w]) > 0
 
 
@@ -754,7 +870,8 @@ def fit_findings(sample, pixel_m=None, vote=None, levels=None, min_pixels=200):
     get = lambda k: np.asarray(sample[k], np.float64)
     n = len(next(iter(sample.values())))
     vote = np.asarray(vote, np.float64) if vote is not None else np.full(n, np.nan)
-    sure_plant = np.isfinite(vote) & (vote >= LEVEL_SURE); ground = np.isfinite(vote) & (vote <= 1.0 - LEVEL_SURE)
+    sure_plant = np.isfinite(vote) & (vote >= LEVEL_SURE)
+    ground = np.isfinite(vote) & (vote <= 1.0 - LEVEL_SURE)
     fit = {"levels": None, "checks": [], "not_checked": {}, "strong_nir": None, "soil_nir": None, "dark_threshold": None,
            "pale": None, "dry": None}
     ndvi = None
@@ -847,11 +964,13 @@ def fit_pale_plant(sample, levels=None):
     nir, red, green = nir[ok], red[ok], green[ok]
     if nir.size < 500:
         return None
-    ndvi = (nir - red) / (nir + red); lv = levels or {}
+    ndvi = (nir - red) / (nir + red)
+    lv = levels or {}
     leaf = (ndvi >= level_cut(lv, "leaf")) & (green / red >= 2.0)
     if leaf.sum() < 200:
         return None
-    leaf_nir = float(np.median(nir[leaf])); soil = ndvi < level_cut(lv, "soil")
+    leaf_nir = float(np.median(nir[leaf]))
+    soil = ndvi < level_cut(lv, "soil")
     soil_nir = float(np.median(nir[soil])) if soil.sum() >= 200 else None
     floor = PALE_NIR_OF_LEAF * leaf_nir
     if soil_nir is not None:
@@ -889,7 +1008,8 @@ def display_stretch(channel_names, values):
     for n in names:
         v = clean[n]
         lo, hi = (float(x) for x in np.percentile(v, (0.2, 99.0))) if v.size else (0.0, 1.0)
-        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo: lo, hi = 0.0, 1.0
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+            lo, hi = 0.0, 1.0
         out.append((lo, hi))
     return out
 
@@ -913,7 +1033,10 @@ def classify_findings(bands, ok, fit, ndvi_halo, offset, vote=None):
         near_soil = _near(soilish, fit["soil_radius_px"])[offset:offset + h]
         r = fit["canopy_radius_px"]
         plantish = (np.isfinite(ndvi_halo) & (ndvi_halo >= fit["ndvi_canopy"])).astype(np.int32)   # integer sums: same cover, half the memory
-        m = np.pad(plantish, r, mode="edge"); c = np.pad(m.cumsum(0).cumsum(1), ((1, 0), (1, 0))); k = 2 * r + 1; hh, ww = plantish.shape
+        m = np.pad(plantish, r, mode="edge")
+        c = np.pad(m.cumsum(0).cumsum(1), ((1, 0), (1, 0)))
+        k = 2 * r + 1
+        hh, ww = plantish.shape
         cover = ((c[k:k + hh, k:k + ww] - c[0:hh, k:k + ww] - c[k:k + hh, 0:ww] + c[0:hh, 0:ww]) / float(k * k))[offset:offset + h]
         parts = pale & ~near_soil & (cover >= FINDING_CLEAR_CANOPY)
         code[parts] = 1
@@ -974,18 +1097,25 @@ SPARSE_MAX_SHARE = 30.0          # if more of the squares than this are thin, th
 def mark_sparse_spots(vote_path, findings_path, threshold, block_px):
     """Mark code 6 in the findings raster: pixels in sparse squares (canopy under SPARSE_COVER_MAX
     percent at `threshold`) that a threshold SPARSE_DROP lower would add. Returns a summary dict."""
-    v_ds = safe_gdal_open(vote_path); f_ds = gdal.Open(findings_path, gdal.GA_Update)
-    width, height = v_ds.RasterXSize, v_ds.RasterYSize; b = max(8, int(block_px))
-    cut = max(0.0, threshold - 0.05); low = max(SPARSE_MIN_VOTE, threshold - SPARSE_DROP - 0.05)
+    v_ds = safe_gdal_open(vote_path)
+    f_ds = gdal.Open(findings_path, gdal.GA_Update)
+    width, height = v_ds.RasterXSize, v_ds.RasterYSize
+    b = max(8, int(block_px))
+    cut = max(0.0, threshold - 0.05)
+    low = max(SPARSE_MIN_VOTE, threshold - SPARSE_DROP - 0.05)
     squares = sparse = marked = valid_all = 0
     # first pass: how many squares are thin
     for y in range(0, height, b):
-        h = min(b, height - y); v = v_ds.GetRasterBand(1).ReadAsArray(0, y, width, h)
+        h = min(b, height - y)
+        v = v_ds.GetRasterBand(1).ReadAsArray(0, y, width, h)
         valid = (v != NODATA) & np.isfinite(v) & (v >= 0) & (v <= 1)
-        nb = (width + b - 1) // b; pad = nb * b - width
+        nb = (width + b - 1) // b
+        pad = nb * b - width
         n = np.pad(valid, ((0, 0), (0, pad))).reshape(h, nb, b).sum(axis=(0, 2))
         plant = np.pad(valid & (v >= cut), ((0, 0), (0, pad))).reshape(h, nb, b).sum(axis=(0, 2))
-        full = n >= 0.5 * h * b; squares += int(full.sum()); sparse += int((full & (100.0 * plant < SPARSE_COVER_MAX * np.maximum(n, 1))).sum())
+        full = n >= 0.5 * h * b
+        squares += int(full.sum())
+        sparse += int((full & (100.0 * plant < SPARSE_COVER_MAX * np.maximum(n, 1))).sum())
     share = 100.0 * sparse / max(1, squares)
     if share > SPARSE_MAX_SHARE:
         f_ds = None
@@ -994,19 +1124,29 @@ def mark_sparse_spots(vote_path, findings_path, threshold, block_px):
     squares = sparse = 0
     for y in range(0, height, b):
         h = min(b, height - y)
-        v = v_ds.GetRasterBand(1).ReadAsArray(0, y, width, h); f = f_ds.GetRasterBand(1).ReadAsArray(0, y, width, h)
-        valid = (v != NODATA) & np.isfinite(v) & (v >= 0) & (v <= 1); valid_all += int(valid.sum())
-        nb = (width + b - 1) // b; pad = nb * b - width
-        vv = np.pad(valid, ((0, 0), (0, pad))); pp = np.pad(valid & (v >= cut), ((0, 0), (0, pad)))
-        n = vv.reshape(h, nb, b).sum(axis=(0, 2)); plant = pp.reshape(h, nb, b).sum(axis=(0, 2))
-        full = n >= 0.5 * h * b; thin = full & (100.0 * plant < SPARSE_COVER_MAX * np.maximum(n, 1))
-        squares += int(full.sum()); sparse += int(thin.sum())
+        v = v_ds.GetRasterBand(1).ReadAsArray(0, y, width, h)
+        f = f_ds.GetRasterBand(1).ReadAsArray(0, y, width, h)
+        valid = (v != NODATA) & np.isfinite(v) & (v >= 0) & (v <= 1)
+        valid_all += int(valid.sum())
+        nb = (width + b - 1) // b
+        pad = nb * b - width
+        vv = np.pad(valid, ((0, 0), (0, pad)))
+        pp = np.pad(valid & (v >= cut), ((0, 0), (0, pad)))
+        n = vv.reshape(h, nb, b).sum(axis=(0, 2))
+        plant = pp.reshape(h, nb, b).sum(axis=(0, 2))
+        full = n >= 0.5 * h * b
+        thin = full & (100.0 * plant < SPARSE_COVER_MAX * np.maximum(n, 1))
+        squares += int(full.sum())
+        sparse += int(thin.sum())
         if thin.any():
             in_thin = np.repeat(thin, b)[:width][None, :]
             add = valid & in_thin & (v >= low) & (v < cut)
             if add.any():
-                f = np.where(add, 6, f).astype(np.uint8); f_ds.GetRasterBand(1).WriteArray(f, 0, y); marked += int(add.sum())
-    f_ds.FlushCache(); f_ds = None
+                f = np.where(add, 6, f).astype(np.uint8)
+                f_ds.GetRasterBand(1).WriteArray(f, 0, y)
+                marked += int(add.sum())
+    f_ds.FlushCache()
+    f_ds = None
     return {"threshold": float(threshold), "lower_threshold": float(low + 0.05), "squares_pct": 100.0 * sparse / max(1, squares),
             "pixels": int(marked), "pixels_pct": 100.0 * marked / max(1, valid_all), "square_m": SPARSE_BLOCK_M,
             "vote_from": float(low)}
@@ -1022,18 +1162,27 @@ LABEL_SOIL_VOTE = 0.1
 
 def write_confident_labels(vote_path, out_path, block_rows=512):
     """Write the confident-labels raster next to the vote; returns the share of valid pixels per label."""
-    v_ds = safe_gdal_open(vote_path); width, height = v_ds.RasterXSize, v_ds.RasterYSize
+    v_ds = safe_gdal_open(vote_path)
+    width, height = v_ds.RasterXSize, v_ds.RasterYSize
     opts = ["TILED=YES", "COMPRESS=DEFLATE", "BIGTIFF=IF_SAFER"]
     out = gdal.GetDriverByName("GTiff").Create(out_path, width, height, 1, gdal.GDT_Byte, options=opts)
-    out.SetGeoTransform(v_ds.GetGeoTransform()); out.SetProjection(v_ds.GetProjection())
-    band = out.GetRasterBand(1); band.SetNoDataValue(255)
+    out.SetGeoTransform(v_ds.GetGeoTransform())
+    out.SetProjection(v_ds.GetProjection())
+    band = out.GetRasterBand(1)
+    band.SetNoDataValue(255)
     n = np.zeros(3, np.int64)
     for y in range(0, height, block_rows):
-        h = min(block_rows, height - y); v = v_ds.GetRasterBand(1).ReadAsArray(0, y, width, h)
+        h = min(block_rows, height - y)
+        v = v_ds.GetRasterBand(1).ReadAsArray(0, y, width, h)
         valid = (v != NODATA) & np.isfinite(v) & (v >= 0) & (v <= 1)
-        lab = np.full(v.shape, 255, np.uint8); lab[valid & (v <= LABEL_SOIL_VOTE)] = 0; lab[valid & (v >= LABEL_PLANT_VOTE)] = 1
-        band.WriteArray(lab, 0, y); n += [int((lab == 1).sum()), int((lab == 0).sum()), int((valid & (lab == 255)).sum())]
-    band.FlushCache(); out = None; v_ds = None
+        lab = np.full(v.shape, 255, np.uint8)
+        lab[valid & (v <= LABEL_SOIL_VOTE)] = 0
+        lab[valid & (v >= LABEL_PLANT_VOTE)] = 1
+        band.WriteArray(lab, 0, y)
+        n += [int((lab == 1).sum()), int((lab == 0).sum()), int((valid & (lab == 255)).sum())]
+    band.FlushCache()
+    out = None
+    v_ds = None
     total = max(1, int(n.sum()))
     return {"path": out_path, "plant_pct": 100.0 * n[0] / total, "soil_pct": 100.0 * n[1] / total, "unlabelled_pct": 100.0 * n[2] / total}
 
@@ -1041,15 +1190,18 @@ def write_confident_labels(vote_path, out_path, block_rows=512):
 def findings_histograms(findings_path, vote_path, levels=1200):
     """For each finding code, how many pixels have each vote value (votes rounded to 1/1200):
     from these the share of the plant in every category follows for any threshold."""
-    f_ds = safe_gdal_open(findings_path); v_ds = safe_gdal_open(vote_path)
+    f_ds = safe_gdal_open(findings_path)
+    v_ds = safe_gdal_open(vote_path)
     width, height = v_ds.RasterXSize, v_ds.RasterYSize
     n = max(FINDING_CODES) + 1
     hist = np.zeros((n, levels + 1), np.int64)
     for y in range(0, height, 512):
         h = min(512, height - y)
-        v = v_ds.GetRasterBand(1).ReadAsArray(0, y, width, h); f = f_ds.GetRasterBand(1).ReadAsArray(0, y, width, h)
+        v = v_ds.GetRasterBand(1).ReadAsArray(0, y, width, h)
+        f = f_ds.GetRasterBand(1).ReadAsArray(0, y, width, h)
         valid = (v != NODATA) & np.isfinite(v) & (v >= 0) & (v <= 1) & (f != 255)
-        q = np.rint(v[valid] * levels).astype(np.intp); code = np.clip(f[valid].astype(np.intp), 0, n - 1)
+        q = np.rint(v[valid] * levels).astype(np.intp)
+        code = np.clip(f[valid].astype(np.intp), 0, n - 1)
         hist += np.bincount(code * (levels + 1) + q, minlength=n * (levels + 1)).reshape(n, levels + 1)
     return hist.tolist()
 
@@ -1057,8 +1209,10 @@ def findings_histograms(findings_path, vote_path, levels=1200):
 def finding_shares(hist, threshold, levels=1200):
     """Percent of the plant (vote >= threshold - 0.05) in each finding code (0 for codes an older
     run did not have)."""
-    hist = np.asarray(hist); start = int(np.ceil(max(0.0, threshold - 0.05) * levels - 1e-9))
-    plant = hist[:, start:].sum(axis=1); total = plant.sum()
+    hist = np.asarray(hist)
+    start = int(np.ceil(max(0.0, threshold - 0.05) * levels - 1e-9))
+    plant = hist[:, start:].sum(axis=1)
+    total = plant.sum()
     return {k: (100.0 * plant[k] / total if total and k < plant.size else 0.0) for k in FINDING_CODES}
 
 
@@ -1067,7 +1221,8 @@ def physical_memory_bytes():
     try:
         if hasattr(os, "sysconf") and "SC_PAGE_SIZE" in os.sysconf_names and "SC_PHYS_PAGES" in os.sysconf_names:
             value = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-            if value > 0: return float(value)
+            if value > 0:
+                return float(value)
         if os.name == "nt":
             import ctypes
 
@@ -1076,8 +1231,10 @@ def physical_memory_bytes():
                             ("available", ctypes.c_ulonglong), ("page_total", ctypes.c_ulonglong),
                             ("page_available", ctypes.c_ulonglong), ("virtual_total", ctypes.c_ulonglong),
                             ("virtual_available", ctypes.c_ulonglong), ("extended", ctypes.c_ulonglong)]
-            status = MemoryStatus(); status.length = ctypes.sizeof(MemoryStatus)
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)): return float(status.total)
+            status = MemoryStatus()
+            status.length = ctypes.sizeof(MemoryStatus)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return float(status.total)
     except Exception:
         _LOG.debug("PPE: ignored error", exc_info=True)
     return 4.0 * 1024 ** 3
@@ -1087,7 +1244,9 @@ def _interp_columns(grid, width, grid_w):
     """First half of _bilinear_interp_block, done once per run: every grid row interpolated to full width."""
     step_x = float(width) / max(1, grid_w)
     x_idx = np.clip((np.arange(width, dtype=np.float32) + 0.5) / step_x - 0.5, 0, grid_w - 1)
-    x0 = np.floor(x_idx).astype(int); x1 = np.minimum(x0 + 1, grid_w - 1); fx = (x_idx - x0)[None, :]
+    x0 = np.floor(x_idx).astype(int)
+    x1 = np.minimum(x0 + 1, grid_w - 1)
+    fx = (x_idx - x0)[None, :]
     return (1.0 - fx) * grid[:, x0] + fx * grid[:, x1]
 
 
@@ -1095,7 +1254,9 @@ def _interp_rows(columns, y, h, grid_h, height):
     """Second half: the same result as _bilinear_interp_block for rows y .. y+h."""
     step_y = float(height) / max(1, grid_h)
     y_idx = np.clip((np.arange(y, y + h, dtype=np.float32) + 0.5) / step_y - 0.5, 0, grid_h - 1)
-    y0 = np.floor(y_idx).astype(int); y1 = np.minimum(y0 + 1, grid_h - 1); fy = (y_idx - y0)[:, None]
+    y0 = np.floor(y_idx).astype(int)
+    y1 = np.minimum(y0 + 1, grid_h - 1)
+    fy = (y_idx - y0)[:, None]
     return ((1.0 - fy) * columns[y0] + fy * columns[y1]).astype(np.float32)
 
 
@@ -1115,16 +1276,21 @@ def local_offsets(layer, valid, split, low, high, grid_h, grid_w, min_pixels=80)
     of the whole-field multi-Otsu), so soil-level values can never become plant. Tiles with
     too few pixels take the value of their neighbours.
     """
-    rows, cols = layer.shape; out = np.full((grid_h, grid_w), np.nan, np.float32)
-    ys = np.linspace(0, rows, grid_h + 1).astype(int); xs = np.linspace(0, cols, grid_w + 1).astype(int)
+    rows, cols = layer.shape
+    out = np.full((grid_h, grid_w), np.nan, np.float32)
+    ys = np.linspace(0, rows, grid_h + 1).astype(int)
+    xs = np.linspace(0, cols, grid_w + 1).astype(int)
     for gy in range(grid_h):
         for gx in range(grid_w):
             block = layer[ys[gy]:ys[gy + 1], xs[gx]:xs[gx + 1]]
-            values = block[valid[ys[gy]:ys[gy + 1], xs[gx]:xs[gx + 1]]]; values = values[np.isfinite(values)]
-            if values.size < min_pixels: continue
+            values = block[valid[ys[gy]:ys[gy + 1], xs[gx]:xs[gx + 1]]]
+            values = values[np.isfinite(values)]
+            if values.size < min_pixels:
+                continue
             clear_soil = float((values < low).mean())
             if clear_soil < 0.05 or clear_soil > 0.95:
-                out[gy, gx] = 0.0; continue
+                out[gy, gx] = 0.0
+                continue
             local = otsu(values)
             out[gy, gx] = (min(max(local, low), high) - split) if np.isfinite(local) else 0.0
     return _smooth_grid2d(out)
@@ -1256,10 +1422,12 @@ def _plot_transform(layer, raster_wkt):
     srs = layer.GetSpatialRef()
     if srs is None or not raster_wkt:
         return None
-    target = osr.SpatialReference(); target.ImportFromWkt(raster_wkt)
+    target = osr.SpatialReference()
+    target.ImportFromWkt(raster_wkt)
     source = srs.Clone()
     if hasattr(source, "SetAxisMappingStrategy"):
-        source.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER); target.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        source.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        target.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
     return None if source.IsSame(target) else osr.CoordinateTransformation(source, target)
 
 
@@ -1283,8 +1451,10 @@ def plots_over_image(path, image_path, layer_name=None):
     datasource, layer, info = open_plot_file(path, layer_name)
     if image is None:
         return None, info["features"], "the image could not be read"
-    gt = image.GetGeoTransform(); w, h = image.RasterXSize, image.RasterYSize
-    xs = [gt[0], gt[0] + w * gt[1] + h * gt[2]]; ys = [gt[3], gt[3] + w * gt[4] + h * gt[5]]
+    gt = image.GetGeoTransform()
+    w, h = image.RasterXSize, image.RasterYSize
+    xs = [gt[0], gt[0] + w * gt[1] + h * gt[2]]
+    ys = [gt[3], gt[3] + w * gt[4] + h * gt[5]]
     box = (min(xs), max(xs), min(ys), max(ys))
     raster_wkt = image.GetProjection()
     note = ""
@@ -1311,7 +1481,8 @@ def _pixel_area_m2(dataset):
     wkt = dataset.GetProjection()
     if not wkt:
         return None
-    srs = osr.SpatialReference(); srs.ImportFromWkt(wkt)
+    srs = osr.SpatialReference()
+    srs.ImportFromWkt(wkt)
     if not srs.IsProjected():
         return None
     gt = dataset.GetGeoTransform()
@@ -1341,22 +1512,30 @@ def list_batch_images(folder):
             try:
                 scan = scan_band_folder(path)
             except Exception:
-                _LOG.debug("PPE: ignored error", exc_info=True); continue
+                _LOG.debug("PPE: ignored error", exc_info=True)
+                continue
             if sum(1 for f in scan["files"] if f.get("use")) >= 2:
                 items.append({"name": name, "source_mode": "folder", "folder_path": path})
     seen = {}
     for item in items:                       # two files with the same name stem get distinct output folders
-        k = item["name"].lower(); seen[k] = seen.get(k, 0) + 1
-        if seen[k] > 1: item["name"] = "{}_{}".format(item["name"], seen[k])
+        k = item["name"].lower()
+        seen[k] = seen.get(k, 0) + 1
+        if seen[k] > 1:
+            item["name"] = "{}_{}".format(item["name"], seen[k])
     return items
 
 
 def _jsonable(x):
-    if isinstance(x, dict): return {str(k): _jsonable(v) for k, v in x.items()}
-    if isinstance(x, (list, tuple)): return [_jsonable(v) for v in x]
-    if isinstance(x, np.ndarray): return x.tolist()
-    if isinstance(x, np.generic): return x.item()
-    if isinstance(x, float) and not math.isfinite(x): return None
+    if isinstance(x, dict):
+        return {str(k): _jsonable(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [_jsonable(v) for v in x]
+    if isinstance(x, np.ndarray):
+        return x.tolist()
+    if isinstance(x, np.generic):
+        return x.item()
+    if isinstance(x, float) and not math.isfinite(x):
+        return None
     return x
 
 
@@ -1367,8 +1546,10 @@ def canopy_at(curve_path, threshold):
             pts = sorted((float(r["plant_thresh"]), float(r["canopy_pct"])) for r in csv.DictReader(f))
     except (OSError, KeyError, ValueError):
         return None
-    if not pts: return None
-    t = [a for a, _b in pts]; c = [b for _a, b in pts]
+    if not pts:
+        return None
+    t = [a for a, _b in pts]
+    c = [b for _a, b in pts]
     return float(np.interp(float(threshold), t, c))
 
 
@@ -1381,7 +1562,8 @@ def load_batch_result(path):
 DISPLAY_ZERO_BORDER = 0.02   # zeros in at least 2 percent of the image: an outside border, drawn see-through
 
 
-class Cancelled(RuntimeError): pass
+class Cancelled(RuntimeError):
+    pass
 
 
 def _bigger_gdal_cache(fn):
@@ -1389,6 +1571,7 @@ def _bigger_gdal_cache(fn):
     memory) of decompressed image blocks, so each block of a compressed image is decoded once
     instead of once per pass. The previous setting is restored afterwards (QGIS shares it)."""
     import functools
+
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         old = None
@@ -1396,16 +1579,18 @@ def _bigger_gdal_cache(fn):
             old = gdal.GetCacheMax()
             ram = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") if hasattr(os, "sysconf") else 4 << 30
             want = int(min(1 << 30, ram // 4))
-            if want > old: gdal.SetCacheMax(want)
+            if want > old:
+                gdal.SetCacheMax(want)
         except Exception:
             old = None
         try:
             return fn(*args, **kwargs)
         finally:
             if old is not None:
-                try: gdal.SetCacheMax(old)
-                except Exception: _LOG.debug("PPE: ignored error", exc_info=True)
-
+                try:
+                    gdal.SetCacheMax(old)
+                except Exception:
+                    _LOG.debug("PPE: ignored error", exc_info=True)
 
     return wrapper
 
@@ -1420,11 +1605,13 @@ class NativePPEEngine:
         self.template = None
         self.hsi_proxy_info = []
         logical_cpus = max(1, os.cpu_count() or 1)
-        self.thread_count = max(1, min(16, logical_cpus-1 if logical_cpus > 2 else logical_cpus))
+        self.thread_count = max(1, min(16, logical_cpus - 1 if logical_cpus > 2 else logical_cpus))
 
     def progress(self, percent, message):
-        if self.cancelled(): raise Cancelled("PPE processing was cancelled.")
-        self.progress_cb(int(percent), message); self.log_cb(message)
+        if self.cancelled():
+            raise Cancelled("PPE processing was cancelled.")
+        self.progress_cb(int(percent), message)
+        self.log_cb(message)
 
     def _resolve(self, cfg, sample_n=500):
         """Find the bands, then read the fitting sample once."""
@@ -1438,14 +1625,16 @@ class NativePPEEngine:
         self.log_cb("Automatic processing threads: {} logical workers.".format(self.thread_count))
         mode = cfg["source_mode"]
         detection = "user band assignments"
-        if mode == "bands": paths = dict(cfg["bands"])
+        if mode == "bands":
+            paths = dict(cfg["bands"])
         elif mode == "folder" and cfg.get("folder_bands"):
             paths = {band: path for band, path in cfg["folder_bands"].items() if path}
             detection = "band files ticked in the folder"
             self.log_cb("Band files ticked by the user: {}".format(", ".join("{}={}".format(b, os.path.basename(p)) for b, p in paths.items())))
         elif mode == "folder":
             files = [os.path.join(cfg["folder_path"], p) for p in sorted(os.listdir(cfg["folder_path"])) if p.lower().endswith((".tif", ".tiff"))]
-            paths = {}; ignored = []
+            paths = {}
+            ignored = []
             for path in files:
                 name = infer_band(path)
                 if name is None:
@@ -1454,18 +1643,25 @@ class NativePPEEngine:
                     except Exception:
                         ds = None
                     if ds is not None and ds.RasterCount == 1:
-                        explicit = named_band_map(ds); name = next(iter(explicit), None)
+                        explicit = named_band_map(ds)
+                        name = next(iter(explicit), None)
                         if name is None:
                             wavelength = dataset_wavelengths(ds, cfg)[0]
                             name = self._slot_for_wavelength(wavelength) if wavelength is not None else None
-                if name is None: ignored.append(os.path.basename(path)); continue
-                if name in paths: raise ValueError("Folder contains more than one candidate for the {} band: {} and {}".format(name, os.path.basename(paths[name]), os.path.basename(path)))
+                if name is None:
+                    ignored.append(os.path.basename(path))
+                    continue
+                if name in paths:
+                    raise ValueError("Folder contains more than one candidate for the {} band: {} and {}".format(name, os.path.basename(paths[name]), os.path.basename(path)))
                 paths[name] = path
             detection = "TIFF filename and embedded metadata"
-            if ignored: self.log_cb("Ignored unrelated/unrecognized TIFF files: {}".format(", ".join(ignored)))
+            if ignored:
+                self.log_cb("Ignored unrelated/unrecognized TIFF files: {}".format(", ".join(ignored)))
         else:
-            path = cfg["stacked_path"]; ds = safe_gdal_open(path)
-            if ds is None: raise ValueError("QGIS/GDAL could not open the stacked raster.")
+            path = cfg["stacked_path"]
+            ds = safe_gdal_open(path)
+            if ds is None:
+                raise ValueError("QGIS/GDAL could not open the stacked raster.")
             kind = cfg.get("ortho_type", "auto")
             is_hsi = kind == "hsi" or (kind == "auto" and ds.RasterCount > 15)
             explicit = named_band_map(ds)
@@ -1474,35 +1670,47 @@ class NativePPEEngine:
                 if sum(x is not None for x in wavelengths) != ds.RasterCount:
                     raise ValueError("Hyperspectral bands have incomplete wavelength metadata. Re-select the cube and provide minimum, maximum, and interval values.")
                 mapping = self._wavelength_proxy_map(ds, wavelengths)
-                paths = {name: (path, index) for name, index in mapping.items()}; detection = "correlation-aware HSI spectral proxies"
+                paths = {name: (path, index) for name, index in mapping.items()}
+                detection = "correlation-aware HSI spectral proxies"
             elif len(explicit) >= min(3, ds.RasterCount):
-                paths = {name: (path, index) for name, index in explicit.items()}; detection = "embedded color interpretation/band descriptions"
+                paths = {name: (path, index) for name, index in explicit.items()}
+                detection = "embedded color interpretation/band descriptions"
             elif kind == "rgb" or (kind == "auto" and ds.RasterCount == 3):
-                key = cfg.get("rgb_order", "rgb"); order = THREE_BAND_ORDERS.get(key, THREE_BAND_ORDERS["rgb"])
-                paths = {name: (path, i+1) for i, name in enumerate(order) if i < ds.RasterCount}
+                key = cfg.get("rgb_order", "rgb")
+                order = THREE_BAND_ORDERS.get(key, THREE_BAND_ORDERS["rgb"])
+                paths = {name: (path, i + 1) for i, name in enumerate(order) if i < ds.RasterCount}
                 detection = "unnamed 3-band file read as {} (band order chosen in the panel)".format(", ".join(BAND_LABELS[n] for n in order))
             elif kind == "ms" and ds.RasterCount == 5:
                 order = CANONICAL
-                paths = {name: (path, i+1) for i, name in enumerate(order)}; detection = "standard blue/green/red/red-edge/NIR order"
+                paths = {name: (path, i + 1) for i, name in enumerate(order)}
+                detection = "standard blue/green/red/red-edge/NIR order"
             else:
                 wavelengths = dataset_wavelengths(ds, cfg)
                 if sum(x is not None for x in wavelengths) >= 3:
                     mapping = self._wavelength_proxy_map(ds, wavelengths)
-                    paths = {name: (path, index) for name, index in mapping.items()}; detection = "embedded/configured wavelengths"
+                    paths = {name: (path, index) for name, index in mapping.items()}
+                    detection = "embedded/configured wavelengths"
                 elif ds.RasterCount == 5:
                     order = CANONICAL
-                    paths = {name: (path, i+1) for i, name in enumerate(order)}; detection = "standard blue/green/red/red-edge/NIR order"
+                    paths = {name: (path, i + 1) for i, name in enumerate(order)}
+                    detection = "standard blue/green/red/red-edge/NIR order"
                 elif ds.RasterCount > 15:
                     raise ValueError("Hyperspectral bands have no usable wavelengths. Re-select the cube and supply minimum, maximum, and interval.")
                 else:
                     raise ValueError("This unnamed {}-band stack has no color, name, or wavelength metadata, so its bands cannot be identified safely. Use named individual/folder TIFFs or add band descriptions; automatic guessing could produce a wrong mask.".format(ds.RasterCount))
-        if len(paths) < 1: raise ValueError("No recognizable raster bands were found.")
+        if len(paths) < 1:
+            raise ValueError("No recognizable raster bands were found.")
         self.sources = {k: (v if isinstance(v, tuple) else (v, 1)) for k, v in paths.items() if k in CANONICAL}
-        first = next(iter(self.sources.values())); self.template = safe_gdal_open(first[0]); self.width = self.template.RasterXSize; self.height = self.template.RasterYSize
+        first = next(iter(self.sources.values()))
+        self.template = safe_gdal_open(first[0])
+        self.width = self.template.RasterXSize
+        self.height = self.template.RasterYSize
         for name, (path, band) in self.sources.items():
             ds = safe_gdal_open(path)
-            if ds is None or band > ds.RasterCount: raise ValueError("Could not open {} band: {}".format(name, path))
-            if ds.RasterXSize != self.width or ds.RasterYSize != self.height: raise ValueError("Band rasters must have matching rows and columns. Align them in QGIS first.")
+            if ds is None or band > ds.RasterCount:
+                raise ValueError("Could not open {} band: {}".format(name, path))
+            if ds.RasterXSize != self.width or ds.RasterYSize != self.height:
+                raise ValueError("Band rasters must have matching rows and columns. Align them in QGIS first.")
             if not np.allclose(ds.GetGeoTransform(), self.template.GetGeoTransform(), rtol=0, atol=1e-9) or ds.GetProjection() != self.template.GetProjection():
                 raise ValueError("Band rasters must share the same CRS, extent, and pixel grid. Align them in QGIS first.")
         self.datasets = {k: safe_gdal_open(v[0]) for k, v in self.sources.items()}
@@ -1516,7 +1724,8 @@ class NativePPEEngine:
         # once and reused for scale detection, the display stretch and threshold fitting.
         values = self._sample_bands(sample_n)
         finite = [x[np.isfinite(x)] for x in values.values() if np.any(np.isfinite(x))]
-        if not finite: raise ValueError("The selected imagery contains no readable numeric pixels.")
+        if not finite:
+            raise ValueError("The selected imagery contains no readable numeric pixels.")
         mx = float(np.nanpercentile(np.concatenate(finite), 99))
         if mx > 10000:
             self.scale = 65535.0 if mx > 20000 else max(10000.0, float(mx / 0.95))
@@ -1546,17 +1755,24 @@ class NativePPEEngine:
         # many seconds; these windows touch only a few tiles, so the image appears at once.
         # A 10 x 10 grid of 32-pixel windows: spread widely enough to catch bare ground at the field
         # edges (6 x 6 larger windows missed it on Kritis and drew the image too bright and green).
-        size = int(max(8, min(32, self.width // 10, self.height // 10))); cache = {}
-        xs = np.linspace(0, self.width - size, 10).astype(int); ys = np.linspace(0, self.height - size, 10).astype(int)
+        size = int(max(8, min(32, self.width // 10, self.height // 10)))
+        cache = {}
+        xs = np.linspace(0, self.width - size, 10).astype(int)
+        ys = np.linspace(0, self.height - size, 10).astype(int)
         for name in channels:
             if name not in cache:
-                path, band = self.sources[name]; rb = self.datasets[name].GetRasterBand(band); nodata = rb.GetNoDataValue(); parts = []
+                path, band = self.sources[name]
+                rb = self.datasets[name].GetRasterBand(band)
+                nodata = rb.GetNoDataValue()
+                parts = []
                 for y0 in ys:
                     for x0 in xs:
                         block = rb.ReadAsArray(int(x0), int(y0), size, size)
-                        if block is None: continue
+                        if block is None:
+                            continue
                         block = block.astype(np.float32)
-                        if nodata is not None and np.isfinite(nodata): block[block == nodata] = np.nan
+                        if nodata is not None and np.isfinite(nodata):
+                            block[block == nodata] = np.nan
                         parts.append(block[np.isfinite(block) & (block > 0)])
                 cache[name] = np.concatenate(parts) if parts else np.array([], np.float32)
         # the same stretch rule as the display image the run writes (one stretch for true colour)
@@ -1574,13 +1790,15 @@ class NativePPEEngine:
 
     @staticmethod
     def _slot_for_wavelength(wavelength):
-        matches = [(name, abs(wavelength-(lo+hi)/2)) for name, (lo, hi) in HSI_WINDOWS.items() if lo <= wavelength <= hi]
+        matches = [(name, abs(wavelength - (lo + hi) / 2)) for name, (lo, hi) in HSI_WINDOWS.items() if lo <= wavelength <= hi]
         return min(matches, key=lambda item: item[1])[0] if matches else None
 
     def _wavelength_proxy_map(self, ds, wavelengths):
         """Choose high-spread, mutually decorrelated bands in PPE's five MS windows."""
         mapping, selected_samples, info = {}, [], []
-        ratio = ds.RasterXSize/max(1, ds.RasterYSize); bx=max(1,min(ds.RasterXSize,int(math.sqrt(8000*ratio)))); by=max(1,min(ds.RasterYSize,int(8000/bx)))
+        ratio = ds.RasterXSize / max(1, ds.RasterYSize)
+        bx = max(1, min(ds.RasterXSize, int(math.sqrt(8000 * ratio))))
+        by = max(1, min(ds.RasterYSize, int(8000 / bx)))
         candidates_by_window = {}
         for name, (lo, hi) in HSI_WINDOWS.items():
             candidates = [i for i, wavelength in enumerate(wavelengths, 1) if wavelength is not None and lo <= wavelength <= hi]
@@ -1591,10 +1809,12 @@ class NativePPEEngine:
                 raise ValueError("The HSI wavelength range does not contain a {} proxy band ({:.0f}–{:.0f} nm).".format(name, lo, hi))
             scored = []
             for index in candidates:
-                values = ds.GetRasterBand(index).ReadAsArray(buf_xsize=bx, buf_ysize=by).astype(float); nodata=ds.GetRasterBand(index).GetNoDataValue()
-                if nodata is not None: values[values == nodata] = np.nan
-                spread = np.nanpercentile(values, 75)-np.nanpercentile(values, 25)
-                scored.append({"spread": float(spread), "center": abs(wavelengths[index-1]-(lo+hi)/2), "index": index, "values": values.ravel()})
+                values = ds.GetRasterBand(index).ReadAsArray(buf_xsize=bx, buf_ysize=by).astype(float)
+                nodata = ds.GetRasterBand(index).GetNoDataValue()
+                if nodata is not None:
+                    values[values == nodata] = np.nan
+                spread = np.nanpercentile(values, 75) - np.nanpercentile(values, 25)
+                scored.append({"spread": float(spread), "center": abs(wavelengths[index - 1] - (lo + hi) / 2), "index": index, "values": values.ravel()})
             candidates_by_window[name] = sorted(scored, key=lambda x: (-x["spread"], x["center"]))
         for name in CANONICAL:
             if name not in candidates_by_window:
@@ -1611,8 +1831,9 @@ class NativePPEEngine:
                 candidate["max_correlation"] = max(correlations) if correlations else 0.0
             acceptable = [candidate for candidate in ranked if candidate["max_correlation"] <= .85]
             chosen = acceptable[0] if acceptable else min(ranked, key=lambda x: (x["max_correlation"], -x["spread"], x["center"]))
-            mapping[name] = chosen["index"]; selected_samples.append(chosen["values"])
-            entry = {"name": name, "band": chosen["index"], "wavelength": float(wavelengths[chosen["index"]-1]), "iqr": chosen["spread"], "max_correlation": chosen["max_correlation"], "decorrelated": bool(acceptable)}
+            mapping[name] = chosen["index"]
+            selected_samples.append(chosen["values"])
+            entry = {"name": name, "band": chosen["index"], "wavelength": float(wavelengths[chosen["index"] - 1]), "iqr": chosen["spread"], "max_correlation": chosen["max_correlation"], "decorrelated": bool(acceptable)}
             info.append(entry)
             self.log_cb("HSI proxy {}: band {} at {:.2f} nm · IQR {:.4g} · max |r| {:.3f}{}.".format(name, entry["band"], entry["wavelength"], entry["iqr"], entry["max_correlation"], "" if acceptable else " (least-correlated fallback)"))
         self.hsi_proxy_info = info
@@ -1623,15 +1844,18 @@ class NativePPEEngine:
         # A GDAL dataset must not be read from two threads at once: worker threads open their own.
         local = getattr(self, "_thread_local", None)
         if local is not None and threading.current_thread() is not threading.main_thread():
-            if not hasattr(local, "datasets"): local.datasets = {}
-            if name not in local.datasets: local.datasets[name] = safe_gdal_open(self.sources[name][0])
+            if not hasattr(local, "datasets"):
+                local.datasets = {}
+            if name not in local.datasets:
+                local.datasets[name] = safe_gdal_open(self.sources[name][0])
             ds = local.datasets[name]
         else:
             ds = self.datasets[name]
         band = ds.GetRasterBand(self.sources[name][1])
         a = band.ReadAsArray(x, y, w, h, buf_xsize=bx, buf_ysize=by).astype(np.float32, copy=False)
         nd = band.GetNoDataValue()
-        if nd is not None: a[a == nd] = np.nan
+        if nd is not None:
+            a[a == nd] = np.nan
         a /= self.scale                # in place: one copy of the block, not two (same values)
         return a
 
@@ -1639,31 +1863,42 @@ class NativePPEEngine:
         """Several bands at once (4.3). Bands stored in one file are read in a single call, so a
         pixel-interleaved, compressed image is decompressed once instead of once per band (it was the
         slowest step of a run). Same values as _read_band for each band."""
-        w, h = w or self.width, h or self.height; out = {}; groups = {}
+        w, h = w or self.width, h or self.height
+        out = {}
+        groups = {}
         for name in names:
             groups.setdefault(self.sources[name][0], []).append(name)
         local = getattr(self, "_thread_local", None)
         in_worker = local is not None and threading.current_thread() is not threading.main_thread()
         for path, group in groups.items():
             if len(group) == 1:
-                out[group[0]] = self._read_band(group[0], x, y, w, h, bx, by); continue
+                out[group[0]] = self._read_band(group[0], x, y, w, h, bx, by)
+                continue
             if in_worker:
-                if not hasattr(local, "paths"): local.paths = {}
-                if path not in local.paths: local.paths[path] = safe_gdal_open(path)
+                if not hasattr(local, "paths"):
+                    local.paths = {}
+                if path not in local.paths:
+                    local.paths[path] = safe_gdal_open(path)
                 ds = local.paths[path]
             else:
                 ds = self.datasets[group[0]]
             idx = [self.sources[n][1] for n in group]
             a = ds.ReadAsArray(x, y, w, h, buf_xsize=bx, buf_ysize=by, band_list=idx).astype(np.float32, copy=False)
-            if a.ndim == 2: a = a[None]
+            if a.ndim == 2:
+                a = a[None]
             for k, n in enumerate(group):
-                v = a[k]; nd = ds.GetRasterBand(idx[k]).GetNoDataValue()
-                if nd is not None: v[v == nd] = np.nan
-                v /= self.scale; out[n] = v
+                v = a[k]
+                nd = ds.GetRasterBand(idx[k]).GetNoDataValue()
+                if nd is not None:
+                    v[v == nd] = np.nan
+                v /= self.scale
+                out[n] = v
         return out
 
     def _sample_bands(self, n):
-        ratio = self.width/max(1, self.height); bx = min(self.width, max(1, int(math.sqrt(n*ratio)))); by = min(self.height, max(1, int(n/bx)))
+        ratio = self.width / max(1, self.height)
+        bx = min(self.width, max(1, int(math.sqrt(n * ratio))))
+        by = min(self.height, max(1, int(n / bx)))
         if len({p for p, _b in self.sources.values()}) < len(self.sources):
             return self._read_bands(list(self.sources), bx=bx, by=by)       # one file holds several bands: read once
         if len(self.sources) < 2 or self.thread_count < 2:
@@ -1680,16 +1915,20 @@ class NativePPEEngine:
 
     def _valid(self, bands):
         valid = np.logical_and.reduce([np.isfinite(v) for v in bands.values()])
-        ref = bands.get("nir", bands.get("red", next(iter(bands.values())))); valid &= (ref >= .0001) & (ref <= 1.5)
+        ref = bands.get("nir", bands.get("red", next(iter(bands.values()))))
+        valid &= (ref >= .0001) & (ref <= 1.5)
         alt = bands.get("red") if "nir" in bands else bands.get("green")
-        if alt is not None: valid &= ~((ref > .85) & (np.abs(ref-alt) < .03))
+        if alt is not None:
+            valid &= ~((ref > .85) & (np.abs(ref - alt) < .03))
         return valid
 
     def _create_output(self, path, dtype, nodata):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         opts = ["TILED=YES", "COMPRESS=DEFLATE", "BIGTIFF=IF_SAFER", "NUM_THREADS={}".format(self.thread_count)]
         out = gdal.GetDriverByName("GTiff").Create(path, self.width, self.height, 1, dtype, options=opts)
-        out.SetGeoTransform(self.template.GetGeoTransform()); out.SetProjection(self.template.GetProjection()); out.GetRasterBand(1).SetNoDataValue(nodata)
+        out.SetGeoTransform(self.template.GetGeoTransform())
+        out.SetProjection(self.template.GetProjection())
+        out.GetRasterBand(1).SetNoDataValue(nodata)
         return out
 
     @staticmethod
@@ -1723,7 +1962,8 @@ class NativePPEEngine:
         so the bands are read once for both instead of twice."""
         opts = ["TILED=YES", "COMPRESS=DEFLATE", "BIGTIFF=IF_SAFER", "NUM_THREADS={}".format(self.thread_count)]
         out = gdal.GetDriverByName("GTiff").Create(path, self.width, self.height, 3, gdal.GDT_Byte, options=opts)
-        out.SetGeoTransform(self.template.GetGeoTransform()); out.SetProjection(self.template.GetProjection())
+        out.SetGeoTransform(self.template.GetGeoTransform())
+        out.SetProjection(self.template.GetProjection())
         stretches = self._display_stretches(channel_names, sampled)
         # 0 is the display's "outside the image". A value of 0 inside a camera photo is real deep shadow:
         # unless zeros cover a border-sized share of the image, they are drawn black (1), not see-through.
@@ -1734,66 +1974,88 @@ class NativePPEEngine:
         except Exception:
             _LOG.debug("PPE: ignored error", exc_info=True)
         for index in range(1, 4):
-            band = out.GetRasterBand(index); band.SetNoDataValue(0)
-            band.SetColorInterpretation((gdal.GCI_RedBand, gdal.GCI_GreenBand, gdal.GCI_BlueBand)[index-1])
+            band = out.GetRasterBand(index)
+            band.SetNoDataValue(0)
+            band.SetColorInterpretation((gdal.GCI_RedBand, gdal.GCI_GreenBand, gdal.GCI_BlueBand)[index - 1])
+
         class Writer:
             def convert(self, raw):
                 planes = []
                 for name, (lo, hi) in zip(channel_names, stretches):
-                    values = raw[name]; valid = np.isfinite(values) & ((values > 0) | (not zero_is_outside))
+                    values = raw[name]
+                    valid = np.isfinite(values) & ((values > 0) | (not zero_is_outside))
                     scaled = (values - lo) * 254.0 / max(hi - lo, 1e-6) + 1.0
                     planes.append(np.where(valid, np.clip(scaled, 1, 255), 0).astype(np.uint8))
                 return planes
+
             def write(self, planes, y):
-                for index, plane in enumerate(planes, 1): out.GetRasterBand(index).WriteArray(plane, 0, y)
+                for index, plane in enumerate(planes, 1):
+                    out.GetRasterBand(index).WriteArray(plane, 0, y)
+
             def close(self):
                 nonlocal out
-                out.FlushCache(); out = None
+                out.FlushCache()
+                out = None
         return Writer()
 
     def _write_rgb_display(self, path, channel_names, sampled):
         """Write a reliable, full-resolution, display-ready RGB GeoTIFF."""
         opts = ["TILED=YES", "COMPRESS=DEFLATE", "BIGTIFF=IF_SAFER", "NUM_THREADS={}".format(self.thread_count)]
         out = gdal.GetDriverByName("GTiff").Create(path, self.width, self.height, 3, gdal.GDT_Byte, options=opts)
-        out.SetGeoTransform(self.template.GetGeoTransform()); out.SetProjection(self.template.GetProjection())
+        out.SetGeoTransform(self.template.GetGeoTransform())
+        out.SetProjection(self.template.GetProjection())
         stretches = []
         for name in channel_names:
-            values = sampled[name]; values = values[np.isfinite(values) & (values > 0)]
+            values = sampled[name]
+            values = values[np.isfinite(values) & (values > 0)]
             lo, hi = np.percentile(values, (0.2, 99.0)) if values.size else (0, 1)
-            if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo: lo, hi = 0, 1
+            if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+                lo, hi = 0, 1
             stretches.append((float(lo), float(hi)))
         for y in range(0, self.height, 512):
-            h = min(512, self.height-y)
+            h = min(512, self.height - y)
             cache = self._read_bands(sorted(set(channel_names)), y=y, h=h)
             for index, (name, stretch) in enumerate(zip(channel_names, stretches), 1):
-                lo, hi = stretch; values = cache[name]
+                lo, hi = stretch
+                values = cache[name]
                 # Scale valid pixels to [1, 255] to prevent dark green leaves from being crushed to 0 (pitch black)
                 # and cleanly reserve byte 0 for NoData / transparent collar.
                 valid = np.isfinite(values) & (values > 0)
                 scaled = (values - lo) * 254.0 / max(hi - lo, 1e-6) + 1.0
                 byte = np.where(valid, np.clip(scaled, 1, 255), 0).astype(np.uint8)
-                band = out.GetRasterBand(index); band.WriteArray(byte, 0, y)
+                band = out.GetRasterBand(index)
+                band.WriteArray(byte, 0, y)
                 band.SetNoDataValue(0)
-                band.SetColorInterpretation((gdal.GCI_RedBand, gdal.GCI_GreenBand, gdal.GCI_BlueBand)[index-1])
-        out.FlushCache(); out = None
+                band.SetColorInterpretation((gdal.GCI_RedBand, gdal.GCI_GreenBand, gdal.GCI_BlueBand)[index - 1])
+        out.FlushCache()
+        out = None
         return path
 
     @_bigger_gdal_cache
     def run(self, cfg):
-        started = time.time(); stamp = datetime.now().strftime("%Y%m%d_%H%M%S"); run_dir = os.path.join(cfg["work_dir"], "ppe_"+stamp); os.makedirs(run_dir, exist_ok=True)
-        self.progress(3, "Validating and opening imagery"); self._resolve(cfg, sample_n=max(4000, int(cfg.get("sample_size", 100000))*3))
-        bands = list(self.sources); available = [name for name, meta in VI_META.items() if all(x in bands for x in meta[0])]
+        started = time.time()
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_dir = os.path.join(cfg["work_dir"], "ppe_" + stamp)
+        os.makedirs(run_dir, exist_ok=True)
+        self.progress(3, "Validating and opening imagery")
+        self._resolve(cfg, sample_n=max(4000, int(cfg.get("sample_size", 100000)) * 3))
+        bands = list(self.sources)
+        available = [name for name, meta in VI_META.items() if all(x in bands for x in meta[0])]
         self.log_cb("Detected bands: {}".format(", ".join(bands)))
         self.log_cb("Available vegetation indices ({}): {}".format(len(available), ", ".join(available)))
-        display_mode, channels = display_channels(bands); rgb = display_mode == "true colour"
-        rgb_sources = [self.sources[x][0] for x in channels]; rgb_source_bands = [self.sources[x][1] for x in channels]
+        display_mode, channels = display_channels(bands)
+        rgb = display_mode == "true colour"
+        rgb_sources = [self.sources[x][0] for x in channels]
+        rgb_source_bands = [self.sources[x][1] for x in channels]
         self.progress(7, "Preparing the display image ({})".format(display_mode))
-        display_sample = self._sample_cache; display_path = rgb_path = os.path.join(run_dir, "ppe_rgb_display.tif")
+        display_sample = self._sample_cache
+        display_path = rgb_path = os.path.join(run_dir, "ppe_rgb_display.tif")
         imported = {"rgb_path": rgb_path, "rgb_sources": rgb_sources, "rgb_source_bands": rgb_source_bands, "rgb_bands": list(dict.fromkeys(channels)), "true_rgb": rgb, "display_mode": display_mode, "source_bands": bands, "available_vis": available, "band_detection": self.detection_method, "hsi_proxies": self.hsi_proxy_info, "run_dir": run_dir}
         # The display file is written during the vote pass; until then QGIS draws the source bands
         # with the same stretch (in the units of the files).
         early_stretch = [(lo * self.scale, hi * self.scale) for lo, hi in self._display_stretches(channels, display_sample)]
-        self.import_cb(dict(imported, rgb_path="", display_stretch=early_stretch)); self.progress(12, "Sampling the full field and calculating possible vegetation indices")
+        self.import_cb(dict(imported, rgb_path="", display_stretch=early_stretch))
+        self.progress(12, "Sampling the full field and calculating possible vegetation indices")
         sample_2d = self._sample_cache
         valid_2d = self._valid(sample_2d)
         guard = self._fit_bright_guard(sample_2d, valid_2d) if cfg.get("bright_guard", False) else None
@@ -1807,9 +2069,13 @@ class NativePPEEngine:
         area_m2 = _pixel_area_m2(self.template)
         clean = {}
         for name in available:
-            if name in NON_VOTING: continue
-            x = np.asarray(compute_vi(name, sample), dtype=np.float32); x[~np.isfinite(x)] = np.nan; clean[name] = x
-        if not clean: raise ValueError("The available band combination cannot produce a usable PPE candidate layer.")
+            if name in NON_VOTING:
+                continue
+            x = np.asarray(compute_vi(name, sample), dtype=np.float32)
+            x[~np.isfinite(x)] = np.nan
+            clean[name] = x
+        if not clean:
+            raise ValueError("The available band combination cannot produce a usable PPE candidate layer.")
 
         # Step 1 of the framework: rank by spread, keep the best layer of each spectral group,
         # and let the highest-spread groups vote.
@@ -1827,13 +2093,16 @@ class NativePPEEngine:
         if forced:
             # "layers" lets a script name the voting layers itself; the panel never sets it.
             missing = [n for n in forced if n not in clean]
-            if missing: raise ValueError("These layers cannot vote with the bands in this image: {}".format(", ".join(missing)))
-            chosen = forced; max_layers = len(forced)
+            if missing:
+                raise ValueError("These layers cannot vote with the bands in this image: {}".format(", ".join(missing)))
+            chosen = forced
+            max_layers = len(forced)
         if len(chosen) < max_layers:
             # Fewer spectral groups than layers (an RGB image has one): add the next
             # highest-spread indices unless they are a near copy of a layer already chosen.
             for name in sorted(clean, key=lambda n: (-spreads[n], n)):
-                if len(chosen) >= max_layers: break
+                if len(chosen) >= max_layers:
+                    break
                 if name not in chosen and all(self._correlation(clean[name], clean[c]) <= 0.95 for c in chosen):
                     chosen.append(name)
         self.log_cb("Spread ranking (best index of each spectral group): {}".format(
@@ -1852,19 +2121,27 @@ class NativePPEEngine:
         # Thresholds are fitted to the whole field and then follow local conditions (see local_offsets).
         adaptive = str(cfg.get("adaptation_mode", "adaptive")).lower().strip() not in ("global", "off", "none", "false")
         tile = max(64, int(cfg.get("tile_pixels", 512)))
-        grid_w = max(2, min(48, int(round(self.width / float(tile))))); grid_h = max(2, min(48, int(round(self.height / float(tile)))))
+        grid_w = max(2, min(48, int(round(self.width / float(tile)))))
+        grid_h = max(2, min(48, int(round(self.height / float(tile)))))
         self.log_cb("Thresholds: fitted to the whole field, then shifted locally on a {} x {} grid.".format(grid_w, grid_h) if adaptive else "Thresholds: one set for the whole field.")
 
         # Step 2: four thresholds on every chosen layer.
         half_mixture = bool(cfg.get("half_mixture", False))
-        models = []; layer_details = []; offsets = {}
+        models = []
+        layer_details = []
+        offsets = {}
         for name in chosen:
-            x = clean[name][np.isfinite(clean[name])]; polarity = VI_META.get(name, (None, 1))[1]
-            o = otsu(x); c = cdf_threshold(x); k = kmeans_threshold(x, o)
+            x = clean[name][np.isfinite(clean[name])]
+            polarity = VI_META.get(name, (None, 1))[1]
+            o = otsu(x)
+            c = cdf_threshold(x)
+            k = kmeans_threshold(x, o)
             mo = multi_otsu(x) if polarity == 1 else None
-            if not isinstance(c, tuple) and not np.isfinite(c): c = o
+            if not isinstance(c, tuple) and not np.isfinite(c):
+                c = o
             methods = [("otsu", o), ("cdf", c), ("kmeans", k if np.isfinite(k) else o)]
-            if mo: methods.append(("multiotsu", (mo[0], mo[1])))
+            if mo:
+                methods.append(("multiotsu", (mo[0], mo[1])))
             if half_mixture:
                 # optional fifth method, off unless asked for (see half_mix_threshold)
                 hmix = half_mix_threshold(name, sample, clean[name])
@@ -1872,9 +2149,11 @@ class NativePPEEngine:
             models.append((name, polarity, methods))
             shift_range = [0.0, 0.0]
             if adaptive and np.isfinite(o):
-                if mo and mo[0] < o < mo[1]: low, high = mo[0], mo[1]
+                if mo and mo[0] < o < mo[1]:
+                    low, high = mo[0], mo[1]
                 else:
-                    reach = 0.25 * float(np.percentile(x, 99) - np.percentile(x, 1)); low, high = o - reach, o + reach
+                    reach = 0.25 * float(np.percentile(x, 99) - np.percentile(x, 1))
+                    low, high = o - reach, o + reach
                 layer_2d = np.asarray(compute_vi(name, sample_2d), dtype=np.float32)
                 offsets[name] = local_offsets(layer_2d, valid_2d, o, low, high, grid_h, grid_w)
                 shift_range = [float(offsets[name].min()), float(offsets[name].max())]
@@ -1887,12 +2166,14 @@ class NativePPEEngine:
 
         # What PPE found: every reference is measured on this image, from the sample pixels the
         # voters agree on (the sample vote below, with the thresholds just fitted).
-        total_s = np.zeros(next(iter(clean.values())).shape, np.float32); n_s = 0
+        total_s = np.zeros(next(iter(clean.values())).shape, np.float32)
+        n_s = 0
         for name, polarity, methods in models:
             x = clean[name]
             for method, param in methods:
                 vote = (np.where(x > param[1], 1.0, np.where(x > param[0], 0.5, 0.0)) if isinstance(param, tuple) else (x >= param)).astype(np.float32)
-                total_s += (1.0 - vote) if polarity < 0 else vote; n_s += 1
+                total_s += (1.0 - vote) if polarity < 0 else vote
+                n_s += 1
         finding_fit = fit_findings(sample, math.sqrt(area_m2) if area_m2 else None, total_s / max(1, n_s))
         for what, why in finding_fit["not_checked"].items():
             self.log_cb("What PPE found: {} not checked ({}).".format(what, why))
@@ -1905,7 +2186,9 @@ class NativePPEEngine:
                 "{:.4f}".format(finding_fit["leaf_bright"]) if finding_fit.get("leaf_bright") is not None else "n/a",
                 "{:.3f}".format(finding_fit["soil_nir"]) if finding_fit.get("soil_nir") is not None else "n/a",
                 level_cut(lv, "leaf", 1.0), finding_fit["ndvi_plant"], finding_fit["ndvi_canopy"], ", ".join(finding_fit["checks"])))
-        pale_fit = finding_fit.get("pale"); findings_not_checked = finding_fit["not_checked"]; findings_note = finding_fit.get("note", "")
+        pale_fit = finding_fit.get("pale")
+        findings_not_checked = finding_fit["not_checked"]
+        findings_note = finding_fit.get("note", "")
         if not finding_fit["checks"]:
             finding_fit = None
 
@@ -1924,8 +2207,9 @@ class NativePPEEngine:
         if one_class:
             self.log_cb("WARNING: this image looks like all {} ({} runs only from {:.2f} to {:.2f}). Automatic thresholds always split an image in two, so check the mask before using it.".format(
                 "bare soil" if one_class == "soil" else "canopy", referee.upper(), low_end, high_end))
-        single_class = None      # the mask is never overridden
-        n_masks = sum(len(x[2]) for x in models); vote_path = os.path.join(run_dir, "vote_fraction.tif"); out = self._create_output(vote_path, gdal.GDT_Float32, NODATA)
+        n_masks = sum(len(x[2]) for x in models)
+        vote_path = os.path.join(run_dir, "vote_fraction.tif")
+        out = self._create_output(vote_path, gdal.GDT_Float32, NODATA)
         rejection_path = os.path.join(run_dir, "bright_neutral_rejection.tif") if guard else ""
         rejection_out = self._create_output(rejection_path, gdal.GDT_Byte, 255) if guard else None
         shadow_rejection_path = os.path.join(run_dir, "shadow_rejection.tif") if shadow_guard else ""
@@ -1946,7 +2230,11 @@ class NativePPEEngine:
         display = self._display_writer(display_path, channels, display_sample)
 
         def block_votes(y):
-            h = min(block_rows, self.height-y); raw = self._read_bands(list(self.sources), y=y, h=h); ok = self._valid(raw); total = np.zeros((h,self.width), np.float32); wsum = 0.
+            h = min(block_rows, self.height - y)
+            raw = self._read_bands(list(self.sources), y=y, h=h)
+            ok = self._valid(raw)
+            total = np.zeros((h, self.width), np.float32)
+            wsum = 0.
             rgb = display.convert(raw)
             for name, polarity, methods in models:
                 x = raw[name] if name in raw else compute_vi(name, raw)
@@ -1955,17 +2243,20 @@ class NativePPEEngine:
                 for method, param in methods:
                     # Votes are 0, 0.5 or 1, added in float32 without float64 temporaries (same sums, exactly).
                     if isinstance(param, tuple) and param[1] >= param[0]:
-                        vote = np.add(x > param[0], x > param[1], dtype=np.float32); vote *= 0.5
+                        vote = np.add(x > param[0], x > param[1], dtype=np.float32)
+                        vote *= 0.5
                     elif isinstance(param, tuple):
                         vote = np.where(x > param[1], 1.0, np.where(x > param[0], 0.5, 0.0)).astype(np.float32)
                     else:
                         vote = (x >= param).astype(np.float32)
                     if polarity < 0:
                         np.subtract(1.0, vote, out=vote)
-                    total += vote; wsum += 1.0
+                    total += vote
+                    wsum += 1.0
                     del vote
                 del x
-            total /= max(wsum, 1e-12); result = total
+            total /= max(wsum, 1e-12)
+            result = total
             masks = {}
             if guard:
                 masks["bright"] = self._bright_guard_mask(raw, guard) & ok
@@ -1978,23 +2269,29 @@ class NativePPEEngine:
             counts = {}
             for key in ("bright", "shadow", "colour", "algae"):
                 if key in masks:
-                    counts[key] = int((masks[key] & (result >= 0.45)).sum()); result[masks[key]] = 0.0
+                    counts[key] = int((masks[key] & (result >= 0.45)).sum())
+                    result[masks[key]] = 0.0
             nvalid = int(ok.sum())
             findings = None
             if not finding_fit:
                 findings = np.where(ok, 0, 255).astype(np.uint8)
             else:
-                r = max(finding_fit["soil_radius_px"], finding_fit["canopy_radius_px"]); top = max(0, y - r); bottom = min(self.height, y + h + r)
+                r = max(finding_fit["soil_radius_px"], finding_fit["canopy_radius_px"])
+                top = max(0, y - r)
+                bottom = min(self.height, y + h + r)
                 ndvi_h = None
                 if "nir" in self.sources and "red" in self.sources:
                     # The block's own rows are already read: only the halo rows above and below are read again.
                     def halo(name):
                         parts = []
-                        if y > top: parts.append(self._read_band(name, y=top, h=y - top))
+                        if y > top:
+                            parts.append(self._read_band(name, y=top, h=y - top))
                         parts.append(raw[name])
-                        if bottom > y + h: parts.append(self._read_band(name, y=y + h, h=bottom - y - h))
+                        if bottom > y + h:
+                            parts.append(self._read_band(name, y=y + h, h=bottom - y - h))
                         return np.concatenate(parts, axis=0) if len(parts) > 1 else raw[name]
-                    nir_h = halo("nir"); red_h = halo("red")
+                    nir_h = halo("nir")
+                    red_h = halo("red")
                     with np.errstate(divide="ignore", invalid="ignore"):
                         ndvi_h = (nir_h - red_h) / (nir_h + red_h)
                 findings = classify_findings(raw, ok, finding_fit, ndvi_h, y - top, result)
@@ -2007,41 +2304,65 @@ class NativePPEEngine:
         workers = self._block_workers(block_rows, len(starts))
         self.log_cb("Full-resolution pass: {} blocks of {} rows on {} worker thread(s).".format(len(starts), block_rows, workers))
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            pending = []; nxt = 0
+            pending = []
+            nxt = 0
+
             def submit():
                 nonlocal nxt
-                if nxt < len(starts): pending.append(pool.submit(block_votes, starts[nxt])); nxt += 1
-            for _ in range(workers + 1): submit()
+                if nxt < len(starts):
+                    pending.append(pool.submit(block_votes, starts[nxt]))
+                    nxt += 1
+            for _ in range(workers + 1):
+                submit()
             while pending:
-                y, h, result, ok, masks, counts, nvalid, rgb, findings = pending.pop(0).result(); submit()
+                y, h, result, ok, masks, counts, nvalid, rgb, findings = pending.pop(0).result()
+                submit()
                 if findings is not None:
                     findings_out.GetRasterBand(1).WriteArray(findings, 0, y)
                 display.write(rgb, y)
-                rejected_count += counts.get("bright", 0); shadow_rejected_count += counts.get("shadow", 0)
-                colour_rejected_count += counts.get("colour", 0); biofilm_rejected_count += counts.get("algae", 0)
+                rejected_count += counts.get("bright", 0)
+                shadow_rejected_count += counts.get("shadow", 0)
+                colour_rejected_count += counts.get("colour", 0)
+                biofilm_rejected_count += counts.get("algae", 0)
                 for key, target in (("bright", rejection_out), ("shadow", shadow_rejection_out), ("algae", biofilm_rejection_out)):
                     if key in masks and target is not None:
                         target.GetRasterBand(1).WriteArray(np.where(ok, masks[key].astype(np.uint8), 255).astype(np.uint8), 0, y)
                 valid_count += nvalid
                 out.GetRasterBand(1).WriteArray(result, 0, y)
-                self.progress(40+int(45*(y+h)/self.height), "Combining {} full-resolution layer×method votes".format(n_masks))
-        display.close(); self._thread_local = None
-        out.FlushCache(); out = None
-        if rejection_out is not None: rejection_out.FlushCache(); rejection_out = None
-        if shadow_rejection_out is not None: shadow_rejection_out.FlushCache(); shadow_rejection_out = None
-        if biofilm_rejection_out is not None: biofilm_rejection_out.FlushCache(); biofilm_rejection_out = None
-        if findings_out is not None: findings_out.FlushCache(); findings_out = None
-        rejected_pct = 100.0*rejected_count/max(1, valid_count) if guard else 0.0
-        shadow_rejected_pct = 100.0*shadow_rejected_count/max(1, valid_count) if shadow_guard else 0.0
-        biofilm_rejected_pct = 100.0*biofilm_rejected_count/max(1, valid_count) if algae_guard else 0.0
-        if guard: self.log_cb("Bright-soil guard changed {:.2f}% of valid pixels from plant to soil.".format(rejected_pct))
-        if shadow_guard: self.log_cb("Shadow guard changed {:.2f}% of valid pixels from plant to soil.".format(shadow_rejected_pct))
-        colour_rejected_pct = 100.0*colour_rejected_count/max(1, valid_count) if colour_guard else 0.0
-        if colour_guard: self.log_cb("Colour guard changed {:.2f}% of valid pixels from plant to soil.".format(colour_rejected_pct))
-        if algae_guard: self.log_cb("Algae guard changed {:.2f}% of valid pixels from plant to soil.".format(biofilm_rejected_pct))
-        curve_path = os.path.join(run_dir, "threshold_curve.csv"); self._write_curve(vote_path, curve_path)
+                self.progress(40 + int(45 * (y + h) / self.height), "Combining {} full-resolution layer×method votes".format(n_masks))
+        display.close()
+        self._thread_local = None
+        out.FlushCache()
+        out = None
+        if rejection_out is not None:
+            rejection_out.FlushCache()
+            rejection_out = None
+        if shadow_rejection_out is not None:
+            shadow_rejection_out.FlushCache()
+            shadow_rejection_out = None
+        if biofilm_rejection_out is not None:
+            biofilm_rejection_out.FlushCache()
+            biofilm_rejection_out = None
+        if findings_out is not None:
+            findings_out.FlushCache()
+            findings_out = None
+        rejected_pct = 100.0 * rejected_count / max(1, valid_count) if guard else 0.0
+        shadow_rejected_pct = 100.0 * shadow_rejected_count / max(1, valid_count) if shadow_guard else 0.0
+        biofilm_rejected_pct = 100.0 * biofilm_rejected_count / max(1, valid_count) if algae_guard else 0.0
+        if guard:
+            self.log_cb("Bright-soil guard changed {:.2f}% of valid pixels from plant to soil.".format(rejected_pct))
+        if shadow_guard:
+            self.log_cb("Shadow guard changed {:.2f}% of valid pixels from plant to soil.".format(shadow_rejected_pct))
+        colour_rejected_pct = 100.0 * colour_rejected_count / max(1, valid_count) if colour_guard else 0.0
+        if colour_guard:
+            self.log_cb("Colour guard changed {:.2f}% of valid pixels from plant to soil.".format(colour_rejected_pct))
+        if algae_guard:
+            self.log_cb("Algae guard changed {:.2f}% of valid pixels from plant to soil.".format(biofilm_rejected_pct))
+        curve_path = os.path.join(run_dir, "threshold_curve.csv")
+        self._write_curve(vote_path, curve_path)
         # Suggested starting threshold, from the votes on the same sample grid as the fitting sample.
-        suggestion = None; no_suggestion_reason = "too few pixels that are clearly all plant and all soil"
+        suggestion = None
+        no_suggestion_reason = "too few pixels that are clearly all plant and all soil"
         if "nir" not in sample_2d:
             # Without NIR, plant and soil differ too little in colour for a reliable plant share per pixel
             # (tested on camera RGB fields: the estimate swung from far too much to far too little plant).
@@ -2049,7 +2370,8 @@ class NativePPEEngine:
         elif cfg.get("suggest_threshold", True):
             rows, cols = next(iter(sample_2d.values())).shape
             vds = safe_gdal_open(vote_path)
-            sample_votes = vds.GetRasterBand(1).ReadAsArray(buf_xsize=cols, buf_ysize=rows).astype(np.float64); vds = None
+            sample_votes = vds.GetRasterBand(1).ReadAsArray(buf_xsize=cols, buf_ysize=rows).astype(np.float64)
+            vds = None
             sample_votes[(sample_votes == NODATA) | (sample_votes < 0) | (sample_votes > 1)] = np.nan
             suggestion = suggest_threshold(sample_votes, sample_2d, valid_2d, grid_h, grid_w)
         if suggestion:
@@ -2077,7 +2399,8 @@ class NativePPEEngine:
                 self.log_cb("Weeds: {}.".format(weeds.get("note", "none found")) +
                             (" Review them on the What PPE found card." if weeds.get("between") or weeds.get("in_row") else ""))
             except Exception as error:            # weeds are extra information: a failure must not stop the run
-                weeds = {"note": "weeds not checked ({})".format(error)}; self.log_cb("Weeds: not checked ({}).".format(error))
+                weeds = {"note": "weeds not checked ({})".format(error)}
+                self.log_cb("Weeds: not checked ({}).".format(error))
         labels = {}
         if cfg.get("confident_labels", True):
             labels = write_confident_labels(vote_path, os.path.join(run_dir, "ppe_confident_labels.tif"))
@@ -2085,14 +2408,17 @@ class NativePPEEngine:
                 labels["plant_pct"], labels["soil_pct"], labels["unlabelled_pct"]))
         findings_hist = findings_histograms(findings_path, vote_path)
         pale_pct, pale_lost_pct = self._log_findings(findings_hist if finding_fit else None)
-        result = dict(imported, vote_path=vote_path, curve_path=curve_path, threshold=start_threshold, suggestion=suggestion or {}, suggestion_note="" if suggestion else no_suggestion_reason, selected_layers=chosen, chosen_layers=chosen, layer_details=layer_details, n_voters=n_masks, n_method_masks=n_masks, canopy_regime="classic", adaptation_mode="adaptive" if adaptive else "global", half_mixture=half_mixture, spread_ranking=[{"layer": name, "group": group, "spread": spread} for spread, name, group in leaders], mixed_class_vote=.5, bright_guard=bool(guard), bright_rejection_path=rejection_path, bright_rejected_pct=rejected_pct, shadow_guard=bool(shadow_guard), shadow_rejection_path=shadow_rejection_path, shadow_rejected_pct=shadow_rejected_pct, biofilm_guard=bool(algae_guard), algae_guard_fit=algae_guard or {}, biofilm_rejection_path=biofilm_rejection_path, biofilm_rejected_pct=biofilm_rejected_pct, colour_guard=bool(colour_guard), colour_rejected_pct=colour_rejected_pct, weak_green_warning=bool(colour_guard and colour_guard["plant_excess"] < WEAK_GREEN), single_class="", one_class_warning=one_class or "", pale_plant_path=pale_path, pale_plant_pct=pale_pct, pale_plant_lost_pct=pale_lost_pct, pale_plant_fit=pale_fit or {}, findings_path=findings_path, findings_hist=findings_hist, findings_judged=bool(finding_fit), sparse_spots=sparse_spots, weeds=weeds, findings_fit={k: v for k, v in (finding_fit or {}).items() if k != "pale"}, findings_not_checked=dict(findings_not_checked), findings_note=findings_note, split_separability=split_sep, weak_split_warning=weak_split, confident_labels=labels, confident_labels_path=labels.get("path", ""), ppe_version="native-4.5.3", processing_threads=self.thread_count, output_dir=cfg["output_dir"], timings={"total": time.time()-started})
-        with open(os.path.join(run_dir, "run_summary.json"), "w", encoding="utf-8") as handle: json.dump(result, handle, indent=2)
-        self.progress(100, "Plant vote raster and threshold curve are ready"); return result
+        result = dict(imported, vote_path=vote_path, curve_path=curve_path, threshold=start_threshold, suggestion=suggestion or {}, suggestion_note="" if suggestion else no_suggestion_reason, selected_layers=chosen, chosen_layers=chosen, layer_details=layer_details, n_voters=n_masks, n_method_masks=n_masks, canopy_regime="classic", adaptation_mode="adaptive" if adaptive else "global", half_mixture=half_mixture, spread_ranking=[{"layer": name, "group": group, "spread": spread} for spread, name, group in leaders], mixed_class_vote=.5, bright_guard=bool(guard), bright_rejection_path=rejection_path, bright_rejected_pct=rejected_pct, shadow_guard=bool(shadow_guard), shadow_rejection_path=shadow_rejection_path, shadow_rejected_pct=shadow_rejected_pct, biofilm_guard=bool(algae_guard), algae_guard_fit=algae_guard or {}, biofilm_rejection_path=biofilm_rejection_path, biofilm_rejected_pct=biofilm_rejected_pct, colour_guard=bool(colour_guard), colour_rejected_pct=colour_rejected_pct, weak_green_warning=bool(colour_guard and colour_guard["plant_excess"] < WEAK_GREEN), single_class="", one_class_warning=one_class or "", pale_plant_path=pale_path, pale_plant_pct=pale_pct, pale_plant_lost_pct=pale_lost_pct, pale_plant_fit=pale_fit or {}, findings_path=findings_path, findings_hist=findings_hist, findings_judged=bool(finding_fit), sparse_spots=sparse_spots, weeds=weeds, findings_fit={k: v for k, v in (finding_fit or {}).items() if k != "pale"}, findings_not_checked=dict(findings_not_checked), findings_note=findings_note, split_separability=split_sep, weak_split_warning=weak_split, confident_labels=labels, confident_labels_path=labels.get("path", ""), ppe_version="native-" + PLUGIN_VERSION, processing_threads=self.thread_count, output_dir=cfg["output_dir"], timings={"total": time.time() - started})
+        with open(os.path.join(run_dir, "run_summary.json"), "w", encoding="utf-8") as handle:
+            json.dump(result, handle, indent=2)
+        self.progress(100, "Plant vote raster and threshold curve are ready")
+        return result
 
     @staticmethod
     def _correlation(a, b):
         good = np.isfinite(a) & np.isfinite(b)
-        if good.sum() < 3 or np.std(a[good]) == 0 or np.std(b[good]) == 0: return 0.0
+        if good.sum() < 3 or np.std(a[good]) == 0 or np.std(b[good]) == 0:
+            return 0.0
         value = np.corrcoef(a[good], b[good])[0, 1]
         return abs(float(value)) if np.isfinite(value) else 0.0
 
@@ -2100,25 +2426,33 @@ class NativePPEEngine:
     def _fit_colour_guard(sample, clean, models):
         """Soil colour for the colour guard, taken from the pixels the first voting layer's
         Otsu split calls soil."""
-        if not models: return None
-        name, polarity, methods = models[0]; split = methods[0][1]
+        if not models:
+            return None
+        name, polarity, methods = models[0]
+        split = methods[0][1]
         x = clean[name]
-        if not np.isfinite(split): return None
+        if not np.isfinite(split):
+            return None
         soil_side = (x < split) if polarity > 0 else (x > split)
         r, g, b = sample["red"], sample["green"], sample["blue"]
         good = np.isfinite(x) & np.isfinite(r) & np.isfinite(g) & np.isfinite(b)
-        soil = good & soil_side; plant = good & ~soil_side
-        if soil.sum() < 100 or plant.sum() < 100: return None
+        soil = good & soil_side
+        plant = good & ~soil_side
+        if soil.sum() < 100 or plant.sum() < 100:
+            return None
         ref = [float(np.median(v[soil])) for v in (r, g, b)]
-        if min(ref) <= 0: return None
+        if min(ref) <= 0:
+            return None
         guard = {"soil": ref}
         guard["plant_excess"] = float(np.median(NativePPEEngine._balanced_excess_green(sample, guard)[plant]))
         return guard
 
     @staticmethod
     def _balanced_excess_green(bands, guard):
-        r = bands["red"]/guard["soil"][0]; g = bands["green"]/guard["soil"][1]; b = bands["blue"]/guard["soil"][2]
-        return (2*g - r - b)/np.maximum(r + g + b, 1e-6)
+        r = bands["red"] / guard["soil"][0]
+        g = bands["green"] / guard["soil"][1]
+        b = bands["blue"] / guard["soil"][2]
+        return (2 * g - r - b) / np.maximum(r + g + b, 1e-6)
 
     @staticmethod
     def _colour_guard_mask(bands, guard):
@@ -2126,18 +2460,22 @@ class NativePPEEngine:
             return ~(NativePPEEngine._balanced_excess_green(bands, guard) > 0)
 
     def _fit_bright_guard(self, bands, valid):
-        if not all(name in bands for name in ("red", "green", "blue")) or not np.any(valid): return None
+        if not all(name in bands for name in ("red", "green", "blue")) or not np.any(valid):
+            return None
         red, green, blue = bands["red"], bands["green"], bands["blue"]
-        brightness = (red+green+blue)/3.0
-        chroma = np.maximum(np.maximum(red, green), blue)-np.minimum(np.minimum(red, green), blue)
+        brightness = (red + green + blue) / 3.0
+        chroma = np.maximum(np.maximum(red, green), blue) - np.minimum(np.minimum(red, green), blue)
         evidence_names = [name for name in ("ndvi", "ndre") if name in VI_META and all(b in bands for b in VI_META[name][0])]
         if not evidence_names:
             evidence_names = [name for name in ("ngrdi", "exg") if all(b in bands for b in VI_META[name][0])]
         evidence = {}
         for name in evidence_names:
-            values = compute_vi(name, bands); threshold = otsu(values[valid])
-            if np.isfinite(threshold): evidence[name] = threshold
-        if not evidence: return None
+            values = compute_vi(name, bands)
+            threshold = otsu(values[valid])
+            if np.isfinite(threshold):
+                evidence[name] = threshold
+        if not evidence:
+            return None
         fitted = {"brightness": float(np.nanpercentile(brightness[valid], 90)), "chroma": float(np.nanpercentile(chroma[valid], 25)), "evidence": evidence}
         self.log_cb("Bright-soil safeguard: brightness ≥ {:.4g}, RGB chroma ≤ {:.4g}, and no {} support.".format(fitted["brightness"], fitted["chroma"], "/".join(evidence)))
         return fitted
@@ -2145,15 +2483,17 @@ class NativePPEEngine:
     @staticmethod
     def _bright_guard_mask(bands, guard):
         red, green, blue = bands["red"], bands["green"], bands["blue"]
-        brightness = (red+green+blue)/3.0
-        chroma = np.maximum(np.maximum(red, green), blue)-np.minimum(np.minimum(red, green), blue)
+        brightness = (red + green + blue) / 3.0
+        chroma = np.maximum(np.maximum(red, green), blue) - np.minimum(np.minimum(red, green), blue)
         vegetation = np.zeros(brightness.shape, dtype=bool)
-        for name, threshold in guard["evidence"].items(): vegetation |= compute_vi(name, bands) >= threshold
+        for name, threshold in guard["evidence"].items():
+            vegetation |= compute_vi(name, bands) >= threshold
         return (brightness >= guard["brightness"]) & (chroma <= guard["chroma"]) & ~vegetation
 
     def _fit_shadow_guard(self, bands, valid):
         """Fit adaptive threshold for unilluminated shadows and black sensor pixels."""
-        if not np.any(valid): return None
+        if not np.any(valid):
+            return None
         if all(name in bands for name in ("red", "green", "blue")):
             brightness = (bands["red"] + bands["green"] + bands["blue"]) / 3.0
         elif "red" in bands:
@@ -2163,7 +2503,8 @@ class NativePPEEngine:
 
         b_valid = brightness[valid]
         b_valid = b_valid[np.isfinite(b_valid)]
-        if not b_valid.size: return None
+        if not b_valid.size:
+            return None
         b_thresh = float(np.nanpercentile(b_valid, 15))
 
         has_nir = "nir" in bands and "red" in bands
@@ -2181,7 +2522,8 @@ class NativePPEEngine:
                     nirv_floor = float(0.60 * o_nirv)
             if nirv_floor is None and nirv.size > 0:
                 p50 = float(np.nanpercentile(nirv, 50))
-                if p50 > 0: nirv_floor = float(0.50 * p50)
+                if p50 > 0:
+                    nirv_floor = float(0.50 * p50)
 
         # A leaf in shade keeps a leaf's NDVI (a ratio is unchanged when all bands dim together);
         # a dark gap or shaded soil does not. So a dark pixel whose NDVI reaches the plant class
@@ -2192,7 +2534,8 @@ class NativePPEEngine:
             nd = ((bands["nir"] - bands["red"]) / np.maximum(bands["nir"] + bands["red"], 1e-6))[valid]
             nd = nd[np.isfinite(nd)]
             if nd.size >= 100:
-                cuts = multi_otsu(nd); split = otsu(nd)
+                cuts = multi_otsu(nd)
+                split = otsu(nd)
                 if cuts and np.isfinite(split):
                     ndvi_keep = float(max(cuts[1], split))
         # With a red-edge band the shaded leaf must also show a leaf's red-edge contrast
@@ -2278,15 +2621,22 @@ class NativePPEEngine:
         if not all(name in sample for name in ("red", "re", "nir")):
             self.log_cb("Algae guard skipped: it needs red, red-edge and NIR bands.")
             return None
-        ndvi = compute_vi("ndvi", sample); ndre = compute_vi("ndre", sample)
+        ndvi = compute_vi("ndvi", sample)
+        ndre = compute_vi("ndre", sample)
         good = np.isfinite(ndvi) & np.isfinite(ndre)
-        if good.sum() < 400: return None
-        ndvi = ndvi[good]; ndre = ndre[good]
+        if good.sum() < 400:
+            return None
+        ndvi = ndvi[good]
+        ndre = ndre[good]
         split = otsu(ndvi)
-        if not np.isfinite(split): return None
-        soil = ndre[ndvi <= np.percentile(ndvi, 5)]; plant = ndre[ndvi >= split]
-        if soil.size < 20 or plant.size < 50: return None
-        soil_mid = float(np.median(soil)); plant_mid = float(np.median(plant))
+        if not np.isfinite(split):
+            return None
+        soil = ndre[ndvi <= np.percentile(ndvi, 5)]
+        plant = ndre[ndvi >= split]
+        if soil.size < 20 or plant.size < 50:
+            return None
+        soil_mid = float(np.median(soil))
+        plant_mid = float(np.median(plant))
         if not soil_mid < plant_mid:
             self.log_cb("Algae guard skipped: red-edge contrast does not separate soil from plants in this image.")
             return None
@@ -2300,10 +2650,17 @@ class NativePPEEngine:
         return compute_vi("ndre", bands) < guard["ndre_floor"]
 
     def _write_curve(self, vote_path, curve_path):
-        ds = safe_gdal_open(vote_path); ratio = self.width/max(1,self.height); bx=min(self.width,max(1,int(math.sqrt(300000*ratio)))); by=min(self.height,max(1,int(300000/bx))); x=ds.GetRasterBand(1).ReadAsArray(buf_xsize=bx,buf_ysize=by).astype(float); x=x[(x != NODATA)&np.isfinite(x)]
-        with open(curve_path,"w",newline="",encoding="utf-8") as f:
-            w=csv.writer(f); w.writerow(("plant_thresh","canopy_pct"))
-            for t in np.arange(.15,.951,.01): w.writerow((round(float(t),2),float(100*np.mean(x >= max(0,t-.05)))))
+        ds = safe_gdal_open(vote_path)
+        ratio = self.width / max(1, self.height)
+        bx = min(self.width, max(1, int(math.sqrt(300000 * ratio))))
+        by = min(self.height, max(1, int(300000 / bx)))
+        x = ds.GetRasterBand(1).ReadAsArray(buf_xsize=bx, buf_ysize=by).astype(float)
+        x = x[(x != NODATA) & np.isfinite(x)]
+        with open(curve_path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(("plant_thresh", "canopy_pct"))
+            for t in np.arange(.15, .951, .01):
+                w.writerow((round(float(t), 2), float(100 * np.mean(x >= max(0, t - .05)))))
 
     @_bigger_gdal_cache
     def batch_run(self, cfg):
@@ -2311,25 +2668,33 @@ class NativePPEEngine:
         Each image gets its own folder under cfg['output_dir']; one image failing does not stop the rest.
         Writes ppe_batch.json (updated after every image) and returns it."""
         items = cfg.get("batch_items") or list_batch_images(cfg.get("batch_folder"))
-        if not items: raise ValueError("No images found in the folder: it needs raster files (.tif) or band folders.")
-        root = cfg["output_dir"]; os.makedirs(root, exist_ok=True); work_root = cfg.get("work_dir") or os.path.join(root, "ppe_work")
-        manifest_path = os.path.join(root, "ppe_batch.json"); started = time.time()
+        if not items:
+            raise ValueError("No images found in the folder: it needs raster files (.tif) or band folders.")
+        root = cfg["output_dir"]
+        os.makedirs(root, exist_ok=True)
+        work_root = cfg.get("work_dir") or os.path.join(root, "ppe_work")
+        manifest_path = os.path.join(root, "ppe_batch.json")
+        started = time.time()
         common = {k: v for k, v in cfg.items() if k not in ("action", "batch_items", "batch_folder", "output_dir", "work_dir",
                                                             "source_mode", "stacked_path", "folder_path", "band_files")}
         manifest = {"batch_folder": cfg.get("batch_folder", ""), "output_dir": root, "created": datetime.now().isoformat(timespec="seconds"),
-                    "ppe_version": "native-4.5.3", "items": []}
-        outer = self.progress_cb; n = len(items)
+                    "ppe_version": "native-" + PLUGIN_VERSION, "items": []}
+        outer = self.progress_cb
+        n = len(items)
         self.log_cb("Batch: {} image(s) in {}.".format(n, cfg.get("batch_folder", "the list")))
         for i, item in enumerate(items):
-            if self.cancelled(): raise Cancelled("Batch cancelled after {} of {} images; those are kept in ppe_batch.json.".format(i, n))
-            name = item["name"]; out_dir = os.path.join(root, name)
+            if self.cancelled():
+                raise Cancelled("Batch cancelled after {} of {} images; those are kept in ppe_batch.json.".format(i, n))
+            name = item["name"]
+            out_dir = os.path.join(root, name)
             entry = {"name": name, "source_mode": item["source_mode"], "source": item.get("stacked_path") or item.get("folder_path"),
                      "output_dir": out_dir, "status": "running"}
             self.progress_cb = (lambda p, m, i=i, name=name: outer(int(100 * (i + p / 100.0) / n), "{} ({}/{}): {}".format(name, i + 1, n, m)))
             t0 = time.time()
             try:
                 r = self.run(dict(common, **{k: v for k, v in item.items() if k != "name"}, output_dir=out_dir, work_dir=os.path.join(work_root, name)))
-                os.makedirs(out_dir, exist_ok=True); result_path = os.path.join(out_dir, "ppe_batch_result.json")
+                os.makedirs(out_dir, exist_ok=True)
+                result_path = os.path.join(out_dir, "ppe_batch_result.json")
                 with open(result_path, "w", encoding="utf-8") as f:
                     json.dump(_jsonable(r), f)
                 t = float(r.get("threshold", 0.5))
@@ -2348,7 +2713,8 @@ class NativePPEEngine:
             except Exception as exc:
                 entry.update(status="failed", error="{}: {}".format(type(exc).__name__, str(exc).strip() or "no details"), seconds=time.time() - t0)
                 self.log_cb("Batch {}/{}: {} failed ({}); going on with the next image.".format(i + 1, n, name, entry["error"]))
-            manifest["items"].append(entry); manifest["seconds"] = time.time() - started
+            manifest["items"].append(entry)
+            manifest["seconds"] = time.time() - started
             with open(manifest_path, "w", encoding="utf-8") as f:
                 json.dump(_jsonable(manifest), f, indent=1)
         self.progress_cb = outer
@@ -2365,13 +2731,18 @@ class NativePPEEngine:
         manifest_path = cfg["manifest_path"]
         with open(manifest_path, encoding="utf-8") as f:
             manifest = json.load(f)
-        choices = cfg.get("choices") or {}; rows = []
+        choices = cfg.get("choices") or {}
+        rows = []
         items = [e for e in manifest["items"] if e.get("status") == "done"]
-        if not items: raise ValueError("No finished images in this batch to finalize.")
-        outer = self.progress_cb; n = len(items)
+        if not items:
+            raise ValueError("No finished images in this batch to finalize.")
+        outer = self.progress_cb
+        n = len(items)
         for i, e in enumerate(items):
-            if self.cancelled(): raise Cancelled("Finalizing cancelled after {} of {} images.".format(i, n))
-            r = load_batch_result(e["result_path"]); c = choices.get(e["name"]) or {}
+            if self.cancelled():
+                raise Cancelled("Finalizing cancelled after {} of {} images.".format(i, n))
+            r = load_batch_result(e["result_path"])
+            c = choices.get(e["name"]) or {}
             t = float(c.get("threshold", e.get("threshold", 0.5)))
             self.progress_cb = (lambda p, m, i=i, name=e["name"]: outer(int(100 * (i + p / 100.0) / n), "{} ({}/{}): {}".format(name, i + 1, n, m)))
             a = self.apply({"vote_path": r["vote_path"], "threshold": t, "output_dir": e["output_dir"], "findings_path": r.get("findings_path"),
@@ -2386,7 +2757,9 @@ class NativePPEEngine:
         self.progress_cb = outer
         summary = os.path.join(os.path.dirname(manifest_path), "ppe_batch_summary.csv")
         with open(summary, "w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
+            w = csv.DictWriter(f, fieldnames=list(rows[0]))
+            w.writeheader()
+            w.writerows(rows)
         self.log_cb("Batch summary: {}".format(summary))
         return {"summary_csv": summary, "rows": rows, "manifest_path": manifest_path, "batch_finalized": True}
 
@@ -2394,57 +2767,84 @@ class NativePPEEngine:
     def apply(self, cfg):
         """Write the plant mask. With crop areas (cfg zone_path + zone_thresholds: index 0 for the rest
         of the image, then one per crop) each area gets its own threshold; the vote is unchanged."""
-        self.thread_count=max(1,min(16,int(cfg.get("threads",self.thread_count) or self.thread_count))); vote_path=cfg["vote_path"]; ds=safe_gdal_open(vote_path); self.template=ds; self.width=ds.RasterXSize; self.height=ds.RasterYSize
-        threshold=float(cfg["threshold"]); out_dir=cfg["output_dir"]; os.makedirs(out_dir,exist_ok=True)
-        zone_path=cfg.get("zone_path") or ""; zone_t=[float(t) for t in (cfg.get("zone_thresholds") or [])]
-        zones=safe_gdal_open(zone_path) if zone_path and len(zone_t) > 1 else None
-        if zones is not None and (zones.RasterXSize != self.width or zones.RasterYSize != self.height): zones=None
-        if zones is not None: zone_t[0]=threshold
-        cut=np.maximum(0, np.array(zone_t if zones is not None else [threshold], dtype=float)-.05)
-        clip=sorted({int(c) for c in (cfg.get("clip_codes") or []) if int(c) in FINDING_NAMES})
-        add=sorted({int(c) for c in (cfg.get("add_codes") or []) if int(c) in FINDING_NAMES and int(c) not in clip})   # 4.6.5: any kind; leaving out wins
+        self.thread_count = max(1, min(16, int(cfg.get("threads", self.thread_count) or self.thread_count)))
+        vote_path = cfg["vote_path"]
+        ds = safe_gdal_open(vote_path)
+        self.template = ds
+        self.width = ds.RasterXSize
+        self.height = ds.RasterYSize
+        threshold = float(cfg["threshold"])
+        out_dir = cfg["output_dir"]
+        os.makedirs(out_dir, exist_ok=True)
+        zone_path = cfg.get("zone_path") or ""
+        zone_t = [float(t) for t in (cfg.get("zone_thresholds") or [])]
+        zones = safe_gdal_open(zone_path) if zone_path and len(zone_t) > 1 else None
+        if zones is not None and (zones.RasterXSize != self.width or zones.RasterYSize != self.height):
+            zones = None
+        if zones is not None:
+            zone_t[0] = threshold
+        cut = np.maximum(0, np.array(zone_t if zones is not None else [threshold], dtype=float) - .05)
+        clip = sorted({int(c) for c in (cfg.get("clip_codes") or []) if int(c) in FINDING_NAMES})
+        add = sorted({int(c) for c in (cfg.get("add_codes") or []) if int(c) in FINDING_NAMES and int(c) not in clip})   # 4.6.5: any kind; leaving out wins
         # Each choice of left-out findings gets its own file, so QGIS can never show an older copy of the mask.
-        mask_path=os.path.join(out_dir,("ppe_plant_mask_by_crop" if zones is not None else "ppe_plant_mask_{:.2f}".format(threshold))
-                               +("_without_"+"_".join(FINDING_FILE_NAMES[k] for k in clip) if clip else "")
-                               +("_with_"+"_".join(FINDING_FILE_NAMES[k] for k in add) if add else "")+".tif")
-        out=self._create_output(mask_path,gdal.GDT_Byte,255); n=len(cut); count=np.zeros(n,np.int64); valid_count=np.zeros(n,np.int64)
-        findings=safe_gdal_open(cfg["findings_path"]) if (clip or add) and cfg.get("findings_path") and os.path.isfile(cfg["findings_path"]) else None
-        if findings is not None and (findings.RasterXSize != self.width or findings.RasterYSize != self.height): findings=None
-        if (clip or add) and findings is None: raise ValueError("The findings layer of this run is missing, so nothing can be left out of or added to the mask. Run PPE again.")
-        added=0; added_by=np.zeros(max(FINDING_CODES)+1,np.int64)
-        removed=np.zeros(max(FINDING_CODES)+1,np.int64)
-        for y in range(0,self.height,512):
-            h=min(512,self.height-y); x=ds.GetRasterBand(1).ReadAsArray(0,y,self.width,h); valid=(x != NODATA)&np.isfinite(x)
-            z=zones.GetRasterBand(1).ReadAsArray(0,y,self.width,h).astype(np.intp) if zones is not None else np.zeros(x.shape,np.intp)
-            z=np.clip(z,0,n-1); plant=valid&(x >= cut[z])
+        mask_path = os.path.join(out_dir, ("ppe_plant_mask_by_crop" if zones is not None else "ppe_plant_mask_{:.2f}".format(threshold))
+                                 + ("_without_" + "_".join(FINDING_FILE_NAMES[k] for k in clip) if clip else "")
+                                 + ("_with_" + "_".join(FINDING_FILE_NAMES[k] for k in add) if add else "") + ".tif")
+        out = self._create_output(mask_path, gdal.GDT_Byte, 255)
+        n = len(cut)
+        count = np.zeros(n, np.int64)
+        valid_count = np.zeros(n, np.int64)
+        findings = safe_gdal_open(cfg["findings_path"]) if (clip or add) and cfg.get("findings_path") and os.path.isfile(cfg["findings_path"]) else None
+        if findings is not None and (findings.RasterXSize != self.width or findings.RasterYSize != self.height):
+            findings = None
+        if (clip or add) and findings is None:
+            raise ValueError("The findings layer of this run is missing, so nothing can be left out of or added to the mask. Run PPE again.")
+        added = 0
+        added_by = np.zeros(max(FINDING_CODES) + 1, np.int64)
+        removed = np.zeros(max(FINDING_CODES) + 1, np.int64)
+        for y in range(0, self.height, 512):
+            h = min(512, self.height - y)
+            x = ds.GetRasterBand(1).ReadAsArray(0, y, self.width, h)
+            valid = (x != NODATA) & np.isfinite(x)
+            z = zones.GetRasterBand(1).ReadAsArray(0, y, self.width, h).astype(np.intp) if zones is not None else np.zeros(x.shape, np.intp)
+            z = np.clip(z, 0, n - 1)
+            plant = valid & (x >= cut[z])
             if findings is not None:
-                f=findings.GetRasterBand(1).ReadAsArray(0,y,self.width,h)
+                f = findings.GetRasterBand(1).ReadAsArray(0, y, self.width, h)
                 if add:
-                    extra=valid&~plant&np.isin(f,add); added += int(extra.sum()); plant |= extra
-                    added_by += np.bincount(np.clip(f[extra].astype(np.intp),0,added_by.size-1),minlength=added_by.size)[:added_by.size]
-                out_of_mask=plant&np.isin(f,clip)
-                removed += np.bincount(np.clip(f[out_of_mask].astype(np.intp),0,removed.size-1),minlength=removed.size)[:removed.size]; plant &= ~out_of_mask
-            m=np.where(valid,plant.astype(np.uint8),255).astype(np.uint8); out.GetRasterBand(1).WriteArray(m,0,y)
-            count += np.bincount(z[plant],minlength=n)[:n]; valid_count += np.bincount(z[valid],minlength=n)[:n]
-            self.progress(int(100*(y+h)/self.height),"Writing native-resolution plant mask")
-        out.FlushCache(); out=None
-        result={"mask_path":mask_path,"mask_qgis_path":mask_path,"threshold":threshold,"canopy_pct":100*count.sum()/max(1,valid_count.sum()),
-                "clip_codes":clip,"left_out":{FINDING_NAMES[k]:int(removed[k]) for k in clip},
-                "left_out_pct":100.0*removed.sum()/max(1,valid_count.sum()),
-                "left_out_pixels":int(removed.sum()),"canopy_before_clip_pct":100*(count.sum()+removed.sum()-added)/max(1,valid_count.sum()),
-                "add_codes":add,"added_pixels":added,"added":{FINDING_NAMES[k]:int(added_by[k]) for k in add}}
+                    extra = valid & ~plant & np.isin(f, add)
+                    added += int(extra.sum())
+                    plant |= extra
+                    added_by += np.bincount(np.clip(f[extra].astype(np.intp), 0, added_by.size - 1), minlength=added_by.size)[:added_by.size]
+                out_of_mask = plant & np.isin(f, clip)
+                removed += np.bincount(np.clip(f[out_of_mask].astype(np.intp), 0, removed.size - 1), minlength=removed.size)[:removed.size]
+                plant &= ~out_of_mask
+            m = np.where(valid, plant.astype(np.uint8), 255).astype(np.uint8)
+            out.GetRasterBand(1).WriteArray(m, 0, y)
+            count += np.bincount(z[plant], minlength=n)[:n]
+            valid_count += np.bincount(z[valid], minlength=n)[:n]
+            self.progress(int(100 * (y + h) / self.height), "Writing native-resolution plant mask")
+        out.FlushCache()
+        out = None
+        result = {"mask_path": mask_path, "mask_qgis_path": mask_path, "threshold": threshold, "canopy_pct": 100 * count.sum() / max(1, valid_count.sum()),
+                  "clip_codes": clip, "left_out": {FINDING_NAMES[k]: int(removed[k]) for k in clip},
+                  "left_out_pct": 100.0 * removed.sum() / max(1, valid_count.sum()),
+                  "left_out_pixels": int(removed.sum()), "canopy_before_clip_pct": 100 * (count.sum() + removed.sum() - added) / max(1, valid_count.sum()),
+                  "add_codes": add, "added_pixels": added, "added": {FINDING_NAMES[k]: int(added_by[k]) for k in add}}
         if add:
             self.log_cb("Added to the mask: {} ({:,} pixels).".format(", ".join("{} {:,}".format(FINDING_NAMES[k], int(added_by[k])) for k in add), added))
         if clip:
             self.log_cb("Left out of the mask: " + ", ".join("{} ({:,} pixels)".format(FINDING_NAMES[k], int(removed[k])) for k in clip) + ".")
         if zones is not None:
-            names=list(cfg.get("zone_names") or [])
-            result["zone_path"]=zone_path; result["zone_thresholds"]=zone_t
-            result["crops"]=[{"crop":(names[k-1] if k-1 < len(names) else "crop {}".format(k)),"threshold":zone_t[k],
-                              "pixels":int(valid_count[k]),"canopy_pct":(100*count[k]/valid_count[k] if valid_count[k] else None)} for k in range(1,n)]
-            result["rest_canopy_pct"]=100*count[0]/valid_count[0] if valid_count[0] else None
-        record=self.write_run_record(cfg, result, out_dir)
-        if record: result["run_record"]=record
+            names = list(cfg.get("zone_names") or [])
+            result["zone_path"] = zone_path
+            result["zone_thresholds"] = zone_t
+            result["crops"] = [{"crop": (names[k - 1] if k - 1 < len(names) else "crop {}".format(k)), "threshold": zone_t[k],
+                                "pixels": int(valid_count[k]), "canopy_pct": (100 * count[k] / valid_count[k] if valid_count[k] else None)} for k in range(1, n)]
+            result["rest_canopy_pct"] = 100 * count[0] / valid_count[0] if valid_count[0] else None
+        record = self.write_run_record(cfg, result, out_dir)
+        if record:
+            result["run_record"] = record
         return result
 
     def _log_findings(self, hist):
@@ -2455,8 +2855,10 @@ class NativePPEEngine:
         shares = finding_shares(hist, 0.30)
         self.log_cb("What PPE found (percent of the plant at 0.30): " + "; ".join("{} {:.2f}%".format(FINDING_NAMES[k], shares[k]) for k in FINDING_CODES if k not in ADD_CODES) +
                     ". Information only; the mask is not changed unless you leave them out.")
-        h = np.asarray(hist[1]); levels = h.size - 1
-        low = h[int(np.ceil(0.25 * levels - 1e-9)):].sum(); high = h[int(np.ceil(0.55 * levels - 1e-9)):].sum()
+        h = np.asarray(hist[1])
+        levels = h.size - 1
+        low = h[int(np.ceil(0.25 * levels - 1e-9)):].sum()
+        high = h[int(np.ceil(0.55 * levels - 1e-9)):].sum()
         return float(shares[1]), float(100.0 * (low - high) / low) if low else 0.0
 
     def prepare_crop_areas(self, cfg):
@@ -2465,69 +2867,101 @@ class NativePPEEngine:
         wins), (2) a preview raster holding vote + 10 x crop number, so that one colour ramp can show a
         different threshold in every area, and (3) for every area a canopy-by-threshold curve from all
         of its pixels. The vote itself is not changed."""
-        vote=safe_gdal_open(cfg["vote_path"])
-        if vote is None: raise ValueError("The vote raster is missing; run PPE again.")
-        self.template=vote; self.width=vote.RasterXSize; self.height=vote.RasterYSize
-        areas=[a for a in (cfg.get("crop_areas") or []) if a.get("wkt")]
-        if not areas: raise ValueError("Draw at least one crop area first.")
-        out_dir=cfg.get("output_dir") or os.path.dirname(cfg["vote_path"]); os.makedirs(out_dir,exist_ok=True)
-        zone_path=os.path.join(out_dir,"ppe_crop_areas.tif"); preview_path=os.path.join(out_dir,"ppe_vote_by_crop.tif")
-        self.progress(5,"Drawing the crop areas on the image grid")
-        zones=self._create_output(zone_path,gdal.GDT_Byte,255); zones.GetRasterBand(1).Fill(0); zones.GetRasterBand(1).SetNoDataValue(255)
-        srs=osr.SpatialReference(); wkt=vote.GetProjection()
-        if wkt: srs.ImportFromWkt(wkt)
-        memory=ogr.GetDriverByName("Memory").CreateDataSource(""); layer=memory.CreateLayer("crops",srs=srs if wkt else None,geom_type=ogr.wkbMultiPolygon)
-        layer.CreateField(ogr.FieldDefn("zone",ogr.OFTInteger))
-        for k in range(len(areas),0,-1):                       # last first, so the crop listed first wins overlaps
-            geometry=ogr.CreateGeometryFromWkt(areas[k-1]["wkt"])
-            if geometry is None or geometry.IsEmpty(): continue
-            feature=ogr.Feature(layer.GetLayerDefn()); feature.SetField("zone",k); feature.SetGeometry(geometry); layer.CreateFeature(feature)
-        gdal.RasterizeLayer(zones,[1],layer,options=["ATTRIBUTE=zone"]); zones.FlushCache()
-        preview=self._create_output(preview_path,gdal.GDT_Float32,NODATA)
-        n=len(areas)+1; levels=1200                            # votes are multiples of 1/24 (1/30 with half-mixture)
-        hist=np.zeros((n,levels+1),np.int64); overlap=0
-        pale_ds=safe_gdal_open(cfg["pale_path"]) if cfg.get("pale_path") and os.path.isfile(cfg["pale_path"]) else None
-        pale_n=np.zeros(n,np.int64); plant_n=np.zeros(n,np.int64)
-        for y in range(0,self.height,512):
-            h=min(512,self.height-y); v=vote.GetRasterBand(1).ReadAsArray(0,y,self.width,h); z=zones.GetRasterBand(1).ReadAsArray(0,y,self.width,h).astype(np.intp)
-            valid=(v != NODATA)&np.isfinite(v)&(v >= 0)&(v <= 1); z=np.where(z == 255,0,z)
-            preview.GetRasterBand(1).WriteArray(np.where(valid,v+10.0*z,NODATA).astype(np.float32),0,y)
-            q=np.rint(v[valid]*levels).astype(np.intp); hist += np.bincount(z[valid]*(levels+1)+q,minlength=n*(levels+1)).reshape(n,levels+1)
+        vote = safe_gdal_open(cfg["vote_path"])
+        if vote is None:
+            raise ValueError("The vote raster is missing; run PPE again.")
+        self.template = vote
+        self.width = vote.RasterXSize
+        self.height = vote.RasterYSize
+        areas = [a for a in (cfg.get("crop_areas") or []) if a.get("wkt")]
+        if not areas:
+            raise ValueError("Draw at least one crop area first.")
+        out_dir = cfg.get("output_dir") or os.path.dirname(cfg["vote_path"])
+        os.makedirs(out_dir, exist_ok=True)
+        zone_path = os.path.join(out_dir, "ppe_crop_areas.tif")
+        preview_path = os.path.join(out_dir, "ppe_vote_by_crop.tif")
+        self.progress(5, "Drawing the crop areas on the image grid")
+        zones = self._create_output(zone_path, gdal.GDT_Byte, 255)
+        zones.GetRasterBand(1).Fill(0)
+        zones.GetRasterBand(1).SetNoDataValue(255)
+        srs = osr.SpatialReference()
+        wkt = vote.GetProjection()
+        if wkt:
+            srs.ImportFromWkt(wkt)
+        memory = ogr.GetDriverByName("Memory").CreateDataSource("")
+        layer = memory.CreateLayer("crops", srs=srs if wkt else None, geom_type=ogr.wkbMultiPolygon)
+        layer.CreateField(ogr.FieldDefn("zone", ogr.OFTInteger))
+        for k in range(len(areas), 0, -1):                       # last first, so the crop listed first wins overlaps
+            geometry = ogr.CreateGeometryFromWkt(areas[k - 1]["wkt"])
+            if geometry is None or geometry.IsEmpty():
+                continue
+            feature = ogr.Feature(layer.GetLayerDefn())
+            feature.SetField("zone", k)
+            feature.SetGeometry(geometry)
+            layer.CreateFeature(feature)
+        gdal.RasterizeLayer(zones, [1], layer, options=["ATTRIBUTE=zone"])
+        zones.FlushCache()
+        preview = self._create_output(preview_path, gdal.GDT_Float32, NODATA)
+        n = len(areas) + 1
+        levels = 1200                            # votes are multiples of 1/24 (1/30 with half-mixture)
+        hist = np.zeros((n, levels + 1), np.int64)
+        pale_ds = safe_gdal_open(cfg["pale_path"]) if cfg.get("pale_path") and os.path.isfile(cfg["pale_path"]) else None
+        pale_n = np.zeros(n, np.int64)
+        plant_n = np.zeros(n, np.int64)
+        for y in range(0, self.height, 512):
+            h = min(512, self.height - y)
+            v = vote.GetRasterBand(1).ReadAsArray(0, y, self.width, h)
+            z = zones.GetRasterBand(1).ReadAsArray(0, y, self.width, h).astype(np.intp)
+            valid = (v != NODATA) & np.isfinite(v) & (v >= 0) & (v <= 1)
+            z = np.where(z == 255, 0, z)
+            preview.GetRasterBand(1).WriteArray(np.where(valid, v + 10.0 * z, NODATA).astype(np.float32), 0, y)
+            q = np.rint(v[valid] * levels).astype(np.intp)
+            hist += np.bincount(z[valid] * (levels + 1) + q, minlength=n * (levels + 1)).reshape(n, levels + 1)
             if pale_ds is not None:
-                plant=valid&(v >= 0.25); p=pale_ds.GetRasterBand(1).ReadAsArray(0,y,self.width,h) == 1
-                plant_n += np.bincount(z[plant],minlength=n); pale_n += np.bincount(z[plant&p],minlength=n)
-            self.progress(10+int(85*(y+h)/self.height),"Preparing the crop preview")
-        preview.FlushCache(); preview=None; zones=None
-        values=np.arange(levels+1)/levels; thresholds=np.round(np.arange(.15,.951,.01),2); curves=[]
+                plant = valid & (v >= 0.25)
+                p = pale_ds.GetRasterBand(1).ReadAsArray(0, y, self.width, h) == 1
+                plant_n += np.bincount(z[plant], minlength=n)
+                pale_n += np.bincount(z[plant & p], minlength=n)
+            self.progress(10 + int(85 * (y + h) / self.height), "Preparing the crop preview")
+        preview.FlushCache()
+        preview = None
+        zones = None
+        values = np.arange(levels + 1) / levels
+        thresholds = np.round(np.arange(.15, .951, .01), 2)
+        curves = []
         for k in range(n):
-            total=hist[k].sum(); above=[int(hist[k][values >= max(0,t-.05)-1e-9].sum()) for t in thresholds]
-            curves.append([(float(t),(100.0*a/total if total else None)) for t,a in zip(thresholds,above)])
-        names=[a.get("name") or "crop {}".format(i+1) for i,a in enumerate(areas)]
-        self.progress(100,"Crop areas ready")
-        return {"zone_path":zone_path,"preview_path":preview_path,"zone_names":names,"zone_pixels":[int(hist[k].sum()) for k in range(n)],
-                "zone_curves":curves,
-                "zone_pale_pct":[(float(100.0*pale_n[k]/plant_n[k]) if plant_n[k] else None) for k in range(n)] if pale_ds is not None else None}
+            total = hist[k].sum()
+            above = [int(hist[k][values >= max(0, t - .05) - 1e-9].sum()) for t in thresholds]
+            curves.append([(float(t), (100.0 * a / total if total else None)) for t, a in zip(thresholds, above)])
+        names = [a.get("name") or "crop {}".format(i + 1) for i, a in enumerate(areas)]
+        self.progress(100, "Crop areas ready")
+        return {"zone_path": zone_path, "preview_path": preview_path, "zone_names": names, "zone_pixels": [int(hist[k].sum()) for k in range(n)],
+                "zone_curves": curves,
+                "zone_pale_pct": [(float(100.0 * pale_n[k] / plant_n[k]) if plant_n[k] else None) for k in range(n)] if pale_ds is not None else None}
 
     def write_run_record(self, cfg, result, out_dir):
         """Save what was run and chosen as ppe_run_record.json (the start of a data catalogue)."""
         try:
-            record={"plugin_version":"4.5.3","written":datetime.now().isoformat(timespec="seconds"),
-                    "source_mode":cfg.get("source_mode"),"source":cfg.get("stacked_path") or cfg.get("folder_path") or cfg.get("bands"),
-                    "field_info":cfg.get("field_info") or {},"suggestion":cfg.get("suggestion") or {},
-                    "final_threshold":result.get("threshold"),"canopy_pct":result.get("canopy_pct"),
-                    "crops":result.get("crops") or [],"rest_of_image_canopy_pct":result.get("rest_canopy_pct"),
-                    "chosen_layers":cfg.get("chosen_layers") or [],"mask_path":result.get("mask_path"),
-                    "pale_plant_pct":cfg.get("pale_plant_pct"),"pale_plant_path":cfg.get("pale_path") or "",
-                    "findings_at_threshold_pct":cfg.get("findings_shares") or {},"left_out_of_mask":list(result.get("left_out") or {}),"added_to_mask":list(result.get("added") or {}) if result.get("added_pixels") else [],
-                    "left_out_pct":result.get("left_out_pct")}
+            record = {"plugin_version": PLUGIN_VERSION, "written": datetime.now().isoformat(timespec="seconds"),
+                      "source_mode": cfg.get("source_mode"), "source": cfg.get("stacked_path") or cfg.get("folder_path") or cfg.get("bands"),
+                      "field_info": cfg.get("field_info") or {}, "suggestion": cfg.get("suggestion") or {},
+                      "final_threshold": result.get("threshold"), "canopy_pct": result.get("canopy_pct"),
+                      "crops": result.get("crops") or [], "rest_of_image_canopy_pct": result.get("rest_canopy_pct"),
+                      "chosen_layers": cfg.get("chosen_layers") or [], "mask_path": result.get("mask_path"),
+                      "pale_plant_pct": cfg.get("pale_plant_pct"), "pale_plant_path": cfg.get("pale_path") or "",
+                      "findings_at_threshold_pct": cfg.get("findings_shares") or {}, "left_out_of_mask": list(result.get("left_out") or {}), "added_to_mask": list(result.get("added") or {}) if result.get("added_pixels") else [],
+                      "left_out_pct": result.get("left_out_pct")}
             if self.template is not None:
-                gt=self.template.GetGeoTransform(); record["image"]={"width":self.width,"height":self.height,"pixel_size":[gt[1],abs(gt[5])],
-                                                                     "crs":(osr.SpatialReference(wkt=self.template.GetProjection()).GetName() if self.template.GetProjection() else "")}
-            path=os.path.join(out_dir,"ppe_run_record.json")
-            with open(path,"w",encoding="utf-8") as handle: json.dump(record,handle,indent=2,default=str)
+                gt = self.template.GetGeoTransform()
+                record["image"] = {"width": self.width, "height": self.height, "pixel_size": [gt[1], abs(gt[5])],
+                                   "crs": (osr.SpatialReference(wkt=self.template.GetProjection()).GetName() if self.template.GetProjection() else "")}
+            path = os.path.join(out_dir, "ppe_run_record.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(record, handle, indent=2, default=str)
             return path
         except Exception as err:
-            self.log_cb("The run record could not be written: {}".format(err)); return ""
+            self.log_cb("The run record could not be written: {}".format(err))
+            return ""
 
     @staticmethod
     def _safe_filename(value):
@@ -2537,98 +2971,152 @@ class NativePPEEngine:
     def _check_mask_grid(self, mask):
         if mask.RasterXSize != self.width or mask.RasterYSize != self.height:
             raise ValueError("Finalized mask dimensions do not match the source imagery.")
-        tolerance = max(1e-10, max(abs(x) for x in self.template.GetGeoTransform())*1e-12)
-        if any(abs(a-b) > tolerance for a,b in zip(mask.GetGeoTransform(), self.template.GetGeoTransform())) or mask.GetProjection() != self.template.GetProjection():
+        tolerance = max(1e-10, max(abs(x) for x in self.template.GetGeoTransform()) * 1e-12)
+        if any(abs(a - b) > tolerance for a, b in zip(mask.GetGeoTransform(), self.template.GetGeoTransform())) or mask.GetProjection() != self.template.GetProjection():
             raise ValueError("Finalized mask CRS or pixel grid does not match the source imagery.")
 
     def export_plant_only(self, cfg):
         """Export original bands and/or all computable VIs with non-plant set to NoData."""
-        started = time.time(); self.progress(2, "Validating source imagery and finalized mask"); self._resolve(cfg)
+        started = time.time()
+        self.progress(2, "Validating source imagery and finalized mask")
+        self._resolve(cfg)
         mask = safe_gdal_open(cfg.get("mask_path", ""))
-        if mask is None: raise ValueError("The finalized plant mask is missing or unreadable.")
+        if mask is None:
+            raise ValueError("The finalized plant mask is missing or unreadable.")
         self._check_mask_grid(mask)
-        export_root = os.path.abspath(os.path.expanduser(cfg["export_dir"])); os.makedirs(export_root, exist_ok=True)
-        action = cfg.get("action", "export_all"); do_bands = action in ("export_bands", "export_all"); do_vis = action in ("export_vis", "export_all")
-        outputs = {}; raw_entries = []; raw_metadata = {}
+        export_root = os.path.abspath(os.path.expanduser(cfg["export_dir"]))
+        os.makedirs(export_root, exist_ok=True)
+        action = cfg.get("action", "export_all")
+        do_bands = action in ("export_bands", "export_all")
+        do_vis = action in ("export_vis", "export_all")
+        outputs = {}
+        raw_entries = []
+        raw_metadata = {}
         if do_bands:
-            raw_dir = os.path.join(export_root, "plant_only_bands"); os.makedirs(raw_dir, exist_ok=True)
+            raw_dir = os.path.join(export_root, "plant_only_bands")
+            os.makedirs(raw_dir, exist_ok=True)
             if cfg.get("source_mode") == "stacked":
-                source_path = cfg["stacked_path"]; source = safe_gdal_open(source_path); canonical = {band:name for name, (path,band) in self.sources.items() if os.path.abspath(path) == os.path.abspath(source_path)}
-                wavelengths = dataset_wavelengths(source, cfg) if cfg.get("ortho_type") == "hsi" or source.RasterCount > 15 else [None]*source.RasterCount
-                for index in range(1, source.RasterCount+1):
+                source_path = cfg["stacked_path"]
+                source = safe_gdal_open(source_path)
+                canonical = {band: name for name, (path, band) in self.sources.items() if os.path.abspath(path) == os.path.abspath(source_path)}
+                wavelengths = dataset_wavelengths(source, cfg) if cfg.get("ortho_type") == "hsi" or source.RasterCount > 15 else [None] * source.RasterCount
+                for index in range(1, source.RasterCount + 1):
                     description = source.GetRasterBand(index).GetDescription()
-                    wavelength = wavelengths[index-1] if index <= len(wavelengths) else None
+                    wavelength = wavelengths[index - 1] if index <= len(wavelengths) else None
                     if wavelength is not None:
                         name = "band_{:03d}_{:g}nm".format(index, wavelength)
                     else:
                         name = canonical.get(index) or description or "band_{:03d}".format(index)
                     raw_entries.append((self._safe_filename(name), source, index))
             else:
-                for name, (path,index) in self.sources.items(): raw_entries.append((name, self.datasets[name], index))
-            used = set(); normalized = []
+                for name, (path, index) in self.sources.items():
+                    raw_entries.append((name, self.datasets[name], index))
+            used = set()
+            normalized = []
             for name, source, index in raw_entries:
-                base=name; suffix=2
-                while name in used: name="{}_{}".format(base,suffix); suffix+=1
-                used.add(name); path=os.path.join(raw_dir,"{}_plant_only.tif".format(name)); out=self._create_output(path,gdal.GDT_Float32,NODATA); out.GetRasterBand(1).SetDescription(name); normalized.append((name,source,index,out,path))
-                raw_metadata[name] = {"source_band": index, "source_description": source.GetRasterBand(index).GetDescription() or None, "wavelength_nm": (wavelengths[index-1] if cfg.get("source_mode") == "stacked" and index <= len(wavelengths) else None)}
+                base = name
+                suffix = 2
+                while name in used:
+                    name = "{}_{}".format(base, suffix)
+                    suffix += 1
+                used.add(name)
+                path = os.path.join(raw_dir, "{}_plant_only.tif".format(name))
+                out = self._create_output(path, gdal.GDT_Float32, NODATA)
+                out.GetRasterBand(1).SetDescription(name)
+                normalized.append((name, source, index, out, path))
+                raw_metadata[name] = {"source_band": index, "source_description": source.GetRasterBand(index).GetDescription() or None, "wavelength_nm": (wavelengths[index - 1] if cfg.get("source_mode") == "stacked" and index <= len(wavelengths) else None)}
             raw_entries = normalized
         vi_entries = []
         if do_vis:
-            vi_dir = os.path.join(export_root, "plant_only_vis"); os.makedirs(vi_dir, exist_ok=True)
+            vi_dir = os.path.join(export_root, "plant_only_vis")
+            os.makedirs(vi_dir, exist_ok=True)
             available = [name for name, meta in VI_META.items() if all(band in self.sources for band in meta[0])]
             for name in available:
-                path=os.path.join(vi_dir,"{}_plant_only.tif".format(name)); out=self._create_output(path,gdal.GDT_Float32,NODATA); out.GetRasterBand(1).SetDescription(name); vi_entries.append((name,out,path))
-        total_products = len(raw_entries)+len(vi_entries)
-        if total_products == 0: raise ValueError("No requested plant-only products can be exported from the detected bands.")
-        for y in range(0,self.height,256):
-            h=min(256,self.height-y); labels=mask.GetRasterBand(1).ReadAsArray(0,y,self.width,h); plant=labels==1
+                path = os.path.join(vi_dir, "{}_plant_only.tif".format(name))
+                out = self._create_output(path, gdal.GDT_Float32, NODATA)
+                out.GetRasterBand(1).SetDescription(name)
+                vi_entries.append((name, out, path))
+        total_products = len(raw_entries) + len(vi_entries)
+        if total_products == 0:
+            raise ValueError("No requested plant-only products can be exported from the detected bands.")
+        for y in range(0, self.height, 256):
+            h = min(256, self.height - y)
+            labels = mask.GetRasterBand(1).ReadAsArray(0, y, self.width, h)
+            plant = labels == 1
             if do_bands:
-                for _name,source,index,out,_path in raw_entries:
-                    values=source.GetRasterBand(index).ReadAsArray(0,y,self.width,h).astype(np.float32); source_nodata=source.GetRasterBand(index).GetNoDataValue(); good=plant&np.isfinite(values)
-                    if source_nodata is not None: good &= values != source_nodata
-                    out.GetRasterBand(1).WriteArray(np.where(good,values,NODATA).astype(np.float32),0,y)
+                for _name, source, index, out, _path in raw_entries:
+                    values = source.GetRasterBand(index).ReadAsArray(0, y, self.width, h).astype(np.float32)
+                    source_nodata = source.GetRasterBand(index).GetNoDataValue()
+                    good = plant & np.isfinite(values)
+                    if source_nodata is not None:
+                        good &= values != source_nodata
+                    out.GetRasterBand(1).WriteArray(np.where(good, values, NODATA).astype(np.float32), 0, y)
             if do_vis:
-                bands=self._read_bands(list(self.sources),y=y,h=h); valid=self._valid(bands); keep=plant&valid
-                for name,out,_path in vi_entries:
-                    values=compute_vi(name,bands); out.GetRasterBand(1).WriteArray(np.where(keep&np.isfinite(values),values,NODATA).astype(np.float32),0,y)
-            self.progress(5+int(92*(y+h)/self.height),"Exporting {} plant-only GeoTIFFs".format(total_products))
-        for name,_source,_index,out,path in raw_entries: out.FlushCache(); outputs["band:"+name]=path
-        for name,out,path in vi_entries: out.FlushCache(); outputs["vi:"+name]=path
-        raw_entries=[]; vi_entries=[]
-        manifest={"export_dir":export_root,"mask_path":cfg["mask_path"],"soil_encoding":"NoData ({})".format(NODATA),"raw_band_metadata":raw_metadata,"products":outputs,"export_count":len(outputs),"elapsed_seconds":time.time()-started}
-        manifest_path=os.path.join(export_root,"ppe_plant_only_manifest.json")
-        with open(manifest_path,"w",encoding="utf-8") as handle: json.dump(manifest,handle,indent=2)
-        manifest["manifest_path"]=manifest_path; self.progress(100,"Plant-only GeoTIFF export complete"); return manifest
+                bands = self._read_bands(list(self.sources), y=y, h=h)
+                valid = self._valid(bands)
+                keep = plant & valid
+                for name, out, _path in vi_entries:
+                    values = compute_vi(name, bands)
+                    out.GetRasterBand(1).WriteArray(np.where(keep & np.isfinite(values), values, NODATA).astype(np.float32), 0, y)
+            self.progress(5 + int(92 * (y + h) / self.height), "Exporting {} plant-only GeoTIFFs".format(total_products))
+        for name, _source, _index, out, path in raw_entries:
+            out.FlushCache()
+            outputs["band:" + name] = path
+        for name, out, path in vi_entries:
+            out.FlushCache()
+            outputs["vi:" + name] = path
+        raw_entries = []
+        vi_entries = []
+        manifest = {"export_dir": export_root, "mask_path": cfg["mask_path"], "soil_encoding": "NoData ({})".format(NODATA), "raw_band_metadata": raw_metadata, "products": outputs, "export_count": len(outputs), "elapsed_seconds": time.time() - started}
+        manifest_path = os.path.join(export_root, "ppe_plant_only_manifest.json")
+        with open(manifest_path, "w", encoding="utf-8") as handle:
+            json.dump(manifest, handle, indent=2)
+        manifest["manifest_path"] = manifest_path
+        self.progress(100, "Plant-only GeoTIFF export complete")
+        return manifest
 
     @staticmethod
     def _summary(values):
         """Statistics of the plant pixels of one plot (percentiles as R's default, type 7)."""
-        values = np.asarray(values, dtype=float); values = values[np.isfinite(values)]
+        values = np.asarray(values, dtype=float)
+        values = values[np.isfinite(values)]
         if values.size == 0:
-            out = {name: None for name in STAT_NAMES}; out["pixel_count"] = 0; return out
-        mean = float(np.mean(values)); sd = float(np.std(values, ddof=1)) if values.size > 1 else 0.0
+            out = {name: None for name in STAT_NAMES}
+            out["pixel_count"] = 0
+            return out
+        mean = float(np.mean(values))
+        sd = float(np.std(values, ddof=1)) if values.size > 1 else 0.0
         p = np.percentile(values, [0, 10, 25, 50, 75, 90, 100])
         return {"pixel_count": int(values.size), "mean": mean, "median": float(p[3]), "sd": sd,
-                "cv_pct": (100.0*sd/abs(mean) if abs(mean) > 1e-12 else None),
+                "cv_pct": (100.0 * sd / abs(mean) if abs(mean) > 1e-12 else None),
                 "min": float(p[0]), "p10": float(p[1]), "q25": float(p[2]), "q75": float(p[4]), "p90": float(p[5]), "max": float(p[6])}
 
     def _aoi_window(self, geometry):
         envelope = geometry.GetEnvelope()  # min x, max x, min y, max y
         inverse = gdal.InvGeoTransform(self.template.GetGeoTransform())
         corners = [gdal.ApplyGeoTransform(inverse, x, y) for x in (envelope[0], envelope[1]) for y in (envelope[2], envelope[3])]
-        x0=max(0,int(math.floor(min(point[0] for point in corners)))); x1=min(self.width,int(math.ceil(max(point[0] for point in corners))))
-        y0=max(0,int(math.floor(min(point[1] for point in corners)))); y1=min(self.height,int(math.ceil(max(point[1] for point in corners))))
-        return x0, y0, max(0, x1-x0), max(0, y1-y0)
+        x0 = max(0, int(math.floor(min(point[0] for point in corners))))
+        x1 = min(self.width, int(math.ceil(max(point[0] for point in corners))))
+        y0 = max(0, int(math.floor(min(point[1] for point in corners))))
+        y1 = min(self.height, int(math.ceil(max(point[1] for point in corners))))
+        return x0, y0, max(0, x1 - x0), max(0, y1 - y0)
 
     def _rasterize_aoi(self, geometry, x, y, width, height):
         memory = gdal.GetDriverByName("MEM").Create("", width, height, 1, gdal.GDT_Byte)
-        gt = self.template.GetGeoTransform(); origin = gdal.ApplyGeoTransform(gt, x, y)
-        memory.SetGeoTransform((origin[0], gt[1], gt[2], origin[1], gt[4], gt[5])); memory.SetProjection(self.template.GetProjection())
-        wkt = self.template.GetProjection(); spatial_ref = None
+        gt = self.template.GetGeoTransform()
+        origin = gdal.ApplyGeoTransform(gt, x, y)
+        memory.SetGeoTransform((origin[0], gt[1], gt[2], origin[1], gt[4], gt[5]))
+        memory.SetProjection(self.template.GetProjection())
+        wkt = self.template.GetProjection()
+        spatial_ref = None
         if wkt:
-            spatial_ref = osr.SpatialReference(); spatial_ref.ImportFromWkt(wkt)
-        vector = ogr.GetDriverByName("Memory").CreateDataSource(""); layer = vector.CreateLayer("aoi", srs=spatial_ref, geom_type=geometry.GetGeometryType())
-        feature = ogr.Feature(layer.GetLayerDefn()); feature.SetGeometry(geometry); layer.CreateFeature(feature)
+            spatial_ref = osr.SpatialReference()
+            spatial_ref.ImportFromWkt(wkt)
+        vector = ogr.GetDriverByName("Memory").CreateDataSource("")
+        layer = vector.CreateLayer("aoi", srs=spatial_ref, geom_type=geometry.GetGeometryType())
+        feature = ogr.Feature(layer.GetLayerDefn())
+        feature.SetGeometry(geometry)
+        layer.CreateFeature(feature)
         gdal.RasterizeLayer(memory, [1], layer, burn_values=[1], options=["ALL_TOUCHED=TRUE"])
         return memory.GetRasterBand(1).ReadAsArray().astype(bool)
 
@@ -2642,96 +3130,131 @@ class NativePPEEngine:
                                    Q25, Q75, P90 and max of the plant pixels.
         A pixel belongs to a plot when the polygon touches it.
         """
-        started=time.time(); self.progress(2,"Opening imagery, plant mask, and plot boundaries"); self._resolve(cfg)
-        mask=safe_gdal_open(cfg.get("mask_path", ""))
-        if mask is None: raise ValueError("The finalized plant mask is missing or unreadable.")
+        started = time.time()
+        self.progress(2, "Opening imagery, plant mask, and plot boundaries")
+        self._resolve(cfg)
+        mask = safe_gdal_open(cfg.get("mask_path", ""))
+        if mask is None:
+            raise ValueError("The finalized plant mask is missing or unreadable.")
         self._check_mask_grid(mask)
         vector, layer, info = open_plot_file(cfg.get("aoi_path", ""), cfg.get("aoi_layer") or None)
-        if info["note"]: self.log_cb("Plot file: {}.".format(info["note"]))
+        if info["note"]:
+            self.log_cb("Plot file: {}.".format(info["note"]))
         self.log_cb("Plot layer '{}': {} polygons; CRS {}.".format(info["layer"], info["features"], info["crs_name"] or "none"))
-        transform=_plot_transform(layer, self.template.GetProjection())
+        transform = _plot_transform(layer, self.template.GetProjection())
         if layer.GetSpatialRef() is None:
             self.log_cb("The plot file has no coordinate system; its coordinates are assumed to match the image.")
-        pixel_area=_pixel_area_m2(self.template)
-        zone_names=list(cfg.get("zone_names") or []); zone_t=list(cfg.get("zone_thresholds") or [])
-        zones=safe_gdal_open(cfg.get("zone_path") or "") if zone_names else None
-        if zones is not None and (zones.RasterXSize != self.width or zones.RasterYSize != self.height): zones=None
-        pale=safe_gdal_open(cfg["pale_path"]) if cfg.get("pale_path") and os.path.isfile(cfg["pale_path"]) else None
-        if pale is not None and (pale.RasterXSize != self.width or pale.RasterYSize != self.height): pale=None
-        field_info=cfg.get("field_info") or {}
-        info_columns={key:field_info.get(key,"") for key in ("growth_stage","planting_date","flight_date","irrigation","weeds")}
+        pixel_area = _pixel_area_m2(self.template)
+        zone_names = list(cfg.get("zone_names") or [])
+        zone_t = list(cfg.get("zone_thresholds") or [])
+        zones = safe_gdal_open(cfg.get("zone_path") or "") if zone_names else None
+        if zones is not None and (zones.RasterXSize != self.width or zones.RasterYSize != self.height):
+            zones = None
+        pale = safe_gdal_open(cfg["pale_path"]) if cfg.get("pale_path") and os.path.isfile(cfg["pale_path"]) else None
+        if pale is not None and (pale.RasterXSize != self.width or pale.RasterYSize != self.height):
+            pale = None
+        field_info = cfg.get("field_info") or {}
+        info_columns = {key: field_info.get(key, "") for key in ("growth_stage", "planting_date", "flight_date", "irrigation", "weeds")}
         is_hsi = cfg.get("ortho_type") == "hsi" or (cfg.get("source_mode") == "stacked" and gdal.Open(cfg["stacked_path"]).RasterCount > 15)
-        raw=[]
+        raw = []
         if cfg.get("source_mode") == "stacked":
-            source=gdal.Open(cfg["stacked_path"]); wavelengths=dataset_wavelengths(source,cfg) if is_hsi else [None]*source.RasterCount
-            canonical={band:name for name,(path,band) in self.sources.items() if os.path.abspath(path)==os.path.abspath(cfg["stacked_path"])}
-            for index in range(1,source.RasterCount+1):
-                wavelength=wavelengths[index-1] if index <= len(wavelengths) else None
-                name=("band_{:03d}_{:g}nm".format(index,wavelength) if wavelength is not None else canonical.get(index) or source.GetRasterBand(index).GetDescription() or "band_{:03d}".format(index))
-                raw.append((self._safe_filename(name),source,index,wavelength))
+            source = gdal.Open(cfg["stacked_path"])
+            wavelengths = dataset_wavelengths(source, cfg) if is_hsi else [None] * source.RasterCount
+            canonical = {band: name for name, (path, band) in self.sources.items() if os.path.abspath(path) == os.path.abspath(cfg["stacked_path"])}
+            for index in range(1, source.RasterCount + 1):
+                wavelength = wavelengths[index - 1] if index <= len(wavelengths) else None
+                name = ("band_{:03d}_{:g}nm".format(index, wavelength) if wavelength is not None else canonical.get(index) or source.GetRasterBand(index).GetDescription() or "band_{:03d}".format(index))
+                raw.append((self._safe_filename(name), source, index, wavelength))
         else:
-            for name,(path,index) in self.sources.items(): raw.append((name,self.datasets[name],index,None))
-        vis=[] if is_hsi else [name for name,meta in VI_META.items() if all(band in self.sources for band in meta[0])]
-        id_field=cfg.get("aoi_id_field") or ""
-        rows=[]; canopy_rows=[]; total=max(1,info["features"]); plots=0; outside=0; position=0
+            for name, (path, index) in self.sources.items():
+                raw.append((name, self.datasets[name], index, None))
+        vis = [] if is_hsi else [name for name, meta in VI_META.items() if all(band in self.sources for band in meta[0])]
+        id_field = cfg.get("aoi_id_field") or ""
+        rows = []
+        canopy_rows = []
+        total = max(1, info["features"])
+        plots = 0
+        outside = 0
+        position = 0
         layer.ResetReading()
         for feature in layer:
-            geometry=_plot_geometry(feature, transform)
-            if geometry is None: continue
+            geometry = _plot_geometry(feature, transform)
+            if geometry is None:
+                continue
             position += 1
-            plot_id=feature.GetField(id_field) if id_field and feature.GetFieldIndex(id_field)>=0 else feature.GetFID()
-            if isinstance(plot_id,float) and plot_id.is_integer(): plot_id=int(plot_id)   # KML and GeoJSON often store 401 as 401.0
-            base={"plot_id":plot_id,"feature_id":feature.GetFID(),"crop":"","threshold":(cfg.get("threshold") if cfg.get("threshold") is not None else ""),
-                  "plot_pixels":0,"plant_pixels":0,"canopy_pct":None,"plot_area_m2":None,"plant_area_m2":None}
-            x,y,width,height=self._aoi_window(geometry)
+            plot_id = feature.GetField(id_field) if id_field and feature.GetFieldIndex(id_field) >= 0 else feature.GetFID()
+            if isinstance(plot_id, float) and plot_id.is_integer():
+                plot_id = int(plot_id)   # KML and GeoJSON often store 401 as 401.0
+            base = {"plot_id": plot_id, "feature_id": feature.GetFID(), "crop": "", "threshold": (cfg.get("threshold") if cfg.get("threshold") is not None else ""),
+                    "plot_pixels": 0, "plant_pixels": 0, "canopy_pct": None, "plot_area_m2": None, "plant_area_m2": None}
+            x, y, width, height = self._aoi_window(geometry)
             if width < 1 or height < 1:
-                outside += 1; canopy_rows.append(base)
-                self.log_cb("Plot {} lies outside the image.".format(plot_id)); continue
-            inside=self._rasterize_aoi(geometry,x,y,width,height)
-            m=mask.GetRasterBand(1).ReadAsArray(x,y,width,height)
-            valid=inside&((m==0)|(m==1)); keep=valid&(m==1)
+                outside += 1
+                canopy_rows.append(base)
+                self.log_cb("Plot {} lies outside the image.".format(plot_id))
+                continue
+            inside = self._rasterize_aoi(geometry, x, y, width, height)
+            m = mask.GetRasterBand(1).ReadAsArray(x, y, width, height)
+            valid = inside & ((m == 0) | (m == 1))
+            keep = valid & (m == 1)
             if zones is not None:                                   # the crop area holding most of the plot
-                z=zones.GetRasterBand(1).ReadAsArray(x,y,width,height)[inside]; z=z[(z > 0)&(z <= len(zone_names))]
+                z = zones.GetRasterBand(1).ReadAsArray(x, y, width, height)[inside]
+                z = z[(z > 0) & (z <= len(zone_names))]
                 if z.size:
-                    k=int(np.bincount(z).argmax()); base["crop"]=zone_names[k-1]
-                    if k < len(zone_t): base["threshold"]=zone_t[k]
-            n_valid=int(valid.sum()); n_plant=int(keep.sum())
+                    k = int(np.bincount(z).argmax())
+                    base["crop"] = zone_names[k - 1]
+                    if k < len(zone_t):
+                        base["threshold"] = zone_t[k]
+            n_valid = int(valid.sum())
+            n_plant = int(keep.sum())
             if pale is not None:                                    # what PPE found in the plot, whatever the threshold
-                f=pale.GetRasterBand(1).ReadAsArray(x,y,width,height)
-                for code,column in FINDING_COLUMNS.items():
-                    base[column]=100.0*int(((f==code)&valid).sum())/n_valid if n_valid else None
-            base["left_out_of_mask"]="; ".join(cfg.get("left_out") or [])
-            base["added_to_mask"]="; ".join(cfg.get("added") or [])
-            base.update(plot_pixels=n_valid, plant_pixels=n_plant, canopy_pct=(100.0*n_plant/n_valid if n_valid else None),
-                        plot_area_m2=(n_valid*pixel_area if pixel_area else None), plant_area_m2=(n_plant*pixel_area if pixel_area else None))
-            canopy_rows.append(base); plots += 1
-            for name,source,index,wavelength in raw:
-                values=source.GetRasterBand(index).ReadAsArray(x,y,width,height).astype(float); nodata=source.GetRasterBand(index).GetNoDataValue(); good=keep&np.isfinite(values)
-                if nodata is not None: good &= values != nodata
-                rows.append(dict(base,variable=name,variable_type="raw_band",source_band=index,wavelength_nm=wavelength,**self._summary(values[good])))
+                f = pale.GetRasterBand(1).ReadAsArray(x, y, width, height)
+                for code, column in FINDING_COLUMNS.items():
+                    base[column] = 100.0 * int(((f == code) & valid).sum()) / n_valid if n_valid else None
+            base["left_out_of_mask"] = "; ".join(cfg.get("left_out") or [])
+            base["added_to_mask"] = "; ".join(cfg.get("added") or [])
+            base.update(plot_pixels=n_valid, plant_pixels=n_plant, canopy_pct=(100.0 * n_plant / n_valid if n_valid else None),
+                        plot_area_m2=(n_valid * pixel_area if pixel_area else None), plant_area_m2=(n_plant * pixel_area if pixel_area else None))
+            canopy_rows.append(base)
+            plots += 1
+            for name, source, index, wavelength in raw:
+                values = source.GetRasterBand(index).ReadAsArray(x, y, width, height).astype(float)
+                nodata = source.GetRasterBand(index).GetNoDataValue()
+                good = keep & np.isfinite(values)
+                if nodata is not None:
+                    good &= values != nodata
+                rows.append(dict(base, variable=name, variable_type="raw_band", source_band=index, wavelength_nm=wavelength, **self._summary(values[good])))
             if vis:
-                bands=self._read_bands(list(self.sources),x=x,y=y,w=width,h=height); vi_keep=keep&self._valid(bands)
+                bands = self._read_bands(list(self.sources), x=x, y=y, w=width, h=height)
+                vi_keep = keep & self._valid(bands)
                 for name in vis:
-                    values=compute_vi(name,bands)
-                    rows.append(dict(base,variable=name,variable_type="vegetation_index",source_band=None,wavelength_nm=None,**self._summary(values[vi_keep&np.isfinite(values)])))
-            self.progress(5+int(90*position/total),"Plot statistics: plot {} of {}".format(position,total))
+                    values = compute_vi(name, bands)
+                    rows.append(dict(base, variable=name, variable_type="vegetation_index", source_band=None, wavelength_nm=None, **self._summary(values[vi_keep & np.isfinite(values)])))
+            self.progress(5 + int(90 * position / total), "Plot statistics: plot {} of {}".format(position, total))
         if not plots:
             raise ValueError("None of the {} plots overlap the image. Check that the plot file belongs to this field and has the "
                              "right coordinate system (for a Shapefile, its .prj file).".format(position))
-        export_root=os.path.abspath(os.path.expanduser(cfg["export_dir"])); os.makedirs(export_root,exist_ok=True)
-        for row in canopy_rows: row.update(info_columns)
-        canopy_fields=("plot_id","feature_id","crop","threshold","plot_pixels","plant_pixels","canopy_pct","plot_area_m2","plant_area_m2")+(tuple(FINDING_COLUMNS.values()) if pale is not None else ())+("left_out_of_mask","added_to_mask")+tuple(info_columns)
-        canopy_path=os.path.join(export_root,"ppe_plot_canopy.csv")
-        with open(canopy_path,"w",newline="",encoding="utf-8") as handle:
-            writer=csv.DictWriter(handle,fieldnames=canopy_fields); writer.writeheader(); writer.writerows(canopy_rows)
-        path=os.path.join(export_root,"ppe_plot_statistics.csv")
-        fields=canopy_fields[:9]+("variable","variable_type","source_band","wavelength_nm")+STAT_NAMES
-        with open(path,"w",newline="",encoding="utf-8") as handle:
-            writer=csv.DictWriter(handle,fieldnames=fields,extrasaction="ignore"); writer.writeheader(); writer.writerows(rows)
-        record=cfg.get("run_record") or ""
+        export_root = os.path.abspath(os.path.expanduser(cfg["export_dir"]))
+        os.makedirs(export_root, exist_ok=True)
+        for row in canopy_rows:
+            row.update(info_columns)
+        canopy_fields = ("plot_id", "feature_id", "crop", "threshold", "plot_pixels", "plant_pixels", "canopy_pct", "plot_area_m2", "plant_area_m2") + (tuple(FINDING_COLUMNS.values()) if pale is not None else ()) + ("left_out_of_mask", "added_to_mask") + tuple(info_columns)
+        canopy_path = os.path.join(export_root, "ppe_plot_canopy.csv")
+        with open(canopy_path, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=canopy_fields)
+            writer.writeheader()
+            writer.writerows(canopy_rows)
+        path = os.path.join(export_root, "ppe_plot_statistics.csv")
+        fields = canopy_fields[:9] + ("variable", "variable_type", "source_band", "wavelength_nm") + STAT_NAMES
+        with open(path, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)
+        record = cfg.get("run_record") or ""
         if record and os.path.isfile(record):
             import shutil
-            shutil.copyfile(record,os.path.join(export_root,"ppe_run_record.json"))
-        if outside: self.log_cb("{} of {} plots lie outside the image; they are listed in ppe_plot_canopy.csv with 0 pixels.".format(outside, position))
-        self.progress(100,"Plot statistics export complete")
-        return {"aoi_csv":path,"canopy_csv":canopy_path,"export_dir":export_root,"plot_count":plots,"plots_outside":outside,"row_count":len(rows),"elapsed_seconds":time.time()-started}
+            shutil.copyfile(record, os.path.join(export_root, "ppe_run_record.json"))
+        if outside:
+            self.log_cb("{} of {} plots lie outside the image; they are listed in ppe_plot_canopy.csv with 0 pixels.".format(outside, position))
+        self.progress(100, "Plot statistics export complete")
+        return {"aoi_csv": path, "canopy_csv": canopy_path, "export_dir": export_root, "plot_count": plots, "plots_outside": outside, "row_count": len(rows), "elapsed_seconds": time.time() - started}

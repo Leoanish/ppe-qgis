@@ -142,7 +142,8 @@ class PPEPlugin:
         ids = {}
         for role, layer in list(self.layers.items()):
             try:
-                if layer is not None: ids[layer.id()] = role
+                if layer is not None:
+                    ids[layer.id()] = role
             except RuntimeError:          # the layer object is already gone
                 self.layers[role] = None
         return ids
@@ -296,7 +297,8 @@ class PPEPlugin:
 
     def _start_goal_job(self, config):
         """Plant count or training data (4.3 goals): run in the background like an export."""
-        cfg = self.dock.build_config("run"); cfg.update(config)
+        cfg = self.dock.build_config("run")
+        cfg.update(config)
         self.current_action = config["action"]
         self.dock.set_running(True, self.current_action)
         self._start_process(cfg)
@@ -316,7 +318,8 @@ class PPEPlugin:
     def _job_succeeded(self, result):
         if self.current_action == "batch_run":
             self.dock.set_batch(result)
-            done = sum(1 for e in result.get("items", []) if e.get("status") == "done"); n = len(result.get("items", []))
+            done = sum(1 for e in result.get("items", []) if e.get("status") == "done")
+            n = len(result.get("items", []))
             check = sum(1 for e in result.get("items", []) if e.get("warnings"))
             self._message("Batch done: {} of {} images{}. Review them on the Batch tab.".format(done, n, "; {} to check first".format(check) if check else ""),
                           Qgis.Success if done == n else Qgis.Warning)
@@ -331,7 +334,8 @@ class PPEPlugin:
                 try:
                     from .layer_utils import show_plant_points
                     with self._own_changes():
-                        if show_plant_points(result["points_path"]) is not None: self.dock.plants_shown()
+                        if show_plant_points(result["points_path"]) is not None:
+                            self.dock.plants_shown()
                 except Exception as exc:
                     self.dock.append_log("Could not show the plant points: {}".format(exc))
             self._message("Counted {} plants.".format(result.get("plants", 0)), Qgis.Success)
@@ -341,14 +345,16 @@ class PPEPlugin:
             try:
                 from .layer_utils import show_label_points
                 with self._own_changes():
-                    if show_label_points(result["points_path"]) is not None: self.dock.labels_shown()
+                    if show_label_points(result["points_path"]) is not None:
+                        self.dock.labels_shown()
                     self.dock.show_buffers()          # filled buffers, following the slider
             except Exception as exc:
                 self.dock.append_log("Could not show the label points: {}".format(exc))
             self._message("Label points: {} plant and {} soil. Check them on the map.".format(result.get("plant_points", 0), result.get("soil_points", 0)), Qgis.Success)
             return
         if self.current_action == "labels_buffers":
-            with self._own_changes(): self.dock.set_buffers_shown(result)
+            with self._own_changes():
+                self.dock.set_buffers_shown(result)
             return
         if self.current_action == "labels_write":
             self.dock.set_labels_written(result)
@@ -412,10 +418,14 @@ class PPEPlugin:
                 Qgis.Info,
             )
         checks = []
-        if result.get("one_class_warning") == "soil": checks.append("the image looks like bare soil only")
-        elif result.get("one_class_warning") == "plant": checks.append("the image looks like closed canopy only")
-        if result.get("weak_green_warning"): checks.append("plants are barely greener than soil")
-        if result.get("weak_split_warning"): checks.append("plants and ground do not separate clearly (separation {:.2f})".format(float(result.get("split_separability", 0.0))))
+        if result.get("one_class_warning") == "soil":
+            checks.append("the image looks like bare soil only")
+        elif result.get("one_class_warning") == "plant":
+            checks.append("the image looks like closed canopy only")
+        if result.get("weak_green_warning"):
+            checks.append("plants are barely greener than soil")
+        if result.get("weak_split_warning"):
+            checks.append("plants and ground do not separate clearly (separation {:.2f})".format(float(result.get("split_separability", 0.0))))
         if checks:
             self.iface.messageBar().pushMessage(
                 "Plant Pixel Extractor", "Mask generated, but check it closely: {}.".format("; ".join(checks)),

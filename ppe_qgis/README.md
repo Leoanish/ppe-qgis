@@ -184,6 +184,28 @@ It needs a NIR band. On camera RGB images plant and soil differ too little in co
 
 With crop rows found, the plant counter measures the plant spacing along the rows from confident plants only (`confident_range`: median area x/÷ exp(2 sigma) of the image's single plants, sigma from the MAD of log areas, within x0.4-x2.5; gaps kept only between two neighbouring confident plants, `spacing_gaps`; gaps over a missing plant divided by the number of steps; at least 20 gaps) or takes the spacing the user types, and splits every *check* patch into round(length along the row / spacing) plants, status *auto split* (green, orange ring), field `split_of` = the original point (`plant_count.auto_split`). A patch shorter than 1.5 spacings stays *check*. On PhenoBench (61 check patches, spacing pooled per date) the spacing from all plants was 19.2 / 17.7 / 16.3 cm and from confident plants 20.7 / 19.5 / 20.6 cm (true 22.0 / 20.2 / 21.2); wrong plants in check patches 52 (not split) / 27 (all plants) / 22 (confident); crop plants with exactly one point over all 541 plants 56.4 / 61.2 / 61.6 %; from a single 1 m image the spacing was too rough to help, hence the 20-gap minimum. *⊕ Merge* makes a split patch one plant again (or two clicked points one plant); *✂ Split* on a split point splits only its part (`split_part`). The panel states the spacing, the split length (1.5 × spacing) and each split patch's length; split points are labelled 'part/total' (`SPLIT_LABEL_EXPRESSION`), check points '#id'. Showing the plant points unticks the other PPE layers (`show_only_image_and_points`). PPE opens on the Plant mask goal. The summary has `of_which_split_by_ppe`, `plant_spacing_cm` and `split_longer_than_cm`.
 
+## 4.11.0: weeds are never labelled as plant
+
+- **Create labels** never puts a plant point or a plant buffer on a weed of What PPE found. With **Label weeds as
+  a third class** (on by default) weeds get their own points (label 2, violet; about a tenth of the points, on top),
+  spread by cLHS like the others; **Weed ↔ plant** and **＋ Weed** fix them on the map. Untick it for a plant / soil
+  model: weeds then get no label.
+- **Use the finalized mask on the map (with your weed review)**: the labels come from the mask you finalized in the
+  Plant mask goal, with the weeds you reviewed, instead of a new run.
+- **Training data** marks weeds unsure (255), never plant.
+- Review weeds on the map refuses a piece over 3 × a typical plant: it holds crop too.
+- Label buffers search at most 64 pixels around a point (on 1 mm images 50 cm was 500 pixels and took minutes per point).
+
+PhenoBench, the 12 weediest images, 200 points each:
+
+| | Plant points on weeds | Weed points on weeds |
+|---|---|---|
+| Before (4.9) | 34.3 % | – |
+| 4.11, PPE's weeds only | 34.0 % | 20 of 20 |
+| 4.11, weeds reviewed on the map (76 clicks) | 18.3 % | 194 of 240 |
+
+The rest of the plant points on weeds sit on weeds joined to crop plants, which no piece-by-piece review can split.
+
 ## 4.10.0: weeds in What PPE found, reviewed on the map
 
 After every run PPE runs the plant counter behind the scenes at the suggested threshold (crop rows, plant

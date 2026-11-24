@@ -101,7 +101,7 @@ class FrameworkTests(unittest.TestCase):
         for detail in result["layer_details"]:
             self.assertEqual(tuple(detail["methods"]), METHOD_NAMES)
         self.assertEqual(result["n_voters"], MAX_LAYERS * len(METHOD_NAMES))
-        self.assertEqual(result["ppe_version"], "native-4.5.3")
+        from ppe_qgis.version import PLUGIN_VERSION; self.assertEqual(result["ppe_version"], "native-" + PLUGIN_VERSION)
         self.assertAlmostEqual(applied["canopy_pct"], 100 * plant.mean(), delta=1.5)
         self.assertGreater((mask[:, 42:98] == 1).mean(), 0.99)
         self.assertLess((mask[:, 102:] == 1).mean(), 0.01)

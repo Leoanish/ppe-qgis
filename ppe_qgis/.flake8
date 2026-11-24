@@ -1,0 +1,6 @@
+[flake8]
+# PPE's code style: long formulas and argument lists stay on one line, and short related statements share a
+# line, so each step of the method reads as one unit. Real errors (undefined names, unused imports and
+# variables, syntax) are still reported. Checked before each release with flake8 --select=F,E9.
+max-line-length = 120
+extend-ignore = E501, E702, E731, E741, E402, E401
