@@ -674,7 +674,7 @@ def show_plant_points(path, name="PPE · Plants"):
         QgsRendererCategory("auto split", dot("60,220,170", "255,140,0"), "Split by PPE (plant spacing) · each counted; check, ⊕ Merge if wrong"),
         QgsRendererCategory("split", dot("150,230,0"), "Split by you · each counted"),
         QgsRendererCategory("added", dot("0,200,255"), "Added by you · counted"),
-        QgsRendererCategory("weed?", dot("170,170,170", "220,0,0"), "Weed? (between rows) · NOT counted")])
+        QgsRendererCategory("weed?", dot("170,170,170", "220,0,0"), "Weed? (between the rows, or small and crowding a plant in the row) · NOT counted")])
     layer.setRenderer(renderer)
     _label_split_points(layer)
     place_layer(layer, "plants")
@@ -711,7 +711,8 @@ def _label_split_points(layer):
     layer.setMapTipTemplate(
         "<b>Plant [% \"plant_id\" %]</b>: [% \"status\" %]<br>"
         "[% CASE WHEN coalesce(\"split_of\", 0) > 0 THEN 'part of patch ' || \"split_of\" || ', split into ' || "
-        "aggregate(@layer, 'count', \"plant_id\", filter:=\"split_of\" = attribute(@parent, 'split_of')) || ' plants' END %]")
+        "aggregate(@layer, 'count', \"plant_id\", filter:=\"split_of\" = attribute(@parent, 'split_of')) || ' plants' END %]"
+        "[% CASE WHEN \"status\" = 'weed?' THEN 'weed?: ' || coalesce(attribute(@feature, 'weed_reason'), '') END %]")
 
 
 # Shown with the plant points: the image, the points and the areas; everything else is unticked

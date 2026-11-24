@@ -863,7 +863,14 @@ class PPEDockWidget(QDockWidget):
         self.count_spacing.setToolTip("Distance between plants along the row. Leave it at 'Measure' and PPE measures it (needs at least 20 gaps "
                                       "between plants); type your seeding distance if you know it or the image is small.")
         form.addRow("Plant spacing in the row", self.count_spacing)
-        self.count_find_rows.toggled.connect(lambda on: (self.count_auto_split.setEnabled(on), self.count_spacing.setEnabled(on and self.count_auto_split.isChecked())))
+        self.count_row_weeds = QCheckBox("Mark small plants crowding a crop plant in the row as weed?")
+        self.count_row_weeds.setChecked(True)
+        self.count_row_weeds.setToolTip("Needs crop rows and the plant spacing. A plant closer than half the plant spacing to its neighbour in "
+                                        "the row, and smaller than a typical plant and than that neighbour, is most likely a weed or a stray "
+                                        "leaf: it becomes weed? (grey, not counted). Switch any that are crop back to plant.")
+        form.addRow("", self.count_row_weeds)
+        self.count_find_rows.toggled.connect(lambda on: (self.count_auto_split.setEnabled(on), self.count_row_weeds.setEnabled(on),
+                                                         self.count_spacing.setEnabled(on and self.count_auto_split.isChecked())))
         self.count_auto_split.toggled.connect(lambda on: self.count_spacing.setEnabled(on and self.count_find_rows.isChecked()))
         form.addRow("Area", self._area_widget("count", "Plants counted only inside ", "Whole image. Draw an area (or choose a field boundary) to count only there."))
         self.count_plots = QLineEdit(); self.count_plots.setPlaceholderText("Optional: plot polygons for counts per plot")
@@ -984,8 +991,9 @@ class PPEDockWidget(QDockWidget):
         if r.get("split_by_ppe"): parts.append("{} split by PPE".format(r["split_by_ppe"]))
         if r.get("split_by_user"): parts.append("{} split by you".format(r["split_by_user"]))
         if r.get("added_by_user"): parts.append("{} added by you".format(r["added_by_user"]))
-        return "Counted: {} plants = {}{}. Not counted: {} possible weeds.".format(
-            r["plants"], " + ".join(parts), " · {:.2f} per m²".format(r["plants_per_m2"]) if r.get("plants_per_m2") else "", r.get("weeds_not_counted", 0))
+        return "Counted: {} plants = {}{}. Not counted: {} possible weeds{}.".format(
+            r["plants"], " + ".join(parts), " · {:.2f} per m²".format(r["plants_per_m2"]) if r.get("plants_per_m2") else "", r.get("weeds_not_counted", 0),
+            " ({} of them inside the rows)".format(r["weeds_in_row"]) if r.get("weeds_in_row") else "")
 
     def plants_shown(self):
         """The plant points are on the map: correcting is possible."""
@@ -995,6 +1003,7 @@ class PPEDockWidget(QDockWidget):
     def _count_settings(self):
         return dict({"action": "count", "min_plant_cm2": self.count_min.value(), "join_cm": self.count_join.value(), "find_rows": self.count_find_rows.isChecked(),
                      "auto_split": self.count_auto_split.isChecked(), "plant_spacing_cm": self.count_spacing.value() or None,
+                     "row_weeds": self.count_row_weeds.isChecked(),
                      "aoi_path": self.count_plots.text().strip(), "aoi_id_field": self.count_plot_id.text().strip()}, **(self._area_config("count") or {}))
 
     def _emit_count(self, batch):
@@ -1033,6 +1042,9 @@ class PPEDockWidget(QDockWidget):
             if auto.get("note"): text += "\n" + auto["note"][0].upper() + auto["note"][1:] + "."
             if result.get("split_by_ppe"):
                 text += "\nOn the map, '2/3' next to a point means part 2 of a patch split into 3."
+            rw = result.get("row_weeds") or {}
+            if rw.get("note") and rw.get("flagged") is not None and "not checked" not in rw.get("note", ""):
+                text += "\n" + rw["note"][0].upper() + rw["note"][1:] + "."
             if result.get("flagged_big"):
                 text += "\nOrange 'check' points count as one plant each but may be several touching plants: ✂ Split them below."
             if rows and rows.get("rows"): text += "\nCrop rows found {:.0f} cm apart.".format(rows.get("spacing_cm", 0))

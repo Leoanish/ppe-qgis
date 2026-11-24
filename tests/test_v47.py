@@ -8,8 +8,8 @@ import unittest
 import numpy as np
 from osgeo import gdal, ogr
 
-from ppe_qgis.plant_count import (SPACING_MIN_GAPS, auto_split, confident_range, count_plants, merge_points, plant_spacing,
-                                  read_points, split_part, summarize_points)
+from ppe_qgis.plant_count import (SPACING_MIN_GAPS, auto_split, confident_range, count_plants, flag_row_weeds, merge_points,
+                                  plant_spacing, read_points, split_part, summarize_points)
 try:
     from test_v43 import tif
 except ImportError:  # run as tests.test_v47
@@ -18,7 +18,7 @@ except ImportError:  # run as tests.test_v47
 gdal.UseExceptions()
 
 
-def rows_field(n_x=400, touching=3, big_single=True):
+def rows_field(n_x=400, touching=3, big_single=True, row_weeds=()):
     """Four crop rows 45 px (cm) apart, plants every 20 px; in row 2 `touching` neighbours grown big enough
     to touch; in row 4 one big plant on its own."""
     h, w = 230, n_x; yy, xx = np.mgrid[0:h, 0:w]; m = np.zeros((h, w), np.uint8); truth = []
@@ -28,6 +28,8 @@ def rows_field(n_x=400, touching=3, big_single=True):
             if r == 1 and 6 <= i < 6 + touching: rad = 11
             if r == 3 and i == 8 and big_single: rad = 9
             m[(xx - x) ** 2 + (yy - y) ** 2 <= rad * rad] = 1; truth.append((x, y, rad))
+    for x, y in row_weeds:                                   # small weeds inside a row, near a plant
+        m[(xx - x) ** 2 + (yy - y) ** 2 <= 4] = 1
     return m, truth
 
 
@@ -113,6 +115,27 @@ class AutoSplitAndMerge(unittest.TestCase):
             res = auto_split(r4["points_path"])                    # can be run again later on saved points
             self.assertEqual(res["groups_split"], 1)
             self.assertEqual(summarize_points(r4["points_path"])["split_by_ppe"], 3)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_weeds_inside_the_row(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            m, _ = rows_field(row_weeds=((224, 45), (284, 135)))          # 9 px (cm) along the row from plants at 215 and 275
+            mask = tif(os.path.join(tmp, "mask.tif"), m, gdal.GDT_Byte, nodata=255)
+            r = count_plants({"mask_path": mask, "output_dir": os.path.join(tmp, "c"), "min_plant_cm2": 0.05, "join_cm": 0, "find_rows": True})
+            self.assertEqual(r["weeds_in_row"], 2)
+            self.assertIn("closer than 10.0 cm", r["row_weeds"]["note"])
+            ds = ogr.Open(r["points_path"]); L = ds.GetLayer()
+            flagged = sorted(round((f.GetGeometryRef().GetX() - 500000) / 0.01) for f in L if str(f.GetField("weed_reason") or "").startswith("in the row"))
+            ds = None
+            self.assertEqual(flagged, [224, 284])
+            with open(r["summary_path"]) as fh: head = fh.readline()
+            self.assertIn("of_which_weeds_in_row", head)
+            r2 = count_plants({"mask_path": mask, "output_dir": os.path.join(tmp, "d"), "min_plant_cm2": 0.05, "join_cm": 0, "find_rows": True,
+                               "row_weeds": False})
+            self.assertEqual(r2["weeds_in_row"], 0); self.assertEqual(r2["plants"], r["plants"] + 2)
+            self.assertEqual(flag_row_weeds(r2["points_path"])["flagged"], 2)    # can be run again on saved points
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

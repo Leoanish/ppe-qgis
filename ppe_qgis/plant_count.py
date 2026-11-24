@@ -288,6 +288,9 @@ def count_plants(cfg, progress=None, log=None):
     if cfg.get("auto_split", True) and rows_info and rows_info.get("rows"):
         progress(88, "Splitting touching plants by the plant spacing")
         auto_split(gpkg, cfg.get("plant_spacing_cm"), log)
+    if cfg.get("row_weeds", True) and rows_info and rows_info.get("rows"):
+        progress(90, "Looking for weeds inside the rows")
+        flag_row_weeds(gpkg, log)
     if cfg.get("aoi_path"): progress(92, "Counting per plot")
     summary = summarize_points(gpkg, log)
     summary["seconds"] = time.time() - started
@@ -307,6 +310,13 @@ def read_points(points_path):
     return out, lay.GetSpatialRef().ExportToWkt() if lay.GetSpatialRef() else ""
 
 
+def _count_in_row_weeds(points_path):
+    try:
+        return sum(1 for f in _read_features(points_path) if f.get("status") == STATUS_WEED and str(f.get("weed_reason") or "").startswith("in the row"))
+    except Exception:
+        return 0
+
+
 def summarize_points(points_path, log=None):
     """Totals (and counts per plot) from the points as they are now, after any corrections by the user.
     Counted: plant, check (as one plant), split and added; not counted: weed?. Rewrites ppe_count_summary.csv and ppe_plot_counts.csv."""
@@ -320,6 +330,7 @@ def summarize_points(points_path, log=None):
     n = {k: sum(1 for p in pts if p[2] == k) for k in (STATUS_PLANT, STATUS_CHECK, STATUS_ADDED, STATUS_WEED, "split", "auto split")}
     plants = len(counted); field_m2 = info.get("field_m2")
     summary = {"plants": plants, "flagged_big": n[STATUS_CHECK], "added_by_user": n[STATUS_ADDED], "weeds_not_counted": n[STATUS_WEED],
+               "weeds_in_row": _count_in_row_weeds(points_path), "row_weeds": info.get("row_weeds"),
                "plain_plants": n[STATUS_PLANT], "split_by_user": n["split"], "split_by_ppe": n["auto split"],
                "plant_spacing_cm": info.get("plant_spacing_cm"), "auto_split": info.get("auto_split"),
                "left_out_between_rows": n[STATUS_WEED], "no_core_left_out": info.get("no_core_left_out"),
@@ -328,9 +339,9 @@ def summarize_points(points_path, log=None):
     path = os.path.join(out_dir, "ppe_count_summary.csv")
     with open(path, "w", newline="") as fh:
         w = csv.writer(fh); w.writerow(["plants_counted", "of_which_plant", "of_which_check_counted_as_one", "of_which_split_by_ppe", "of_which_split_by_user",
-                                        "of_which_added_by_user", "weeds_not_counted", "median_plant_cm2", "smallest_plant_cm2", "plant_spacing_cm",
+                                        "of_which_added_by_user", "weeds_not_counted", "of_which_weeds_in_row", "median_plant_cm2", "smallest_plant_cm2", "plant_spacing_cm",
                                         "split_longer_than_cm", "plants_per_m2", "note"])
-        w.writerow([plants, n[STATUS_PLANT], n[STATUS_CHECK], n["auto split"], n["split"], n[STATUS_ADDED], n[STATUS_WEED], _r(summary["median_plant_cm2"]),
+        w.writerow([plants, n[STATUS_PLANT], n[STATUS_CHECK], n["auto split"], n["split"], n[STATUS_ADDED], n[STATUS_WEED], summary["weeds_in_row"], _r(summary["median_plant_cm2"]),
                     _r(summary["min_plant_cm2"]), _r(info.get("plant_spacing_cm"), 1),
                     _r(1.5 * info["plant_spacing_cm"] if info.get("plant_spacing_cm") else None, 1), _r(summary["plants_per_m2"], 3), EARLY_NOTE])
     summary["summary_path"] = path
@@ -694,3 +705,84 @@ def merge_points(points):
     """One point for a list of points [(x, y, area)]: the area-weighted middle and the summed area."""
     a = np.array([max(p[2] or 0.0, 1e-9) for p in points]); x = np.array([p[0] for p in points]); y = np.array([p[1] for p in points])
     return float((x * a).sum() / a.sum()), float((y * a).sum() / a.sum()), float(sum(p[2] or 0.0 for p in points))
+
+
+
+# ---- 4.7: weeds inside the row ------------------------------------------------------------------------
+# Crop plants stand about one plant spacing apart along the row; a weed or a stray leaf inside the row sits
+# much closer to a plant. A 'plant' point closer than ROW_WEED_CLOSE x the plant spacing to its neighbour in
+# the row, and smaller than a typical plant of the image (and than that neighbour), becomes 'weed?' (not
+# counted; the user can switch it back). On PhenoBench (79 images, 541 sugar beet, 262 counted weed points)
+# position + size removed about a third of the weed points and cut the per-image count error by a quarter
+# to two fifths on every date, for about 4 % of the crop plants. Size alone, colour (RGB only there) and
+# shape cost more crop plants than they removed weeds, so they are not used.
+ROW_WEED_CLOSE = 0.5
+WEED_IN_ROW = "in the row: too close to a plant and smaller than a typical plant"
+WEED_BETWEEN = "between the rows"
+
+
+def _ensure_field(path, name, kind):
+    ds = ogr.Open(path, 1); lay = ds.GetLayer()
+    if lay.GetLayerDefn().GetFieldIndex(name) < 0:
+        fd = ogr.FieldDefn(name, kind); lay.CreateField(fd)
+    ds = None
+
+
+def flag_row_weeds(points_path, log=None, smaller_than_neighbour=True, close=ROW_WEED_CLOSE):
+    """Mark small plants that sit too close to a neighbour in the row as 'weed?' (field weed_reason). Needs
+    crop rows and the plant spacing (measured or given, see auto_split). Returns what was done."""
+    log = log or (lambda m: None); out_dir = os.path.dirname(points_path)
+    info_path = os.path.join(out_dir, "ppe_count_info.json")
+    with open(info_path, encoding="utf-8") as fh: info = json.load(fh)
+    rows = info.get("rows") or {}; spacing = info.get("plant_spacing_cm")
+    res = {"flagged": 0, "close_cm": None}
+    _ensure_field(points_path, "weed_reason", ogr.OFTString)
+    feats = _read_features(points_path)
+    ds = ogr.Open(points_path, 1); lay = ds.GetLayer()
+    for f in feats:                                      # weeds found between the rows get their reason too
+        if f.get("status") == STATUS_WEED and not f.get("weed_reason"):
+            g = lay.GetFeature(f["fid"]); g.SetField("weed_reason", WEED_BETWEEN); lay.SetFeature(g)
+    if not rows.get("rows") or not spacing:
+        ds = None
+        res["note"] = "weeds inside the rows not checked: that needs crop rows and the plant spacing"
+        info["row_weeds"] = res
+        with open(info_path, "w", encoding="utf-8") as fh: json.dump(info, fh, indent=1)
+        return res
+    gt = safe_gdal_open(info["mask_path"]).GetGeoTransform(); pixel_cm = 100.0 * math.sqrt(abs(gt[1] * gt[5]))
+    area_key = "area_cm2" if any(f.get("area_cm2") is not None for f in feats) else "area_px"
+    k = 1.0 if area_key == "area_cm2" else pixel_cm ** 2
+    pts = [f for f in feats if f.get("status") != STATUS_WEED]
+    plain = [f.get(area_key) for f in pts if f.get("status") == STATUS_PLANT and f.get(area_key)]
+    if len(plain) < 3:
+        ds = None; res["note"] = "too few plants to check for weeds inside the rows"; info["row_weeds"] = res
+        with open(info_path, "w", encoding="utf-8") as fh: json.dump(info, fh, indent=1)
+        return res
+    typical = float(np.median(plain)) * k
+    t = math.radians(float(rows["angle_deg"])); row_cm = float(rows["spacing_cm"])
+    x = np.array([(f["x"] - gt[0]) / gt[1] * pixel_cm for f in pts]); y = np.array([(f["y"] - gt[3]) / gt[5] * pixel_cm for f in pts])
+    d = x * math.cos(t) + y * math.sin(t); u = -x * math.sin(t) + y * math.cos(t)
+    a = np.array([(f.get(area_key) or 0.0) * k for f in pts])
+    limit = close * float(spacing); flagged = []
+    for i, f in enumerate(pts):
+        if f.get("status") != STATUS_PLANT or a[i] >= typical: continue
+        same = np.abs(d - d[i]) < 0.5 * row_cm; same[i] = False
+        if not same.any(): continue
+        j = np.nonzero(same)[0][np.argmin(np.abs(u[same] - u[i]))]
+        gap = abs(u[j] - u[i])
+        if gap >= limit: continue
+        if smaller_than_neighbour and a[i] >= a[j]: continue
+        flagged.append((f, gap, pts[j].get("plant_id")))
+    for f, gap, nb in flagged:
+        g = lay.GetFeature(f["fid"]); g.SetField("status", STATUS_WEED)
+        g.SetField("weed_reason", "{}: {:.0f} cm from plant {} (plant spacing {:.0f} cm), {:.0f} cm2 (typical {:.0f} cm2)".format(
+            "in the row", gap, nb, spacing, (f.get(area_key) or 0) * k, typical))
+        lay.SetFeature(g)
+    ds = None
+    res.update(flagged=len(flagged), close_cm=limit, typical_cm2=typical)
+    res["note"] = ("{} small plant{} inside the rows marked weed? (not counted): closer than {:.1f} cm (half the plant spacing) to a "
+                   "plant and smaller than a typical plant ({:.0f} cm2). Switch any that are crop back to plant").format(
+        len(flagged), "" if len(flagged) == 1 else "s", limit, typical)
+    log(res["note"] + ".")
+    info["row_weeds"] = res
+    with open(info_path, "w", encoding="utf-8") as fh: json.dump(info, fh, indent=1)
+    return res
