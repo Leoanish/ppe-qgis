@@ -5,7 +5,8 @@ the leaves of one plant split by a thin stem or petiole count once (PhenoBench s
 counted exactly once 72 -> 88 %, split plants 21 -> 2 %). One plant = one joined group of at least the
 smallest plant size with a sure core: >= 5 pixels where every PPE vote says plant. The core makes the count
 robust to the threshold: soil spots let in by a low threshold have no core (PhenoBench seedling image
-at threshold 0.50: 474 groups -> 13 plants; hand count 12). Groups much bigger than a typical plant are flagged "check" (they may be touching plants)
+at threshold 0.50: 474 groups -> 13 plants; hand count 12). Groups much bigger than a typical plant are flagged
+"check" (they may be touching plants)
 but still count as one: on PhenoBench, splitting them by size overcounted badly, so PPE does not guess.
 Plants that touch (closed canopy) cannot be separated this way: count early in the season.
 Optional: with the row spacing typed in, keep only plants on the crop rows (straight, parallel rows;
@@ -13,6 +14,7 @@ weeds between rows are left out).
 
 Only numpy and GDAL/OGR are used, so it runs in any QGIS. The grouping is GDAL's Polygonize (C code).
 """
+
 import csv
 import json
 import math
@@ -24,16 +26,23 @@ from osgeo import gdal, ogr, osr
 
 from .native_engine import _pixel_area_m2, _plot_geometry, _plot_transform, open_plot_file, safe_gdal_open
 
-BIG_FACTOR = 2.5          # a group > 2.5 x the 75th-percentile plant is flagged "check" (may be several touching plants).
+BIG_FACTOR = 2.5  # a group > 2.5 x the 75th-percentile plant is flagged "check" (may be several touching plants).
 # The 75th percentile, not the median: small weeds pull the median down and made single crop plants look big.
-CORE_VOTE = 0.999         # a plant has a core where every PPE vote says plant ...
-CORE_PX = 5               # ... of at least 5 pixels (soil spots let through by a low threshold have none)
-STATUS_PLANT, STATUS_CHECK, STATUS_WEED, STATUS_ADDED = "plant", "check", "weed?", "added"   # point status; weed? is not counted
-JOIN_CM = 1.0             # pieces closer than this are one plant (leaves split by a thin stem or petiole)
-ROW_BAND = 0.2            # on a row = within 0.2 x row spacing of the row centre line
-EARLY_NOTE = ("For the early season only: count before the leaves of neighbouring plants touch or overlap; plants whose "
-              "canopies overlap are counted as one. Groups flagged 'check' may be several touching plants; they count as one "
-              "unless you split them.")
+CORE_VOTE = 0.999  # a plant has a core where every PPE vote says plant ...
+CORE_PX = 5  # ... of at least 5 pixels (soil spots let through by a low threshold have none)
+STATUS_PLANT, STATUS_CHECK, STATUS_WEED, STATUS_ADDED = (
+    "plant",
+    "check",
+    "weed?",
+    "added",
+)  # point status; weed? is not counted
+JOIN_CM = 1.0  # pieces closer than this are one plant (leaves split by a thin stem or petiole)
+ROW_BAND = 0.2  # on a row = within 0.2 x row spacing of the row centre line
+EARLY_NOTE = (
+    "For the early season only: count before the leaves of neighbouring plants touch or overlap; plants whose "
+    "canopies overlap are counted as one. Groups flagged 'check' may be several touching plants; they count as one "
+    "unless you split them."
+)
 
 
 def _plant_groups(mask_path, vote_path, min_px, join_px, hole_px, progress, log, ids_path=None, keep=None):
@@ -58,6 +67,7 @@ def _plant_groups(mask_path, vote_path, min_px, join_px, hole_px, progress, log,
         r.SetGeoTransform(gt)
         r.SetProjection(wkt)
         return r
+
     plant = new()
     pb = plant.GetRasterBand(1)
     for y in range(0, H, STEP):
@@ -71,7 +81,7 @@ def _plant_groups(mask_path, vote_path, min_px, join_px, hole_px, progress, log,
         h = min(STEP, H - y)
         pb.WriteArray(pb.ReadAsArray(0, y, W, h) & sb.ReadAsArray(0, y, W, h), 0, y)
     sb = None
-    sieved = None                                # free each full-size raster as soon as it is used
+    sieved = None  # free each full-size raster as soon as it is used
     progress(25, "Joining leaves of one plant")
     # 2) join pieces: everything within join_px / 2 of a plant pixel.
     joined = new()
@@ -80,7 +90,9 @@ def _plant_groups(mask_path, vote_path, min_px, join_px, hole_px, progress, log,
         r = join_px / 2.0
         prox = new()
         xb = prox.GetRasterBand(1)
-        gdal.ComputeProximity(pb, xb, ["VALUES=1", "DISTUNITS=PIXEL", "MAXDIST={}".format(int(math.ceil(r)) + 1), "NODATA=255"])
+        gdal.ComputeProximity(
+            pb, xb, ["VALUES=1", "DISTUNITS=PIXEL", "MAXDIST={}".format(int(math.ceil(r)) + 1), "NODATA=255"]
+        )
         for y in range(0, H, STEP):
             h = min(STEP, H - y)
             jb.WriteArray((xb.ReadAsArray(0, y, W, h) <= r).astype(np.uint8), 0, y)
@@ -141,20 +153,22 @@ def _plant_groups(mask_path, vote_path, min_px, join_px, hole_px, progress, log,
             continue
         gi = g[p]
         yy, xx = np.nonzero(p)
-        area += np.bincount(gi, minlength=n + 1)[:n + 1]
-        sx += np.bincount(gi, weights=cols[xx] + 0.5, minlength=n + 1)[:n + 1]
-        sy += np.bincount(gi, weights=yy + y + 0.5, minlength=n + 1)[:n + 1]
+        area += np.bincount(gi, minlength=n + 1)[: n + 1]
+        sx += np.bincount(gi, weights=cols[xx] + 0.5, minlength=n + 1)[: n + 1]
+        sy += np.bincount(gi, weights=yy + y + 0.5, minlength=n + 1)[: n + 1]
         if core is not None:
             v = vote.GetRasterBand(1).ReadAsArray(0, y, W, h)
             sure = p & (v >= CORE_VOTE) & (v <= 1.0)
             if sure.any():
-                core += np.bincount(g[sure], minlength=n + 1)[:n + 1]
+                core += np.bincount(g[sure], minlength=n + 1)[: n + 1]
     sel = area[1:] > 0
     a = area[1:][sel]
     cx = sx[1:][sel] / a
     cy = sy[1:][sel] / a
     if ids_path:
-        gdal.GetDriverByName("GTiff").CreateCopy(ids_path, ids, options=["TILED=YES", "COMPRESS=DEFLATE", "BIGTIFF=IF_SAFER"])
+        gdal.GetDriverByName("GTiff").CreateCopy(
+            ids_path, ids, options=["TILED=YES", "COMPRESS=DEFLATE", "BIGTIFF=IF_SAFER"]
+        )
         if keep is not None:
             keep["gid"] = np.nonzero(sel)[0] + 1
     X = gt[0] + cx * gt[1] + cy * gt[2]
@@ -162,8 +176,10 @@ def _plant_groups(mask_path, vote_path, min_px, join_px, hole_px, progress, log,
     return ds, a, X, Y, (core[1:][sel] if core is not None else None)
 
 
-ROW_MIN_CM, ROW_MAX_CM = 15.0, 150.0   # row spacings searched (any row crop: cereals to wide-row crops)
-ROW_MIN_CONTRAST = 1.8                 # rows are clear when their signal is this many times the background (other spacings/directions);
+ROW_MIN_CM, ROW_MAX_CM = 15.0, 150.0  # row spacings searched (any row crop: cereals to wide-row crops)
+ROW_MIN_CONTRAST = (
+    1.8  # rows are clear when their signal is this many times the background (other spacings/directions);
+)
 # a 4 m tile needs half the field's row signal. Otherwise nothing is marked as weed there.
 
 
@@ -172,7 +188,7 @@ def _plant_pixel_sample(mask_path, n=2000000, seed=0):
     ds = safe_gdal_open(mask_path)
     b = ds.GetRasterBand(1)
     W, H = ds.RasterXSize, ds.RasterYSize
-    step = max(1, int(math.sqrt(W * H / 2e6)))             # read a coarse grid (about 2 million pixels)
+    step = max(1, int(math.sqrt(W * H / 2e6)))  # read a coarse grid (about 2 million pixels)
     a = b.ReadAsArray(0, 0, W, H, buf_xsize=max(1, W // step), buf_ysize=max(1, H // step))
     ys, xs = np.nonzero(a == 1)
     if len(xs) > n:
@@ -181,7 +197,7 @@ def _plant_pixel_sample(mask_path, n=2000000, seed=0):
     return xs * (W / a.shape[1]) + 0.5, ys * (H / a.shape[0]) + 0.5
 
 
-ROW_TILE_CM = 400.0                    # row positions are fitted per 4 m tile: plots can be shifted against each other
+ROW_TILE_CM = 400.0  # row positions are fitted per 4 m tile: plots can be shifted against each other
 
 
 def _tiles(x, y, tile):
@@ -199,7 +215,7 @@ def _fold(sx, sy, tid, nt, angles, spacings):
     out = np.empty((len(angles), len(spacings)))
     n = len(sx)
     ns = len(spacings)
-    idx = (np.asarray(tid, np.int64)[:, None] * ns + np.arange(ns)[None, :]).ravel()   # tile x spacing bin of each value
+    idx = (np.asarray(tid, np.int64)[:, None] * ns + np.arange(ns)[None, :]).ravel()  # tile x spacing bin of each value
 
     def one(k):
         t = math.radians(angles[k])
@@ -213,6 +229,7 @@ def _fold(sx, sy, tid, nt, angles, spacings):
     workers = min(len(angles), _cpu_threads())
     if workers > 1:
         from concurrent.futures import ThreadPoolExecutor
+
         with ThreadPoolExecutor(max_workers=workers) as pool:
             list(pool.map(one, range(len(angles))))
     else:
@@ -245,13 +262,19 @@ def _rows(px, py, weight, pixel_cm, spacing_cm=None, sample=None):
     if spacing_cm:
         spacings = np.array([float(spacing_cm) / pixel_cm])
     else:
-        spacings = np.exp(np.linspace(math.log(max(ROW_MIN_CM / pixel_cm, 3.0)), math.log(max(ROW_MAX_CM / pixel_cm, 4.0)), 60))
+        spacings = np.exp(
+            np.linspace(math.log(max(ROW_MIN_CM / pixel_cm, 3.0)), math.log(max(ROW_MAX_CM / pixel_cm, 4.0)), 60)
+        )
     angles = np.arange(0, 180, 3.0)
     R = _fold(sx, sy, tid, nt, angles, spacings)
     ka, ks = np.unravel_index(int(np.argmax(R)), R.shape)
-    background = float(np.median(R))                      # strength of directions/spacings that are not rows
+    background = float(np.median(R))  # strength of directions/spacings that are not rows
     a_f = np.arange(angles[ka] - 3, angles[ka] + 3.01, 0.25)
-    s_f = spacings if len(spacings) == 1 else np.linspace(spacings[max(0, ks - 1)], spacings[min(len(spacings) - 1, ks + 1)], 21)
+    s_f = (
+        spacings
+        if len(spacings) == 1
+        else np.linspace(spacings[max(0, ks - 1)], spacings[min(len(spacings) - 1, ks + 1)], 21)
+    )
     Rf = _fold(sx, sy, tid, nt, a_f, s_f)
     ka, ks = np.unravel_index(int(np.argmax(Rf)), Rf.shape)
     a0, sp = float(a_f[ka]), float(s_f[ks])
@@ -267,8 +290,12 @@ def _rows(px, py, weight, pixel_cm, spacing_cm=None, sample=None):
                     break
     contrast = strength / max(background, 1e-6)
     info = {"strength": strength, "contrast": contrast, "angle_deg": a0, "spacing_px": sp, "spacing_cm": sp * pixel_cm}
-    if contrast < ROW_MIN_CONTRAST or (spacing_cm is None and ks in (0, len(s_f) - 1) and sp in (spacings[0], spacings[-1])):
-        info.update(rows=0, note="no clear rows (row signal {:.1f} x background); nothing marked as weed".format(contrast))
+    if contrast < ROW_MIN_CONTRAST or (
+        spacing_cm is None and ks in (0, len(s_f) - 1) and sp in (spacings[0], spacings[-1])
+    ):
+        info.update(
+            rows=0, note="no clear rows (row signal {:.1f} x background); nothing marked as weed".format(contrast)
+        )
         return np.ones(n, bool), info
     # phase and strength of each tile (all sampled plant pixels), then each point against its own tile's rows
     sx, sy = ax_, ay_
@@ -296,15 +323,22 @@ def _rows(px, py, weight, pixel_cm, spacing_cm=None, sample=None):
     judged[has] = tile_ok[pt[has]]
     off = np.angle(np.exp(1j * (ph_p[judged] - tile_phase[pt[judged]]))) * sp / (2 * math.pi)
     on_row[judged] = np.abs(off) <= ROW_BAND * sp
-    info.update(rows=1, tiles_with_rows=float(tile_ok.mean()), note="rows found {:.0f} cm apart (row signal {:.1f} x background); {} plants between rows marked as possible weeds".format(
-        sp * pixel_cm, contrast, int((~on_row).sum())))
+    info.update(
+        rows=1,
+        tiles_with_rows=float(tile_ok.mean()),
+        note=(
+            "rows found {:.0f} cm apart (row signal {:.1f} x background); {} plants between rows marked as possible"
+            " weeds".format(sp * pixel_cm, contrast, int((~on_row).sum()))
+        ),
+    )
     return on_row, info
 
 
 def count_plants(cfg, progress=None, log=None):
     """Count plants in cfg['mask_path'] (finalized PPE mask, 1 plant, 0 soil, 255 nodata).
 
-    cfg: output_dir, vote_path (PPE vote raster: enables the sure-core check), min_plant_cm2 (default 1.0), row_spacing_cm (optional: keep plants on the rows), aoi_path / aoi_layer / aoi_id_field
+    cfg: output_dir, vote_path (PPE vote raster: enables the sure-core check), min_plant_cm2 (default 1.0),
+    row_spacing_cm (optional: keep plants on the rows), aoi_path / aoi_layer / aoi_id_field
     (optional plots). Writes ppe_plants.gpkg (one point per plant), ppe_count_summary.csv and, with
     plots, ppe_plot_counts.csv. Returns a dict with the counts and paths.
     """
@@ -315,9 +349,9 @@ def count_plants(cfg, progress=None, log=None):
     os.makedirs(out_dir, exist_ok=True)
     area_used = bool(cfg.get("area_wkts") or cfg.get("area_path"))
     source_mask = cfg["mask_path"]
-    if cfg.get("keep_groups", True) and not cfg.get("groups_path"):      # 4.9.0: for the crop-only mask
+    if cfg.get("keep_groups", True) and not cfg.get("groups_path"):  # 4.9.0: for the crop-only mask
         cfg = dict(cfg, groups_path=os.path.join(out_dir, "ppe_plant_groups.tif"))
-    if area_used:                       # 4.6.4: count only inside the area (the mask outside it becomes no data)
+    if area_used:  # 4.6.4: count only inside the area (the mask outside it becomes no data)
         progress(2, "Cutting the mask to the area")
         cfg = dict(cfg, mask_path=_mask_in_area(cfg, out_dir))
     progress(5, "Reading the plant mask")
@@ -339,8 +373,9 @@ def count_plants(cfg, progress=None, log=None):
         log("Leaves closer than {:g} cm ({:.1f} pixels) are joined into one plant.".format(join_cm, join_px))
     progress(10, "Finding plants")
     keep = {}
-    ds, areas, xs, ys, core_n = _plant_groups(cfg["mask_path"], cfg.get("vote_path"), min_px, join_px, hole_px, progress, log,
-                                              cfg.get("groups_path"), keep)
+    ds, areas, xs, ys, core_n = _plant_groups(
+        cfg["mask_path"], cfg.get("vote_path"), min_px, join_px, hole_px, progress, log, cfg.get("groups_path"), keep
+    )
     gt = ds.GetGeoTransform()
     srs = osr.SpatialReference()
     wkt = ds.GetProjection()
@@ -355,7 +390,7 @@ def count_plants(cfg, progress=None, log=None):
         log("{} groups had no sure core (every vote plant) and were not counted.".format(no_core))
     areas, xs, ys = areas[keep0], xs[keep0], ys[keep0]
     core = core_n
-    if cfg.get("groups_path") and "gid" in keep:          # plant_id i + 1 is group keep["gid"][i] of the groups raster
+    if cfg.get("groups_path") and "gid" in keep:  # plant_id i + 1 is group keep["gid"][i] of the groups raster
         np.save(os.path.join(out_dir, "ppe_group_ids.npy"), keep["gid"][keep0].astype(np.int32))
     n_all = len(areas)
     median = float(np.median(areas)) if n_all else 0.0
@@ -368,7 +403,9 @@ def count_plants(cfg, progress=None, log=None):
         pyc = (ys - gt[3]) / gt[5]
         pixel_cm = math.sqrt(pixel_m2) * 100 if pixel_m2 else None
         if pixel_cm:
-            on_row, rows_info = _rows(pxc, pyc, areas, pixel_cm, cfg.get("row_spacing_cm"), _plant_pixel_sample(cfg["mask_path"]))
+            on_row, rows_info = _rows(
+                pxc, pyc, areas, pixel_cm, cfg.get("row_spacing_cm"), _plant_pixel_sample(cfg["mask_path"])
+            )
         else:
             rows_info = {"note": "the image is not in metres; rows not used"}
         log("Rows: " + rows_info["note"] + ".")
@@ -379,8 +416,13 @@ def count_plants(cfg, progress=None, log=None):
         gdal.GetDriverByName("GPKG").Delete(gpkg)
     out = ogr.GetDriverByName("GPKG").CreateDataSource(gpkg)
     pl = out.CreateLayer("plants", srs if wkt else None, ogr.wkbPoint)
-    for name, kind in (("plant_id", ogr.OFTInteger), ("area_cm2" if to_cm2 else "area_px", ogr.OFTReal), ("status", ogr.OFTString), ("on_row", ogr.OFTInteger),
-                       ("split_of", ogr.OFTInteger)):
+    for name, kind in (
+        ("plant_id", ogr.OFTInteger),
+        ("area_cm2" if to_cm2 else "area_px", ogr.OFTReal),
+        ("status", ogr.OFTString),
+        ("on_row", ogr.OFTInteger),
+        ("split_of", ogr.OFTInteger),
+    ):
         pl.CreateField(ogr.FieldDefn(name, kind))
     pl.StartTransaction()
     for i in range(n_all):
@@ -402,11 +444,21 @@ def count_plants(cfg, progress=None, log=None):
         for y in range(0, ds.RasterYSize, 2048):
             valid += int((band.ReadAsArray(0, y, ds.RasterXSize, min(2048, ds.RasterYSize - y)) != 255).sum())
         field_m2 = valid * pixel_m2
-    info = {"mask_path": cfg["mask_path"], "source_mask_path": source_mask, "groups_path": cfg.get("groups_path") or "", "field_m2": field_m2, "median_plant_cm2": (median * to_cm2) if to_cm2 else None,
-            "min_plant_cm2": min_cm2 if pixel_m2 else None, "join_cm": join_cm, "rows": rows_info,
-            "no_core_left_out": no_core if core is not None else None,
-            "aoi_path": cfg.get("aoi_path") or "", "aoi_layer": cfg.get("aoi_layer") or "", "aoi_id_field": cfg.get("aoi_id_field") or "",
-            "count_area": os.path.join(out_dir, "ppe_count_area.gpkg") if area_used else ""}
+    info = {
+        "mask_path": cfg["mask_path"],
+        "source_mask_path": source_mask,
+        "groups_path": cfg.get("groups_path") or "",
+        "field_m2": field_m2,
+        "median_plant_cm2": (median * to_cm2) if to_cm2 else None,
+        "min_plant_cm2": min_cm2 if pixel_m2 else None,
+        "join_cm": join_cm,
+        "rows": rows_info,
+        "no_core_left_out": no_core if core is not None else None,
+        "aoi_path": cfg.get("aoi_path") or "",
+        "aoi_layer": cfg.get("aoi_layer") or "",
+        "aoi_id_field": cfg.get("aoi_id_field") or "",
+        "count_area": os.path.join(out_dir, "ppe_count_area.gpkg") if area_used else "",
+    }
     with open(os.path.join(out_dir, "ppe_count_info.json"), "w", encoding="utf-8") as fh:
         json.dump(info, fh, indent=1)
     if cfg.get("auto_split", True) and rows_info and rows_info.get("rows"):
@@ -447,14 +499,18 @@ def _count_in_row_weeds(points_path):
         ks, kr = d.GetFieldIndex("status"), d.GetFieldIndex("weed_reason")
         if ks < 0 or kr < 0:
             return 0
-        return sum(1 for f in lay if f.GetField(ks) == STATUS_WEED and str(f.GetField(kr) or "").startswith("in the row"))
+        return sum(
+            1 for f in lay if f.GetField(ks) == STATUS_WEED and str(f.GetField(kr) or "").startswith("in the row")
+        )
     except Exception:
         return 0
 
 
 def summarize_points(points_path, log=None):
     """Totals (and counts per plot) from the points as they are now, after any corrections by the user.
-    Counted: plant, check (as one plant), split and added; not counted: weed?. Rewrites ppe_count_summary.csv and ppe_plot_counts.csv."""
+    Counted: plant, check (as one plant), split and added; not counted: weed?. Rewrites ppe_count_summary.csv and
+    ppe_plot_counts.csv.
+    """
     log = log or (lambda m: None)
     out_dir = os.path.dirname(points_path)
     try:
@@ -464,25 +520,72 @@ def summarize_points(points_path, log=None):
         info = {}
     pts, wkt = read_points(points_path)
     counted = [(x, y, st) for x, y, st in pts if st != STATUS_WEED]
-    n = {k: sum(1 for p in pts if p[2] == k) for k in (STATUS_PLANT, STATUS_CHECK, STATUS_ADDED, STATUS_WEED, "split", "auto split")}
+    n = {
+        k: sum(1 for p in pts if p[2] == k)
+        for k in (STATUS_PLANT, STATUS_CHECK, STATUS_ADDED, STATUS_WEED, "split", "auto split")
+    }
     plants = len(counted)
     field_m2 = info.get("field_m2")
-    summary = {"plants": plants, "flagged_big": n[STATUS_CHECK], "added_by_user": n[STATUS_ADDED], "weeds_not_counted": n[STATUS_WEED],
-               "weeds_in_row": _count_in_row_weeds(points_path), "row_weeds": info.get("row_weeds"),
-               "plain_plants": n[STATUS_PLANT], "split_by_user": n["split"], "split_by_ppe": n["auto split"],
-               "plant_spacing_cm": info.get("plant_spacing_cm"), "auto_split": info.get("auto_split"),
-               "left_out_between_rows": n[STATUS_WEED], "no_core_left_out": info.get("no_core_left_out"),
-               "median_plant_cm2": info.get("median_plant_cm2"), "min_plant_cm2": info.get("min_plant_cm2"),
-               "plants_per_m2": (plants / field_m2) if field_m2 else None, "rows": info.get("rows"), "points_path": points_path, "note": EARLY_NOTE}
+    summary = {
+        "plants": plants,
+        "flagged_big": n[STATUS_CHECK],
+        "added_by_user": n[STATUS_ADDED],
+        "weeds_not_counted": n[STATUS_WEED],
+        "weeds_in_row": _count_in_row_weeds(points_path),
+        "row_weeds": info.get("row_weeds"),
+        "plain_plants": n[STATUS_PLANT],
+        "split_by_user": n["split"],
+        "split_by_ppe": n["auto split"],
+        "plant_spacing_cm": info.get("plant_spacing_cm"),
+        "auto_split": info.get("auto_split"),
+        "left_out_between_rows": n[STATUS_WEED],
+        "no_core_left_out": info.get("no_core_left_out"),
+        "median_plant_cm2": info.get("median_plant_cm2"),
+        "min_plant_cm2": info.get("min_plant_cm2"),
+        "plants_per_m2": (plants / field_m2) if field_m2 else None,
+        "rows": info.get("rows"),
+        "points_path": points_path,
+        "note": EARLY_NOTE,
+    }
     path = os.path.join(out_dir, "ppe_count_summary.csv")
     with open(path, "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["plants_counted", "of_which_plant", "of_which_check_counted_as_one", "of_which_split_by_ppe", "of_which_split_by_user",
-                    "of_which_added_by_user", "weeds_not_counted", "of_which_weeds_in_row", "median_plant_cm2", "smallest_plant_cm2", "plant_spacing_cm",
-                    "split_longer_than_cm", "plants_per_m2", "note"])
-        w.writerow([plants, n[STATUS_PLANT], n[STATUS_CHECK], n["auto split"], n["split"], n[STATUS_ADDED], n[STATUS_WEED], summary["weeds_in_row"], _r(summary["median_plant_cm2"]),
-                    _r(summary["min_plant_cm2"]), _r(info.get("plant_spacing_cm"), 1),
-                    _r(1.5 * info["plant_spacing_cm"] if info.get("plant_spacing_cm") else None, 1), _r(summary["plants_per_m2"], 3), EARLY_NOTE])
+        w.writerow(
+            [
+                "plants_counted",
+                "of_which_plant",
+                "of_which_check_counted_as_one",
+                "of_which_split_by_ppe",
+                "of_which_split_by_user",
+                "of_which_added_by_user",
+                "weeds_not_counted",
+                "of_which_weeds_in_row",
+                "median_plant_cm2",
+                "smallest_plant_cm2",
+                "plant_spacing_cm",
+                "split_longer_than_cm",
+                "plants_per_m2",
+                "note",
+            ]
+        )
+        w.writerow(
+            [
+                plants,
+                n[STATUS_PLANT],
+                n[STATUS_CHECK],
+                n["auto split"],
+                n["split"],
+                n[STATUS_ADDED],
+                n[STATUS_WEED],
+                summary["weeds_in_row"],
+                _r(summary["median_plant_cm2"]),
+                _r(summary["min_plant_cm2"]),
+                _r(info.get("plant_spacing_cm"), 1),
+                _r(1.5 * info["plant_spacing_cm"] if info.get("plant_spacing_cm") else None, 1),
+                _r(summary["plants_per_m2"], 3),
+                EARLY_NOTE,
+            ]
+        )
     summary["summary_path"] = path
     if info.get("aoi_path") and os.path.isfile(info["aoi_path"]):
         xs = np.array([p[0] for p in counted])
@@ -542,6 +645,7 @@ def _mask_in_area(cfg, out_dir):
     """A copy of the mask with everything outside the area set to no data (255): ppe_mask_in_area.tif.
     The area is kept as ppe_count_area.gpkg."""
     from .label_points import _area_raster
+
     area_path = _area_raster(cfg, out_dir, "ppe_count_area")
     src = safe_gdal_open(cfg["mask_path"])
     area = gdal.Open(area_path)
@@ -579,17 +683,56 @@ def count_batch(cfg, progress=None, log=None):
     started = time.time()
     n = len(items)
     for k, it in enumerate(items):
-        sub = dict(cfg, mask_path=it["mask_path"], vote_path=it.get("vote_path") or "", output_dir=os.path.join(os.path.dirname(it["mask_path"]), "ppe_count"), aoi_path=cfg.get("aoi_path") or "")
-        r = count_plants(sub, progress=lambda p, m, k=k: progress(int(100 * (k + p / 100.0) / n), "{} ({}/{}): {}".format(it["name"], k + 1, n, m)), log=log)
-        rows.append([it["name"], r["plants"], r["flagged_big"], r["left_out_between_rows"], _r(r["median_plant_cm2"]), _r(r["plants_per_m2"], 3), r["points_path"]])
+        sub = dict(
+            cfg,
+            mask_path=it["mask_path"],
+            vote_path=it.get("vote_path") or "",
+            output_dir=os.path.join(os.path.dirname(it["mask_path"]), "ppe_count"),
+            aoi_path=cfg.get("aoi_path") or "",
+        )
+        r = count_plants(
+            sub,
+            progress=lambda p, m, k=k: progress(
+                int(100 * (k + p / 100.0) / n), "{} ({}/{}): {}".format(it["name"], k + 1, n, m)
+            ),
+            log=log,
+        )
+        rows.append(
+            [
+                it["name"],
+                r["plants"],
+                r["flagged_big"],
+                r["left_out_between_rows"],
+                _r(r["median_plant_cm2"]),
+                _r(r["plants_per_m2"], 3),
+                r["points_path"],
+            ]
+        )
         log("Count {}/{}: {} plants in {}.".format(k + 1, n, r["plants"], it["name"]))
     path = os.path.join(cfg["output_dir"], "ppe_batch_counts.csv")
     with open(path, "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["image", "plants", "flagged_big", "left_out_between_rows", "median_plant_cm2", "plants_per_m2", "points_path"])
+        w.writerow(
+            [
+                "image",
+                "plants",
+                "flagged_big",
+                "left_out_between_rows",
+                "median_plant_cm2",
+                "plants_per_m2",
+                "points_path",
+            ]
+        )
         w.writerows(rows)
     progress(100, "Counted {} images".format(n))
-    return {"batch_counts_csv": path, "rows": rows, "plants": sum(r[1] for r in rows), "images": n, "seconds": time.time() - started, "note": EARLY_NOTE}
+    return {
+        "batch_counts_csv": path,
+        "rows": rows,
+        "plants": sum(r[1] for r in rows),
+        "images": n,
+        "seconds": time.time() - started,
+        "note": EARLY_NOTE,
+    }
 
 
 # ---- splitting touching plants (4.6.6) -----------------------------------------------------------
@@ -607,7 +750,7 @@ def _dilate(m, r=1):
     out = np.zeros_like(m)
     for dy in range(-r, r + 1):
         for dx in range(-r, r + 1):
-            out |= p[r + dy:r + dy + h, r + dx:r + dx + w]
+            out |= p[r + dy: r + dy + h, r + dx: r + dx + w]
     return out
 
 
@@ -625,7 +768,7 @@ def _group_window(info, x, y, area_cm2=None, ds=None):
     gt = ds.GetGeoTransform()
     W, H = ds.RasterXSize, ds.RasterYSize
     pixel_cm = 100.0 * math.sqrt(abs(gt[1] * gt[5])) if _pixel_area_m2(ds) else 1.0
-    a_px = (area_cm2 / pixel_cm ** 2) if area_cm2 else 400.0
+    a_px = (area_cm2 / pixel_cm**2) if area_cm2 else 400.0
     half = int(min(2000, max(40, 3.0 * math.sqrt(a_px / math.pi))))
     cx = int((x - gt[0]) / gt[1])
     cy = int((y - gt[3]) / gt[5])
@@ -637,10 +780,10 @@ def _group_window(info, x, y, area_cm2=None, ds=None):
     join_px = max(0, int(round((info.get("join_cm") or 0) / pixel_cm / 2.0)))
     allowed = _dilate(plant, join_px) if join_px else plant.copy()
     py, px = np.nonzero(plant)
-    k = int(np.argmin((px - (cx - x0)) ** 2 + (py - (cy - y0)) ** 2))   # plant pixel nearest the point
+    k = int(np.argmin((px - (cx - x0)) ** 2 + (py - (cy - y0)) ** 2))  # plant pixel nearest the point
     seed = np.zeros_like(plant)
     seed[py[k], px[k]] = True
-    for _ in range(4 * half):                       # flood fill through the joined area
+    for _ in range(4 * half):  # flood fill through the joined area
         grown = _dilate(seed) & allowed
         if (grown == seed).all():
             break
@@ -679,15 +822,15 @@ def _split_window(g, n):
     gdal.ComputeProximity(mem.GetRasterBand(1), dist.GetRasterBand(1), ["VALUES=1", "DISTUNITS=PIXEL"])
     d = dist.GetRasterBand(1).ReadAsArray()[py, px]
     pts = np.column_stack([px, py]).astype(np.float64)
-    sep = math.sqrt(len(px) / n / math.pi)          # a lobe's radius if the n plants were equal
+    sep = math.sqrt(len(px) / n / math.pi)  # a lobe's radius if the n plants were equal
     order = np.argsort(-d)
     seeds = []
-    for i in order:                                 # deepest pixels first, kept apart
-        if all((px[i] - px[j]) ** 2 + (py[i] - py[j]) ** 2 >= sep ** 2 for j in seeds):
+    for i in order:  # deepest pixels first, kept apart
+        if all((px[i] - px[j]) ** 2 + (py[i] - py[j]) ** 2 >= sep**2 for j in seeds):
             seeds.append(i)
         if len(seeds) == n:
             break
-    while len(seeds) < n:                           # not enough separate lobes: farthest point from the chosen ones
+    while len(seeds) < n:  # not enough separate lobes: farthest point from the chosen ones
         dd = np.min([(px - px[j]) ** 2 + (py - py[j]) ** 2 for j in seeds], axis=0)
         seeds.append(int(np.argmax(dd)))
     c = np.array([[px[j], py[j]] for j in seeds], np.float64)
@@ -704,7 +847,7 @@ def _split_window(g, n):
         if not sel.any():
             continue
         cx, cy = pts[sel].mean(0) + (x0 + 0.5, y0 + 0.5)
-        out.append((gt[0] + cx * gt[1] + cy * gt[2], gt[3] + cx * gt[4] + cy * gt[5], float(sel.sum()) * pixel_cm ** 2))
+        out.append((gt[0] + cx * gt[1] + cy * gt[2], gt[3] + cx * gt[4] + cy * gt[5], float(sel.sum()) * pixel_cm**2))
     return out
 
 
@@ -716,8 +859,8 @@ def _split_window(g, n):
 # measures it only from enough gaps, or the user types it. The n points are placed as in ✂ Split (deepest
 # pixels, then k-means): true plants with exactly one point went from 33 to 63 % (starting the centres
 # evenly along the row gave 59 %).
-STATUS_AUTO = "auto split"          # split by PPE from the plant spacing; counted; the user can merge or split again
-SPACING_MIN_GAPS = 20               # plant spacing is measured only from at least this many gaps between plants
+STATUS_AUTO = "auto split"  # split by PPE from the plant spacing; counted; the user can merge or split again
+SPACING_MIN_GAPS = 20  # plant spacing is measured only from at least this many gaps between plants
 
 
 def _ensure_split_field(path):
@@ -755,7 +898,7 @@ def spacing_gaps(px, py, angle_deg, row_spacing_px, tile_px, use=None):
     u = -px * math.sin(t) + py * math.cos(t)
     gaps = []
     tid = np.floor(px / tile_px) * 1000003 + np.floor(py / tile_px)
-    order = np.argsort(tid, kind="stable")             # one sort instead of one full scan per tile (same groups, same order)
+    order = np.argsort(tid, kind="stable")  # one sort instead of one full scan per tile (same groups, same order)
     for sel in np.split(order, np.flatnonzero(np.diff(tid[order])) + 1):
         if len(sel) < 2:
             continue
@@ -793,7 +936,7 @@ def _read_features(path):
     out = []
     names = [lay.GetLayerDefn().GetFieldDefn(i).GetName() for i in range(lay.GetLayerDefn().GetFieldCount())]
     idx = list(enumerate(names))
-    for f in lay:                                        # fields read by position: GDAL looks a name up field by field
+    for f in lay:  # fields read by position: GDAL looks a name up field by field
         g = f.GetGeometryRef()
         if g is None:
             continue
@@ -839,23 +982,37 @@ def auto_split(points_path, plant_spacing_cm=None, log=None):
         row_pts = [f for f in feats if f.get("status") != STATUS_WEED]
         area_key = "area_cm2" if any(f.get("area_cm2") is not None for f in feats) else "area_px"
         rng = confident_range([f.get(area_key) for f in row_pts if f.get("status") == STATUS_PLANT])
-        use = [f.get("status") == STATUS_PLANT and rng is not None and f.get(area_key) is not None and rng[1] <= f[area_key] <= rng[2]
-               for f in row_pts]
+        use = [
+            f.get("status") == STATUS_PLANT
+            and rng is not None
+            and f.get(area_key) is not None
+            and rng[1] <= f[area_key] <= rng[2]
+            for f in row_pts
+        ]
         res["confident_plants"] = int(sum(use))
         if rng is not None:
-            k = 1.0 if area_key == "area_cm2" else pixel_cm ** 2
+            k = 1.0 if area_key == "area_cm2" else pixel_cm**2
             res["confident_range_cm2"] = [round(rng[1] * k, 1), round(rng[2] * k, 1)]
-        s_px, n_gaps = plant_spacing([(f["x"] - gt[0]) / gt[1] for f in row_pts], [(f["y"] - gt[3]) / gt[5] for f in row_pts], a0,
-                                     float(rows["spacing_cm"]) / pixel_cm, ROW_TILE_CM / pixel_cm, use)
+        s_px, n_gaps = plant_spacing(
+            [(f["x"] - gt[0]) / gt[1] for f in row_pts],
+            [(f["y"] - gt[3]) / gt[5] for f in row_pts],
+            a0,
+            float(rows["spacing_cm"]) / pixel_cm,
+            ROW_TILE_CM / pixel_cm,
+            use,
+        )
         if s_px is None:
-            res["note"] = ("too few confident plants in the rows to measure the plant spacing ({} gaps between them, {} needed); "
-                           "type the spacing to split touching plants").format(n_gaps, SPACING_MIN_GAPS)
+            res["note"] = (
+                "too few confident plants in the rows to measure the plant spacing ({} gaps between them, {} needed); "
+                "type the spacing to split touching plants"
+            ).format(n_gaps, SPACING_MIN_GAPS)
             info["auto_split"] = res
             with open(info_path, "w", encoding="utf-8") as fh:
                 json.dump(info, fh, indent=1)
             return res
         res["spacing_from"] = "measured from {} gaps between {} confident plants, single plants of {}-{} cm2".format(
-            n_gaps, res["confident_plants"], *[int(round(v)) for v in res.get("confident_range_cm2", [0, 0])])
+            n_gaps, res["confident_plants"], *[int(round(v)) for v in res.get("confident_range_cm2", [0, 0])]
+        )
     res["plant_spacing_cm"] = s_px * pixel_cm
     checks = [f for f in feats if f.get("status") == STATUS_CHECK]
     _ensure_split_field(points_path)
@@ -864,7 +1021,7 @@ def auto_split(points_path, plant_spacing_cm=None, log=None):
     next_id = max([f.get("plant_id") or 0 for f in feats] or [0]) + 1
     area_field = "area_cm2" if lay.GetLayerDefn().GetFieldIndex("area_cm2") >= 0 else "area_px"
     t = math.radians(a0)
-    lay.StartTransaction()                # one commit for all points, not one per point
+    lay.StartTransaction()  # one commit for all points, not one per point
     for f in checks:
         g = _group_window(info, f["x"], f["y"], f.get(area_field) if area_field == "area_cm2" else None, ds)
         if g is None:
@@ -878,7 +1035,9 @@ def auto_split(points_path, plant_spacing_cm=None, log=None):
         n = int(round(length / s_px))
         if n < 2:
             continue
-        res.setdefault("patches", []).append({"plant_id": int(f["plant_id"]), "length_cm": round(length * pixel_cm, 1), "plants": n})
+        res.setdefault("patches", []).append(
+            {"plant_id": int(f["plant_id"]), "length_cm": round(length * pixel_cm, 1), "plants": n}
+        )
         parts = _split_window(g, n)
         if len(parts) < 2:
             continue
@@ -890,7 +1049,7 @@ def auto_split(points_path, plant_spacing_cm=None, log=None):
             nf.SetGeometry(p)
             nf.SetField("plant_id", next_id)
             next_id += 1
-            nf.SetField(area_field, float(a) if area_field == "area_cm2" else float(a) / pixel_cm ** 2)
+            nf.SetField(area_field, float(a) if area_field == "area_cm2" else float(a) / pixel_cm**2)
             nf.SetField("status", STATUS_AUTO)
             nf.SetField("on_row", int(f.get("on_row") if f.get("on_row") is not None else 1))
             nf.SetField("split_of", int(f["plant_id"]))
@@ -912,15 +1071,21 @@ def auto_split(points_path, plant_spacing_cm=None, log=None):
 def split_note(res):
     """Plain words: the plant spacing, the length above which a patch is split, and what was split."""
     s = res["plant_spacing_cm"]
-    text = ("plant spacing in the row {:.1f} cm ({}). A patch longer than {:.1f} cm along the row (1.5 x spacing) is split, "
-            "one plant per {:.1f} cm: up to {:.1f} cm = 2 plants, up to {:.1f} cm = 3 plants, and so on. ").format(
-        s, res["spacing_from"], 1.5 * s, s, 2.5 * s, 3.5 * s)
+    text = (
+        "plant spacing in the row {:.1f} cm ({}). A patch longer than {:.1f} cm along the row (1.5 x spacing) is split,"
+        " one plant per {:.1f} cm: up to {:.1f} cm = 2 plants, up to {:.1f} cm = 3 plants, and so on. "
+    ).format(s, res["spacing_from"], 1.5 * s, s, 2.5 * s, 3.5 * s)
     if not res["groups_split"]:
         return text + "No patch was that long, so nothing was split"
     parts = ", ".join("{} cm into {}".format(p["length_cm"], p["plants"]) for p in res.get("patches", [])[:6])
     return text + "{} patch{} split ({}{}): {} more plant{}; check them on the map".format(
-        res["groups_split"], "" if res["groups_split"] == 1 else "es", parts, ", ..." if len(res.get("patches", [])) > 6 else "",
-        res["points_added"], "" if res["points_added"] == 1 else "s")
+        res["groups_split"],
+        "" if res["groups_split"] == 1 else "es",
+        parts,
+        ", ..." if len(res.get("patches", [])) > 6 else "",
+        res["points_added"],
+        "" if res["points_added"] == 1 else "s",
+    )
 
 
 def split_part(points_path, x, y, n, siblings, area_cm2=None):
@@ -935,7 +1100,11 @@ def split_part(points_path, x, y, n, siblings, area_cm2=None):
     if len(xx) < n:
         return []
     sib = np.array([((a - gt[0]) / gt[1] - x0 - 0.5, (b - gt[3]) / gt[5] - y0 - 0.5) for a, b in siblings], float)
-    me = int(np.argmin((sib[:, 0] - ((x - gt[0]) / gt[1] - x0 - 0.5)) ** 2 + (sib[:, 1] - ((y - gt[3]) / gt[5] - y0 - 0.5)) ** 2))
+    me = int(
+        np.argmin(
+            (sib[:, 0] - ((x - gt[0]) / gt[1] - x0 - 0.5)) ** 2 + (sib[:, 1] - ((y - gt[3]) / gt[5] - y0 - 0.5)) ** 2
+        )
+    )
     near = np.argmin((xx[:, None] - sib[None, :, 0]) ** 2 + (yy[:, None] - sib[None, :, 1]) ** 2, axis=1)
     sub = np.zeros_like(m)
     sub[yy[near == me], xx[near == me]] = True
@@ -987,8 +1156,8 @@ def flag_row_weeds(points_path, log=None, smaller_than_neighbour=True, close=ROW
     feats = _read_features(points_path)
     ds = ogr.Open(points_path, 1)
     lay = ds.GetLayer()
-    lay.StartTransaction()   # one commit for all edits
-    for f in feats:                                      # weeds found between the rows get their reason too
+    lay.StartTransaction()  # one commit for all edits
+    for f in feats:  # weeds found between the rows get their reason too
         if f.get("status") == STATUS_WEED and not f.get("weed_reason"):
             g = lay.GetFeature(f["fid"])
             g.SetField("weed_reason", WEED_BETWEEN)
@@ -1004,7 +1173,7 @@ def flag_row_weeds(points_path, log=None, smaller_than_neighbour=True, close=ROW
     gt = safe_gdal_open(info["mask_path"]).GetGeoTransform()
     pixel_cm = 100.0 * math.sqrt(abs(gt[1] * gt[5]))
     area_key = "area_cm2" if any(f.get("area_cm2") is not None for f in feats) else "area_px"
-    k = 1.0 if area_key == "area_cm2" else pixel_cm ** 2
+    k = 1.0 if area_key == "area_cm2" else pixel_cm**2
     pts = [f for f in feats if f.get("status") != STATUS_WEED]
     plain = [f.get(area_key) for f in pts if f.get("status") == STATUS_PLANT and f.get(area_key)]
     if len(plain) < 3:
@@ -1049,15 +1218,20 @@ def flag_row_weeds(points_path, log=None, smaller_than_neighbour=True, close=ROW
     for f, gap, nb in flagged:
         g = lay.GetFeature(f["fid"])
         g.SetField("status", STATUS_WEED)
-        g.SetField("weed_reason", "{}: {:.0f} cm from plant {} (plant spacing {:.0f} cm), {:.0f} cm2 (typical {:.0f} cm2)".format(
-            "in the row", gap, nb, spacing, (f.get(area_key) or 0) * k, typical))
+        g.SetField(
+            "weed_reason",
+            "{}: {:.0f} cm from plant {} (plant spacing {:.0f} cm), {:.0f} cm2 (typical {:.0f} cm2)".format(
+                "in the row", gap, nb, spacing, (f.get(area_key) or 0) * k, typical
+            ),
+        )
         lay.SetFeature(g)
     lay.CommitTransaction()
     ds = None
     res.update(flagged=len(flagged), close_cm=limit, typical_cm2=typical)
-    res["note"] = ("{} small plant{} inside the rows marked weed? (not counted): closer than {:.1f} cm (half the plant spacing) to a "
-                   "plant and smaller than a typical plant ({:.0f} cm2). Switch any that are crop back to plant").format(
-        len(flagged), "" if len(flagged) == 1 else "s", limit, typical)
+    res["note"] = (
+        "{} small plant{} inside the rows marked weed? (not counted): closer than {:.1f} cm (half the plant spacing) to"
+        " a plant and smaller than a typical plant ({:.0f} cm2). Switch any that are crop back to plant"
+    ).format(len(flagged), "" if len(flagged) == 1 else "s", limit, typical)
     log(res["note"] + ".")
     info["row_weeds"] = res
     with open(info_path, "w", encoding="utf-8") as fh:
@@ -1071,7 +1245,7 @@ def flag_row_weeds(points_path, log=None, smaller_than_neighbour=True, close=ROW
 # rows) or 8 (inside the row) in the findings raster. The user leaves either kind out of the mask (−) or
 # keeps it; the vote is not changed. Needs crop rows; without them nothing is marked.
 WEED_BETWEEN_CODE, WEED_IN_ROW_CODE = 7, 8
-MAX_WEED_PIECE = 3.0      # review: a piece over 3 x a typical plant is crop joined to a weed, never marked weed as a whole
+MAX_WEED_PIECE = 3.0  # review: a piece over 3 x a typical plant is crop joined to a weed, never marked weed as a whole
 
 
 def mark_weeds(vote_path, findings_path, threshold, work_dir, log=None, progress=None, cfg=None, keep_dir=None):
@@ -1079,12 +1253,20 @@ def mark_weeds(vote_path, findings_path, threshold, work_dir, log=None, progress
     With keep_dir the count (pieces, points) and a copy of the findings before the weeds are kept there,
     so single pieces can be switched weed <-> crop later (toggle_weed_piece)."""
     import shutil
+
     log = log or (lambda m: None)
     cfg = dict(cfg or {})
     tmp = keep_dir or os.path.join(work_dir, "_ppe_weeds_tmp")
     shutil.rmtree(tmp, ignore_errors=True)
     os.makedirs(tmp)
-    res = {"threshold": float(threshold), "between": 0, "in_row": 0, "pixels_between": 0, "pixels_in_row": 0, "pixels_pct": 0.0}
+    res = {
+        "threshold": float(threshold),
+        "between": 0,
+        "in_row": 0,
+        "pixels_between": 0,
+        "pixels_in_row": 0,
+        "pixels_pct": 0.0,
+    }
     try:
         v_ds = safe_gdal_open(vote_path)
         W, H = v_ds.RasterXSize, v_ds.RasterYSize
@@ -1093,7 +1275,9 @@ def mark_weeds(vote_path, findings_path, threshold, work_dir, log=None, progress
             res["note"] = "the image is not in metres, so rows and plant sizes cannot be measured"
             return res
         mpath = os.path.join(tmp, "mask.tif")
-        m_ds = gdal.GetDriverByName("GTiff").Create(mpath, W, H, 1, gdal.GDT_Byte, ["TILED=YES", "COMPRESS=DEFLATE", "BIGTIFF=IF_SAFER"])
+        m_ds = gdal.GetDriverByName("GTiff").Create(
+            mpath, W, H, 1, gdal.GDT_Byte, ["TILED=YES", "COMPRESS=DEFLATE", "BIGTIFF=IF_SAFER"]
+        )
         m_ds.SetGeoTransform(v_ds.GetGeoTransform())
         m_ds.SetProjection(v_ds.GetProjection())
         m_ds.GetRasterBand(1).SetNoDataValue(255)
@@ -1105,10 +1289,23 @@ def mark_weeds(vote_path, findings_path, threshold, work_dir, log=None, progress
             valid_all += int(ok.sum())
             m_ds.GetRasterBand(1).WriteArray(np.where(ok, (v >= cut).astype(np.uint8), 255).astype(np.uint8), 0, y)
         m_ds = None
-        c = count_plants(dict({"mask_path": mpath, "vote_path": vote_path, "output_dir": tmp, "find_rows": True,
-                               "groups_path": os.path.join(tmp, "groups.tif")}, **cfg), progress=progress)
+        c = count_plants(
+            dict(
+                {
+                    "mask_path": mpath,
+                    "vote_path": vote_path,
+                    "output_dir": tmp,
+                    "find_rows": True,
+                    "groups_path": os.path.join(tmp, "groups.tif"),
+                },
+                **cfg
+            ),
+            progress=progress,
+        )
         rows = c.get("rows") or {}
-        res.update(rows_found=bool(rows.get("rows")), plant_spacing_cm=c.get("plant_spacing_cm"), plants=c.get("plants"))
+        res.update(
+            rows_found=bool(rows.get("rows")), plant_spacing_cm=c.get("plant_spacing_cm"), plants=c.get("plants")
+        )
         if not rows.get("rows"):
             res["note"] = "no clear crop rows, so weeds cannot be told from crop plants"
             return res
@@ -1119,7 +1316,9 @@ def mark_weeds(vote_path, findings_path, threshold, work_dir, log=None, progress
         typical = float(np.median([f[ak] for f in feats if f.get("status") == STATUS_PLANT and f.get(ak)] or [np.inf]))
         res["typical_plant"] = typical
         px_cm2 = (_pixel_area_m2(v_ds) or 0) * 1e4
-        res["typical_px"] = (typical / px_cm2 if ak == "area_cm2" and px_cm2 else typical) if np.isfinite(typical) else None
+        res["typical_px"] = (
+            (typical / px_cm2 if ak == "area_cm2" and px_cm2 else typical) if np.isfinite(typical) else None
+        )
         for f in feats:
             pid = int(f.get("plant_id") or 0)
             if f.get("status") != STATUS_WEED or not (1 <= pid <= len(gid)):
@@ -1133,10 +1332,18 @@ def mark_weeds(vote_path, findings_path, threshold, work_dir, log=None, progress
             code[gid[pid - 1]] = WEED_IN_ROW_CODE if inrow else WEED_BETWEEN_CODE
             res["in_row" if inrow else "between"] += 1
         if keep_dir:
-            gdal.GetDriverByName("GTiff").CreateCopy(os.path.join(tmp, "findings_before_weeds.tif"), safe_gdal_open(findings_path),
-                                                     options=["TILED=YES", "COMPRESS=DEFLATE", "BIGTIFF=IF_SAFER"])
-            res.update(groups_path=os.path.join(tmp, "groups.tif"), points_path=c["points_path"], ids_path=os.path.join(tmp, "ppe_group_ids.npy"),
-                       before_path=os.path.join(tmp, "findings_before_weeds.tif"), cut=cut)
+            gdal.GetDriverByName("GTiff").CreateCopy(
+                os.path.join(tmp, "findings_before_weeds.tif"),
+                safe_gdal_open(findings_path),
+                options=["TILED=YES", "COMPRESS=DEFLATE", "BIGTIFF=IF_SAFER"],
+            )
+            res.update(
+                groups_path=os.path.join(tmp, "groups.tif"),
+                points_path=c["points_path"],
+                ids_path=os.path.join(tmp, "ppe_group_ids.npy"),
+                before_path=os.path.join(tmp, "findings_before_weeds.tif"),
+                cut=cut,
+            )
         g_ds = safe_gdal_open(os.path.join(tmp, "groups.tif"))
         f_ds = gdal.Open(findings_path, gdal.GA_Update)
         m_ds = safe_gdal_open(mpath)
@@ -1148,7 +1355,7 @@ def mark_weeds(vote_path, findings_path, threshold, work_dir, log=None, progress
             h = min(512, H - y)
             g = g_ds.GetRasterBand(1).ReadAsArray(0, y0, W, y1 - y0)
             nd = m_ds.GetRasterBand(1).ReadAsArray(0, y0, W, y1 - y0) == 255
-            nd = np.pad(nd, 1, constant_values=True)                    # outside the image counts as no data
+            nd = np.pad(nd, 1, constant_values=True)  # outside the image counts as no data
             near = nd[:-2, 1:-1] | nd[2:, 1:-1] | nd[1:-1, :-2] | nd[1:-1, 2:] | nd[1:-1, 1:-1]
             hit = np.unique(g[near & (g > 0)])
             edge[hit[hit < len(code)]] = True
@@ -1172,9 +1379,17 @@ def mark_weeds(vote_path, findings_path, threshold, work_dir, log=None, progress
         res["between"] = int((code == WEED_BETWEEN_CODE).sum())
         res["in_row"] = int((code == WEED_IN_ROW_CODE).sum())
         res["pixels_pct"] = 100.0 * (res["pixels_between"] + res["pixels_in_row"]) / max(1, valid_all)
-        res["note"] = ("{} weed{} between the rows and {} small plant{} crowding a crop plant inside the rows ({:.2f}% of the image) at {:.2f}"
-                       ).format(res["between"], "" if res["between"] == 1 else "s", res["in_row"], "" if res["in_row"] == 1 else "s",
-                                res["pixels_pct"], float(threshold))
+        res["note"] = (
+            "{} weed{} between the rows and {} small plant{} crowding a crop plant inside the rows ({:.2f}% of the"
+            " image) at {:.2f}"
+        ).format(
+            res["between"],
+            "" if res["between"] == 1 else "s",
+            res["in_row"],
+            "" if res["in_row"] == 1 else "s",
+            res["pixels_pct"],
+            float(threshold),
+        )
         return res
     finally:
         if keep_dir:
@@ -1204,7 +1419,10 @@ def crop_only_mask(points_path, leave_out_uncounted=False, log=None):
     gpath = info.get("groups_path") or ""
     ids_path = os.path.join(out_dir, "ppe_group_ids.npy")
     if not gpath or not os.path.isfile(gpath) or not os.path.isfile(ids_path):
-        raise ValueError("This count has no plant pieces saved (it was made with an older PPE). Count the plants again, then make the crop-only mask.")
+        raise ValueError(
+            "This count has no plant pieces saved (it was made with an older PPE). Count the plants again, then make"
+            " the crop-only mask."
+        )
     src_path = info.get("source_mask_path") or info["mask_path"]
     g_ds = safe_gdal_open(gpath)
     m_ds = safe_gdal_open(src_path)
@@ -1217,7 +1435,7 @@ def crop_only_mask(points_path, leave_out_uncounted=False, log=None):
     gid = np.load(ids_path)
     n_g = int(gid.max()) + 1 if len(gid) else 1
     had = np.zeros(n_g, bool)
-    had[gid] = True          # pieces the count made a point for
+    had[gid] = True  # pieces the count made a point for
     counted = np.zeros(n_g, bool)
     feats = _read_features(points_path)
     for f in feats:
@@ -1227,7 +1445,7 @@ def crop_only_mask(points_path, leave_out_uncounted=False, log=None):
         k = 0
         if 1 <= pid <= len(gid) and f.get("status") != STATUS_ADDED:
             k = int(gid[pid - 1])
-        else:                                            # split and added points: the piece under the point
+        else:  # split and added points: the piece under the point
             c = int((f["x"] - gt[0]) / gt[1])
             r = int((f["y"] - gt[3]) / gt[5])
             if 0 <= c < W and 0 <= r < H:
@@ -1240,7 +1458,9 @@ def crop_only_mask(points_path, leave_out_uncounted=False, log=None):
     drop[0] = False
     stem = os.path.splitext(os.path.basename(src_path))[0]
     out_path = os.path.join(out_dir, stem + ("_crop_only_strict" if leave_out_uncounted else "_crop_only") + ".tif")
-    out = gdal.GetDriverByName("GTiff").Create(out_path, W, H, 1, gdal.GDT_Byte, ["TILED=YES", "COMPRESS=DEFLATE", "BIGTIFF=IF_SAFER"])
+    out = gdal.GetDriverByName("GTiff").Create(
+        out_path, W, H, 1, gdal.GDT_Byte, ["TILED=YES", "COMPRESS=DEFLATE", "BIGTIFF=IF_SAFER"]
+    )
     out.SetGeoTransform(m_ds.GetGeoTransform())
     out.SetProjection(m_ds.GetProjection())
     out.GetRasterBand(1).SetNoDataValue(255)
@@ -1258,10 +1478,23 @@ def crop_only_mask(points_path, leave_out_uncounted=False, log=None):
         out.GetRasterBand(1).WriteArray(m, 0, y)
     out.FlushCache()
     out = None
-    res = {"mask_path": out_path, "pieces_left_out": int(drop[1:].sum()), "pixels_left_out": removed, "plant_pixels_before": before,
-           "left_out_pct": 100.0 * removed / max(1, before), "leave_out_uncounted": bool(leave_out_uncounted)}
-    res["note"] = "Crop-only mask: {:,} pieces left out ({:,} pixels, {:.1f} % of the plant): the weeds{} as the points are now".format(
-        res["pieces_left_out"], removed, res["left_out_pct"], " and the pieces too small to count" if leave_out_uncounted else "")
+    res = {
+        "mask_path": out_path,
+        "pieces_left_out": int(drop[1:].sum()),
+        "pixels_left_out": removed,
+        "plant_pixels_before": before,
+        "left_out_pct": 100.0 * removed / max(1, before),
+        "leave_out_uncounted": bool(leave_out_uncounted),
+    }
+    res["note"] = (
+        "Crop-only mask: {:,} pieces left out ({:,} pixels, {:.1f} % of the plant): the weeds{} as the points"
+        " are now".format(
+            res["pieces_left_out"],
+            removed,
+            res["left_out_pct"],
+            " and the pieces too small to count" if leave_out_uncounted else "",
+        )
+    )
     log(res["note"] + ".")
     return res
 
@@ -1282,12 +1515,17 @@ def toggle_weed_piece(weeds, findings_path, vote_path, x, y, levels=1200):
     if gid <= 0:
         return {"state": None, "message": "No plant piece here: click on the plant itself."}
     half = 128
-    while True:                       # a window around the click that holds the whole piece
+    while True:  # a window around the click that holds the whole piece
         c0, r0 = max(0, col - half), max(0, row - half)
         c1, r1 = min(W, col + half), min(H, row + half)
         g = g_ds.GetRasterBand(1).ReadAsArray(c0, r0, c1 - c0, r1 - r0)
         on = g == gid
-        touches = (on[0].any() and r0 > 0) or (on[-1].any() and r1 < H) or (on[:, 0].any() and c0 > 0) or (on[:, -1].any() and c1 < W)
+        touches = (
+            (on[0].any() and r0 > 0)
+            or (on[-1].any() and r1 < H)
+            or (on[:, 0].any() and c0 > 0)
+            or (on[:, -1].any() and c1 < W)
+        )
         if not touches:
             break
         half *= 2
@@ -1301,20 +1539,27 @@ def toggle_weed_piece(weeds, findings_path, vote_path, x, y, levels=1200):
         f_ds = None
         return {"state": None, "message": "This piece is below the threshold PPE looked for weeds at."}
     old = f[piece].astype(np.intp)
-    if np.isin(old, (WEED_BETWEEN_CODE, WEED_IN_ROW_CODE)).any():      # weed -> crop: the codes from before
+    if np.isin(old, (WEED_BETWEEN_CODE, WEED_IN_ROW_CODE)).any():  # weed -> crop: the codes from before
         b_ds = safe_gdal_open(weeds["before_path"])
         before = b_ds.GetRasterBand(1).ReadAsArray(c0, r0, c1 - c0, r1 - r0)
         b_ds = None
         new = before[piece].astype(np.intp)
         new[np.isin(new, (WEED_BETWEEN_CODE, WEED_IN_ROW_CODE))] = 0
         state = "crop"
-    else:                                                              # crop -> weed: between or inside the rows
+    else:  # crop -> weed: between or inside the rows
         big = weeds.get("typical_px")
         if big and piece.sum() > MAX_WEED_PIECE * big:
             f_ds = None
-            return {"state": None, "message": "This piece is {:.0f} times a typical plant: it is joined to crop plants, so it cannot be marked a "
-                                              "weed as a whole (that would take the crop out too). Leave it, or raise the threshold so it splits.".format(
-                                                  piece.sum() / big)}
+            return {
+                "state": None,
+                "message": (
+                    "This piece is {:.0f} times a typical plant: it is joined to crop plants, so it cannot be marked a "
+                    "weed as a whole (that would take the crop out too). Leave it, or raise the threshold so"
+                    " it splits.".format(
+                        piece.sum() / big
+                    )
+                ),
+            }
         code = WEED_IN_ROW_CODE
         try:
             ids = np.load(weeds["ids_path"])
@@ -1322,7 +1567,9 @@ def toggle_weed_piece(weeds, findings_path, vote_path, x, y, levels=1200):
             if len(k):
                 for p in _read_features(weeds["points_path"]):
                     if int(p.get("plant_id") or 0) == int(k[0]) + 1:
-                        code = WEED_IN_ROW_CODE if (p.get("on_row") is None or int(p.get("on_row"))) else WEED_BETWEEN_CODE
+                        code = (
+                            WEED_IN_ROW_CODE if (p.get("on_row") is None or int(p.get("on_row"))) else WEED_BETWEEN_CODE
+                        )
                         break
         except (OSError, ValueError, KeyError):
             pass
@@ -1342,5 +1589,10 @@ def toggle_weed_piece(weeds, findings_path, vote_path, x, y, levels=1200):
             for a, b in zip(lv.tolist(), n.tolist()):
                 d[a] = d.get(a, 0) + sign * b
     name = "weed" if state == "weed" else "crop"
-    return {"state": state, "pixels": int(piece.sum()), "code": int(new[0]), "hist_delta": delta,
-            "message": "Piece of {:,} pixels marked {}.".format(int(piece.sum()), name)}
+    return {
+        "state": state,
+        "pixels": int(piece.sum()),
+        "code": int(new[0]),
+        "hist_delta": delta,
+        "message": "Piece of {:,} pixels marked {}.".format(int(piece.sum()), name),
+    }

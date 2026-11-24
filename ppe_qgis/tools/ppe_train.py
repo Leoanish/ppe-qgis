@@ -15,6 +15,7 @@ own band detection and scaling, so a new flight of the same camera needs no prep
 plants or calls PPE's sure soil plant more than it did on its own validation tiles, update it with
 the new images plus some old ones (updating with new images only makes it forget the old ones).
 """
+
 import argparse
 import json
 import os
@@ -25,7 +26,7 @@ import numpy as np
 from osgeo import gdal
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))      # the folder that holds ppe_qgis
+sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))  # the folder that holds ppe_qgis
 gdal.UseExceptions()
 
 
@@ -49,8 +50,14 @@ def unet(torch, n_in, c=16):
     nn, F = torch.nn, torch.nn.functional
 
     def blk(i, o):
-        return nn.Sequential(nn.Conv2d(i, o, 3, padding=1), nn.BatchNorm2d(o), nn.ReLU(inplace=True),
-                             nn.Conv2d(o, o, 3, padding=1), nn.BatchNorm2d(o), nn.ReLU(inplace=True))
+        return nn.Sequential(
+            nn.Conv2d(i, o, 3, padding=1),
+            nn.BatchNorm2d(o),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(o, o, 3, padding=1),
+            nn.BatchNorm2d(o),
+            nn.ReLU(inplace=True),
+        )
 
     class UNet(nn.Module):
         def __init__(s):
@@ -70,6 +77,7 @@ def unet(torch, n_in, c=16):
             d2 = s.d2(torch.cat([s.u2(d3), e2], 1))
             d1 = s.d1(torch.cat([s.u1(d2), e1], 1))
             return s.out(d1)
+
     return UNet()
 
 
@@ -85,7 +93,7 @@ def half(x, scale):
         return x
     c, h, w = x.shape
     h2, w2 = h // scale, w // scale
-    return x[:, :h2 * scale, :w2 * scale].reshape(c, h2, scale, w2, scale).mean(axis=(2, 4))
+    return x[:, : h2 * scale, : w2 * scale].reshape(c, h2, scale, w2, scale).mean(axis=(2, 4))
 
 
 def load_folder(folder, ranges, scale, split):
@@ -101,7 +109,7 @@ def load_folder(folder, ranges, scale, split):
             x = x[None]
         x = x / vs.get(t["image"], 1.0)
         X.append(half(norm(x, ranges), scale))
-        Y.append(y[scale // 2::scale, scale // 2::scale])
+        Y.append(y[scale // 2:: scale, scale // 2:: scale])
     return m, X, Y
 
 
@@ -138,13 +146,20 @@ def fit(torch, net, X, Y, iters, dev, log_every=100):
         p = torch.sigmoid(logit)
         if not m.any():
             continue
-        loss = F.binary_cross_entropy_with_logits(logit[m], yt[m]) + 1 - (2 * (p * yt * m).sum() + 1) / ((p * m).sum() + (yt * m).sum() + 1)
+        loss = (
+            F.binary_cross_entropy_with_logits(logit[m], yt[m])
+            + 1
+            - (2 * (p * yt * m).sum() + 1) / ((p * m).sum() + (yt * m).sum() + 1)
+        )
         opt.zero_grad()
         loss.backward()
         opt.step()
         sched.step()
         if it % log_every == 0 or it == iters - 1:
-            print("  step {:4d}/{}  loss {:.3f}  {:.0f} s".format(it + 1, iters, loss.item(), time.time() - t0), flush=True)
+            print(
+                "  step {:4d}/{}  loss {:.3f}  {:.0f} s".format(it + 1, iters, loss.item(), time.time() - t0),
+                flush=True,
+            )
     return time.time() - t0
 
 
@@ -164,9 +179,16 @@ def predict_array(torch, net, x, dev, scale, tile=512):
                 h, w = win.shape[1:]
                 ph, pw = (-h) % 8, (-w) % 8
                 win = np.pad(win, ((0, 0), (0, ph), (0, pw)), mode="reflect" if min(h, w) > max(ph, pw) else "edge")
-                p = torch.sigmoid(net(torch.from_numpy(np.ascontiguousarray(win))[None].to(dev)))[0, 0].float().cpu().numpy()[:h, :w]
-                out[y0:min(H, y0 + tile), x0:min(W, x0 + tile)] = p[y0 - a:y0 - a + min(tile, H - y0), x0 - b:x0 - b + min(tile, W - x0)]
-    if scale > 1:                           # back to the full grid (edge rows repeated when the size is odd)
+                p = (
+                    torch.sigmoid(net(torch.from_numpy(np.ascontiguousarray(win))[None].to(dev)))[0, 0]
+                    .float()
+                    .cpu()
+                    .numpy()[:h, :w]
+                )
+                out[y0: min(H, y0 + tile), x0: min(W, x0 + tile)] = p[
+                    y0 - a: y0 - a + min(tile, H - y0), x0 - b: x0 - b + min(tile, W - x0)
+                ]
+    if scale > 1:  # back to the full grid (edge rows repeated when the size is odd)
         H0, W0 = x.shape[1:]
         out = np.repeat(np.repeat(out, scale, 0), scale, 1)[:H0, :W0]
         out = np.pad(out, ((0, H0 - out.shape[0]), (0, W0 - out.shape[1])), mode="edge")
@@ -176,9 +198,20 @@ def predict_array(torch, net, x, dev, scale, tile=512):
 def read_image(path, bands):
     """The image with PPE's band detection and scaling, bands in the model's order."""
     from ppe_qgis.native_engine import NativePPEEngine
+
     eng = NativePPEEngine(log=lambda m: None)
-    src = {"source_mode": "folder", "folder_path": path} if os.path.isdir(path) else {"source_mode": "stacked", "stacked_path": path}
-    eng._resolve(dict(src, output_dir=os.path.dirname(os.path.abspath(path)), work_dir=os.path.join(os.path.dirname(os.path.abspath(path)), "ppe_work")))
+    src = (
+        {"source_mode": "folder", "folder_path": path}
+        if os.path.isdir(path)
+        else {"source_mode": "stacked", "stacked_path": path}
+    )
+    eng._resolve(
+        dict(
+            src,
+            output_dir=os.path.dirname(os.path.abspath(path)),
+            work_dir=os.path.join(os.path.dirname(os.path.abspath(path)), "ppe_work"),
+        )
+    )
     missing = [b for b in bands if b not in eng.sources]
     if missing:
         sys.exit("The image has no {} band(s); the model needs {}.".format(", ".join(missing), ", ".join(bands)))
@@ -212,7 +245,7 @@ def cmd_train(a, init=None):
         m, x, y = load_folder(f, ranges, scale, "train")
         if m["bands"] != bands:
             sys.exit("{} has bands {}, the model uses {}.".format(f, m["bands"], bands))
-        if k > 0 and a.old_share < 1 and len(x):          # update: a sample of the old images
+        if k > 0 and a.old_share < 1 and len(x):  # update: a sample of the old images
             keep = np.random.rand(len(x)) < a.old_share
             x = [v for v, s in zip(x, keep) if s]
             y = [v for v, s in zip(y, keep) if s]
@@ -221,7 +254,11 @@ def cmd_train(a, init=None):
         _m, vx, vy = load_folder(f, ranges, scale, "val")
         VX += vx
         VY += vy
-    print("Training on {} tiles ({} validation) with {} at 1/{} resolution, {} steps, bands {}.".format(len(X), len(VX), dev.type, scale, a.iters, ", ".join(bands)))
+    print(
+        "Training on {} tiles ({} validation) with {} at 1/{} resolution, {} steps, bands {}.".format(
+            len(X), len(VX), dev.type, scale, a.iters, ", ".join(bands)
+        )
+    )
     net = unet(torch, len(bands)).to(dev)
     if init:
         net.load_state_dict(init["state"])
@@ -233,11 +270,31 @@ def cmd_train(a, init=None):
         s1, s0 = agreement(p, y)
         sp.append(s1)
         ss.append(s0)
-    base = {"sure_plant_agreement": float(np.nanmean(sp)) if sp else None, "plant_on_sure_soil": float(np.nanmean(ss)) if ss else None}
-    print("Trained in {:.0f} s. On validation tiles: {:.1f} % of PPE's sure plant found, {:.2f} % of PPE's sure soil called plant.".format(
-        secs, 100 * (base["sure_plant_agreement"] or 0), 100 * (base["plant_on_sure_soil"] or 0)))
-    save_model(torch, net, a.out, {"bands": bands, "ranges": ranges, "scale": scale, "baseline": base, "trained_on": [os.path.abspath(f) for f in a.folders],
-                                   "iters": a.iters, "seconds": secs, "ppe": "4.3.0"})
+    base = {
+        "sure_plant_agreement": float(np.nanmean(sp)) if sp else None,
+        "plant_on_sure_soil": float(np.nanmean(ss)) if ss else None,
+    }
+    print(
+        "Trained in {:.0f} s. On validation tiles: {:.1f} % of PPE's sure plant found, {:.2f} % of PPE's sure soil"
+        " called plant.".format(
+            secs, 100 * (base["sure_plant_agreement"] or 0), 100 * (base["plant_on_sure_soil"] or 0)
+        )
+    )
+    save_model(
+        torch,
+        net,
+        a.out,
+        {
+            "bands": bands,
+            "ranges": ranges,
+            "scale": scale,
+            "baseline": base,
+            "trained_on": [os.path.abspath(f) for f in a.folders],
+            "iters": a.iters,
+            "seconds": secs,
+            "ppe": "4.3.0",
+        },
+    )
 
 
 def cmd_predict(a):
@@ -248,19 +305,26 @@ def cmd_predict(a):
     t = time.time()
     p = predict_array(torch, net, norm(x, ck["ranges"]), dev, ck["scale"])
     out = a.out or os.path.splitext(os.path.abspath(a.image.rstrip("/")))[0] + "_model_plant_mask.tif"
-    ds = gdal.GetDriverByName("GTiff").Create(out, p.shape[1], p.shape[0], 1, gdal.GDT_Byte, options=["COMPRESS=DEFLATE", "TILED=YES"])
+    ds = gdal.GetDriverByName("GTiff").Create(
+        out, p.shape[1], p.shape[0], 1, gdal.GDT_Byte, options=["COMPRESS=DEFLATE", "TILED=YES"]
+    )
     ds.SetGeoTransform(eng.template.GetGeoTransform())
     ds.SetProjection(eng.template.GetProjection())
     b = ds.GetRasterBand(1)
     b.WriteArray((p >= 0.5).astype(np.uint8))
     b.SetNoDataValue(255)
     ds = None
-    print("Plant mask (1 plant, 0 soil) written in {:.1f} s: {}  -  canopy {:.1f} %".format(time.time() - t, out, 100 * float((p >= 0.5).mean())))
+    print(
+        "Plant mask (1 plant, 0 soil) written in {:.1f} s: {}  -  canopy {:.1f} %".format(
+            time.time() - t, out, 100 * float((p >= 0.5).mean())
+        )
+    )
     return p
 
 
 def cmd_check(a):
     from ppe_qgis.training_data import label_array
+
     torch = _torch()
     dev = device(torch)
     net, ck = load_model(torch, a.model, dev)
@@ -271,14 +335,30 @@ def cmd_check(a):
     sp, ss = agreement(p, y)
     base = ck.get("baseline") or {}
     bp, bs = base.get("sure_plant_agreement"), base.get("plant_on_sure_soil")
-    print("New flight: {:.1f} % of PPE's sure plant found (at training {}), {:.2f} % of PPE's sure soil called plant (at training {}).".format(
-        100 * sp, "{:.1f} %".format(100 * bp) if bp is not None else "?", 100 * ss, "{:.2f} %".format(100 * bs) if bs is not None else "?"))
+    print(
+        "New flight: {:.1f} % of PPE's sure plant found (at training {}), {:.2f} % of PPE's sure soil called plant (at"
+        " training {}).".format(
+            100 * sp,
+            "{:.1f} %".format(100 * bp) if bp is not None else "?",
+            100 * ss,
+            "{:.2f} %".format(100 * bs) if bs is not None else "?",
+        )
+    )
     drop = bp is not None and sp < bp - 0.05
     extra = bs is not None and ss > 2 * bs + 0.005
     if drop or extra:
-        print("CHECK: the model has drifted ({}). Update it: make training data from the new images on the PPE Training data tab, then\n"
-              "  python ppe_train.py update {} <new training data folder> <old training data folder(s)>".format(
-                  "; ".join(w for w in ("it misses plants PPE is sure of" if drop else "", "it calls soil plant" if extra else "") if w), a.model))
+        print(
+            "CHECK: the model has drifted ({}). Update it: make training data from the new images on the PPE Training"
+            " data tab, then\n  python ppe_train.py update {} <new training data folder> <old training data"
+            " folder(s)>".format(
+                "; ".join(
+                    w
+                    for w in ("it misses plants PPE is sure of" if drop else "", "it calls soil plant" if extra else "")
+                    if w
+                ),
+                a.model,
+            )
+        )
         return 1
     print("OK: the model agrees with PPE as well as when it was trained.")
     return 0

@@ -1,11 +1,25 @@
 """Non-blocking native PPE worker; no external runtime or subprocess."""
-import os, traceback
+
+import os
+import traceback
 from datetime import datetime
 from qgis.PyQt.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 from .native_engine import Cancelled, NativePPEEngine
 
-ACTION_NAMES = {"run": "Run", "apply": "Finalize", "zones": "Preparing the crop areas", "export_aoi": "Plot export", "count": "Plant count", "training": "Training data", "labels_create": "Creating labels", "labels_write": "Writing labels", "labels_buffers": "Updating the buffers", "preview": "Opening the image",
-                "batch_run": "Batch run", "batch_finalize": "Finalizing the batch"}
+ACTION_NAMES = {
+    "run": "Run",
+    "apply": "Finalize",
+    "zones": "Preparing the crop areas",
+    "export_aoi": "Plot export",
+    "count": "Plant count",
+    "training": "Training data",
+    "labels_create": "Creating labels",
+    "labels_write": "Writing labels",
+    "labels_buffers": "Updating the buffers",
+    "preview": "Opening the image",
+    "batch_run": "Batch run",
+    "batch_finalize": "Finalizing the batch",
+}
 
 
 def describe_error(exc, action=None, step=None, log_path=None):
@@ -20,9 +34,11 @@ def describe_error(exc, action=None, step=None, log_path=None):
         text = "missing value {}".format(text or "(no name)")
     what = ACTION_NAMES.get(action) or ("Export" if str(action or "").startswith("export") else "PPE")
     message = "{} stopped{}: {}{}".format(
-        what, " while {}".format(step[0].lower() + step[1:]) if step else "",
+        what,
+        " while {}".format(step[0].lower() + step[1:]) if step else "",
         "{}: ".format(kind) if kind not in ("ValueError", "RuntimeError") or not text else "",
-        text or "no further details")
+        text or "no further details",
+    )
     if log_path:
         message += "\nDetails are in the log: {}".format(log_path)
     return message
@@ -35,8 +51,17 @@ class _Worker(QObject):
     succeeded = pyqtSignal(dict)
     failed = pyqtSignal(str)
     finished = pyqtSignal()
-    def __init__(self, config, log_path=None): super().__init__(); self.config = dict(config); self.cancelled = False; self.log_path = log_path; self.step = ""
-    def _progress(self, percent, message): self.step = str(message or ""); self.progress.emit(percent, message)
+
+    def __init__(self, config, log_path=None):
+        super().__init__()
+        self.config = dict(config)
+        self.cancelled = False
+        self.log_path = log_path
+        self.step = ""
+
+    def _progress(self, percent, message):
+        self.step = str(message or "")
+        self.progress.emit(percent, message)
 
     @pyqtSlot()
     def run(self):
@@ -55,16 +80,25 @@ class _Worker(QObject):
                 result = engine.export_aoi_statistics(self.config)
             elif action == "count":
                 from . import plant_count
-                result = (plant_count.count_batch if self.config.get("count_items") else plant_count.count_plants)(self.config, self._progress, self.log.emit)
+
+                result = (plant_count.count_batch if self.config.get("count_items") else plant_count.count_plants)(
+                    self.config, self._progress, self.log.emit
+                )
             elif action == "training":
                 from . import training_data
+
                 cfg = dict(self.config)
                 if cfg.get("batch_manifest"):
                     cfg["items"] = training_data.items_from_batch(cfg["batch_manifest"])
                 result = training_data.export_training_tiles(cfg, self._progress, self.log.emit, lambda: self.cancelled)
             elif action in ("labels_create", "labels_write", "labels_buffers"):
                 from . import label_points
-                fn = {"labels_create": label_points.run_and_create, "labels_write": label_points.write_labels, "labels_buffers": label_points.rebuild_buffers}[action]
+
+                fn = {
+                    "labels_create": label_points.run_and_create,
+                    "labels_write": label_points.write_labels,
+                    "labels_buffers": label_points.rebuild_buffers,
+                }[action]
                 result = fn(self.config, self._progress, self.log.emit, lambda: self.cancelled)
             elif str(action).startswith("export"):
                 result = engine.export_plant_only(self.config)
@@ -87,9 +121,17 @@ class PPEProcessRunner(QObject):
     succeeded = pyqtSignal(dict)
     failed = pyqtSignal(str)
     running_changed = pyqtSignal(bool)
-    def __init__(self, parent=None): super().__init__(parent); self.thread = None; self.worker = None; self._log_lines = []; self._log_path = None
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.thread = None
+        self.worker = None
+        self._log_lines = []
+        self._log_path = None
+
     @property
-    def is_running(self): return self.thread is not None and self.thread.isRunning()
+    def is_running(self):
+        return self.thread is not None and self.thread.isRunning()
 
     def start(self, config):
         if self.is_running:
@@ -121,7 +163,9 @@ class PPEProcessRunner(QObject):
             self.worker.cancelled = True
             self._capture_log("Cancellation requested; finishing the current raster block…")
 
-    def _capture_log(self, message): self._log_lines.append(str(message)); self.log.emit(str(message))
+    def _capture_log(self, message):
+        self._log_lines.append(str(message))
+        self.log.emit(str(message))
 
     def _write_log(self):
         try:
@@ -140,7 +184,10 @@ class _PreviewWorker(QObject):
     ready = pyqtSignal(dict)
     failed = pyqtSignal(str)
     finished = pyqtSignal()
-    def __init__(self, config): super().__init__(); self.config = dict(config)
+
+    def __init__(self, config):
+        super().__init__()
+        self.config = dict(config)
 
     @pyqtSlot()
     def run(self):
@@ -156,11 +203,19 @@ class PPEPreviewRunner(QObject):
     """Identifies the bands of a newly chosen image in the background so it can be shown on the
     map at once. If the user changes the selection while one request is running, only the
     newest one is answered."""
+
     ready = pyqtSignal(dict)
     failed = pyqtSignal(str)
-    def __init__(self, parent=None): super().__init__(parent); self.thread = None; self.worker = None; self.pending = None
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.thread = None
+        self.worker = None
+        self.pending = None
+
     @property
-    def is_running(self): return self.thread is not None
+    def is_running(self):
+        return self.thread is not None
 
     def request(self, config):
         if self.thread is not None:

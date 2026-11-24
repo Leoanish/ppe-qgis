@@ -24,34 +24,67 @@ GENERAL = {
 }
 
 CROPS = [
-    {"names": ("corn", "maize"),
-     "early": "pale young leaves", "closed": "tassels starting to show",
-     "flowering": "tassels (and silks)", "drying": "yellowing leaves and husks",
-     "any": "tassels, or yellowing leaves late in the season",
-     "tip": "On a corn field at tasselling (Kritis, August 2025) a threshold near 0.30 kept the tassels without letting soil in."},
-    {"names": ("sorghum", "milo"),
-     "flowering": "panicles (seed heads)", "drying": "ripening panicles and yellowing leaves",
-     "any": "panicles (seed heads)"},
-    {"names": ("wheat", "barley", "oat", "oats", "rye", "triticale", "rice"),
-     "flowering": "heads (ears)", "drying": "ripening heads turning golden and drying straw",
-     "any": "heads (ears) or ripening straw"},
-    {"names": ("soybean", "soybeans", "soy", "soya"),
-     "flowering": "flowers (small; most stay under the leaves)", "drying": "yellowing leaves and maturing pods",
-     "any": "pods or yellowing leaves"},
-    {"names": ("peanut", "peanuts", "groundnut"),
-     "flowering": "yellow flowers", "drying": "yellowing leaves",
-     "any": "yellow flowers or yellowing leaves"},
-    {"names": ("cotton",),
-     "flowering": "flowers (cream, turning pink)", "drying": "open bolls (white lint) and reddening leaves",
-     "any": "flowers or open bolls"},
-    {"names": ("canola", "rapeseed", "oilseed rape", "mustard"),
-     "flowering": "yellow flowers", "drying": "ripening pods", "any": "yellow flowers or pods"},
-    {"names": ("sunflower", "sunflowers"),
-     "flowering": "yellow flower heads", "drying": "drying heads and leaves", "any": "flower heads"},
-    {"names": ("potato", "potatoes"),
-     "flowering": "flowers", "drying": "yellowing haulm (dying leaves)", "any": "flowers or yellowing leaves"},
-    {"names": ("alfalfa", "lucerne", "clover"),
-     "flowering": "flowers", "any": "flowers"},
+    {
+        "names": ("corn", "maize"),
+        "early": "pale young leaves",
+        "closed": "tassels starting to show",
+        "flowering": "tassels (and silks)",
+        "drying": "yellowing leaves and husks",
+        "any": "tassels, or yellowing leaves late in the season",
+        "tip": (
+            "On a corn field at tasselling (Kritis, August 2025) a threshold near 0.30 kept the tassels without letting"
+            " soil in."
+        ),
+    },
+    {
+        "names": ("sorghum", "milo"),
+        "flowering": "panicles (seed heads)",
+        "drying": "ripening panicles and yellowing leaves",
+        "any": "panicles (seed heads)",
+    },
+    {
+        "names": ("wheat", "barley", "oat", "oats", "rye", "triticale", "rice"),
+        "flowering": "heads (ears)",
+        "drying": "ripening heads turning golden and drying straw",
+        "any": "heads (ears) or ripening straw",
+    },
+    {
+        "names": ("soybean", "soybeans", "soy", "soya"),
+        "flowering": "flowers (small; most stay under the leaves)",
+        "drying": "yellowing leaves and maturing pods",
+        "any": "pods or yellowing leaves",
+    },
+    {
+        "names": ("peanut", "peanuts", "groundnut"),
+        "flowering": "yellow flowers",
+        "drying": "yellowing leaves",
+        "any": "yellow flowers or yellowing leaves",
+    },
+    {
+        "names": ("cotton",),
+        "flowering": "flowers (cream, turning pink)",
+        "drying": "open bolls (white lint) and reddening leaves",
+        "any": "flowers or open bolls",
+    },
+    {
+        "names": ("canola", "rapeseed", "oilseed rape", "mustard"),
+        "flowering": "yellow flowers",
+        "drying": "ripening pods",
+        "any": "yellow flowers or pods",
+    },
+    {
+        "names": ("sunflower", "sunflowers"),
+        "flowering": "yellow flower heads",
+        "drying": "drying heads and leaves",
+        "any": "flower heads",
+    },
+    {
+        "names": ("potato", "potatoes"),
+        "flowering": "flowers",
+        "drying": "yellowing haulm (dying leaves)",
+        "any": "flowers or yellowing leaves",
+    },
+    {"names": ("alfalfa", "lucerne", "clover"), "flowering": "flowers", "any": "flowers"},
 ]
 
 STAGE_KEYS = (("Early", "early"), ("Closed", "closed"), ("Flowering", "flowering"), ("Drying", "drying"))

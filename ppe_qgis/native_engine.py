@@ -3,7 +3,8 @@
 import logging
 import csv
 import json
-import math, threading
+import math
+import threading
 import os
 import re
 import time
@@ -13,7 +14,7 @@ import numpy as np
 from osgeo import gdal, ogr, osr
 from .version import PLUGIN_VERSION
 
-_LOG = logging.getLogger(__name__)    # errors PPE deliberately ignores are kept here (debug level)
+_LOG = logging.getLogger(__name__)  # errors PPE deliberately ignores are kept here (debug level)
 
 gdal.UseExceptions()
 
@@ -25,27 +26,44 @@ SENSORS = {
     "altum": ("blue", "green", "red", "nir", "re"),
 }
 HSI_WINDOWS = {
-    "blue": (450.0, 520.0), "green": (520.0, 600.0),
-    "red": (630.0, 690.0), "re": (700.0, 750.0), "nir": (780.0, 900.0),
+    "blue": (450.0, 520.0),
+    "green": (520.0, 600.0),
+    "red": (630.0, 690.0),
+    "re": (700.0, 750.0),
+    "nir": (780.0, 900.0),
 }
 
 # name: (required bands, polarity). Formulas are centralized in compute_vi().
 VI_META = {
-    "ndvi": (("nir", "red"), 1), "gndvi": (("nir", "green"), 1),
-    "ndre": (("nir", "re"), 1), "savi": (("nir", "red"), 1),
-    "osavi": (("nir", "red"), 1), "msavi": (("nir", "red"), 1),
-    "evi": (("nir", "red", "blue"), 1), "evi2": (("nir", "red"), 1),
-    "cigreen": (("nir", "green"), 1), "cire": (("nir", "re"), 1),
-    "clre": (("nir", "re"), 1), "vari": (("red", "green", "blue"), 1),
-    "exg": (("red", "green", "blue"), 1), "ngrdi": (("red", "green"), 1),
-    "nirv": (("nir", "red"), 1), "rvi": (("nir", "red"), 1),
-    "msr": (("nir", "red"), 1), "rdvi": (("nir", "red"), 1),
+    "ndvi": (("nir", "red"), 1),
+    "gndvi": (("nir", "green"), 1),
+    "ndre": (("nir", "re"), 1),
+    "savi": (("nir", "red"), 1),
+    "osavi": (("nir", "red"), 1),
+    "msavi": (("nir", "red"), 1),
+    "evi": (("nir", "red", "blue"), 1),
+    "evi2": (("nir", "red"), 1),
+    "cigreen": (("nir", "green"), 1),
+    "cire": (("nir", "re"), 1),
+    "clre": (("nir", "re"), 1),
+    "vari": (("red", "green", "blue"), 1),
+    "exg": (("red", "green", "blue"), 1),
+    "ngrdi": (("red", "green"), 1),
+    "nirv": (("nir", "red"), 1),
+    "rvi": (("nir", "red"), 1),
+    "msr": (("nir", "red"), 1),
+    "rdvi": (("nir", "red"), 1),
     "dvi": (("nir", "re"), 1),
-    "psri": (("red", "green", "re"), -1), "tvi": (("nir", "red", "green"), 1),
-    "mcari": (("re", "red", "green"), 1), "tcari": (("re", "red", "green"), 1),
-    "gli": (("red", "green", "blue"), 1), "brightness": (("red", "green", "blue"), -1),
-    "sr": (("nir", "red"), 1), "ndwi": (("green", "nir"), -1),
-    "grvi": (("green", "red"), 1), "rgri": (("red", "green"), -1),
+    "psri": (("red", "green", "re"), -1),
+    "tvi": (("nir", "red", "green"), 1),
+    "mcari": (("re", "red", "green"), 1),
+    "tcari": (("re", "red", "green"), 1),
+    "gli": (("red", "green", "blue"), 1),
+    "brightness": (("red", "green", "blue"), -1),
+    "sr": (("nir", "red"), 1),
+    "ndwi": (("green", "nir"), -1),
+    "grvi": (("green", "red"), 1),
+    "rgri": (("red", "green"), -1),
     "arvi": (("nir", "red", "blue"), 1),
     "ndrer": (("re", "red"), 1),
 }
@@ -78,11 +96,11 @@ VI_GROUPS = {
     "red_edge_red": ("ndrer",),
     "visible": ("gli", "ngrdi", "vari"),
 }
-VI_DOMAINS = VI_GROUPS          # older name, kept so existing scripts keep working
-MAX_LAYERS = 3                  # the classic PPE design: the three highest-spread layers vote
+VI_DOMAINS = VI_GROUPS  # older name, kept so existing scripts keep working
+MAX_LAYERS = 3  # the classic PPE design: the three highest-spread layers vote
 METHOD_NAMES = ("otsu", "cdf", "kmeans", "multiotsu")
-ALGAE_GUARD_SHARE = 0.25        # see _fit_algae_guard
-WEAK_GREEN = 0.02               # colour guard: below this plants are barely greener than soil
+ALGAE_GUARD_SHARE = 0.25  # see _fit_algae_guard
+WEAK_GREEN = 0.02  # colour guard: below this plants are barely greener than soil
 NON_VOTING = frozenset(VI_META) - frozenset(name for members in VI_GROUPS.values() for name in members)
 
 
@@ -96,26 +114,37 @@ def compute_vi(name, b):
     u, e = b.get("blue"), b.get("re")
     with np.errstate(invalid="ignore", over="ignore"):
         return {
-            "ndvi": lambda: _ratio(n - r, n + r), "gndvi": lambda: _ratio(n - g, n + g),
-            "ndre": lambda: _ratio(n - e, n + e), "savi": lambda: _ratio(1.5 * (n - r), n + r + 0.5),
+            "ndvi": lambda: _ratio(n - r, n + r),
+            "gndvi": lambda: _ratio(n - g, n + g),
+            "ndre": lambda: _ratio(n - e, n + e),
+            "savi": lambda: _ratio(1.5 * (n - r), n + r + 0.5),
             "osavi": lambda: _ratio(1.16 * (n - r), n + r + 0.16),
-            "msavi": lambda: (2 * n + 1 - np.sqrt(np.maximum(0, (2 * n + 1)**2 - 8 * (n - r)))) / 2,
+            "msavi": lambda: (2 * n + 1 - np.sqrt(np.maximum(0, (2 * n + 1) ** 2 - 8 * (n - r)))) / 2,
             "evi": lambda: 2.5 * _ratio(n - r, n + 6 * r - 7.5 * u + 1),
             "evi2": lambda: 2.5 * _ratio(n - r, n + 2.4 * r + 1),
-            "cigreen": lambda: _ratio(n, g) - 1, "cire": lambda: _ratio(n, e) - 1,
-            "clre": lambda: _ratio(n, e) - 1, "vari": lambda: _ratio(g - r, g + r - u),
-            "exg": lambda: 2 * g - r - u, "ngrdi": lambda: _ratio(g - r, g + r),
-            "nirv": lambda: n * _ratio(n - r, n + r), "rvi": lambda: _ratio(n, r),
+            "cigreen": lambda: _ratio(n, g) - 1,
+            "cire": lambda: _ratio(n, e) - 1,
+            "clre": lambda: _ratio(n, e) - 1,
+            "vari": lambda: _ratio(g - r, g + r - u),
+            "exg": lambda: 2 * g - r - u,
+            "ngrdi": lambda: _ratio(g - r, g + r),
+            "nirv": lambda: n * _ratio(n - r, n + r),
+            "rvi": lambda: _ratio(n, r),
             "msr": lambda: _ratio(_ratio(n, r) - 1, np.sqrt(np.maximum(0, _ratio(n, r) + 1))),
-            "rdvi": lambda: _ratio(n - r, np.sqrt(np.maximum(0, n + r))), "dvi": lambda: n - e,
-            "cvi": lambda: _ratio(n, e) * _ratio(r, g), "psri": lambda: _ratio(r - g, e),
-            "tvi": lambda: .5 * (120 * (n - g) - 200 * (r - g)),
-            "mcari": lambda: ((e - r) - .2 * (e - g)) * _ratio(e, r),
-            "tcari": lambda: 3 * ((e - r) - .2 * (e - g)) * _ratio(e, r),
+            "rdvi": lambda: _ratio(n - r, np.sqrt(np.maximum(0, n + r))),
+            "dvi": lambda: n - e,
+            "cvi": lambda: _ratio(n, e) * _ratio(r, g),
+            "psri": lambda: _ratio(r - g, e),
+            "tvi": lambda: 0.5 * (120 * (n - g) - 200 * (r - g)),
+            "mcari": lambda: ((e - r) - 0.2 * (e - g)) * _ratio(e, r),
+            "tcari": lambda: 3 * ((e - r) - 0.2 * (e - g)) * _ratio(e, r),
             "gli": lambda: _ratio(2 * g - r - u, 2 * g + r + u),
-            "brightness": lambda: (r + g + u) / 3, "sr": lambda: _ratio(n, r),
-            "ndwi": lambda: _ratio(g - n, g + n), "grvi": lambda: _ratio(g, r),
-            "rgri": lambda: _ratio(r, g), "arvi": lambda: _ratio(n - (2 * r - u), n + (2 * r - u)),
+            "brightness": lambda: (r + g + u) / 3,
+            "sr": lambda: _ratio(n, r),
+            "ndwi": lambda: _ratio(g - n, g + n),
+            "grvi": lambda: _ratio(g, r),
+            "rgri": lambda: _ratio(r, g),
+            "arvi": lambda: _ratio(n - (2 * r - u), n + (2 * r - u)),
             "ndrer": lambda: _ratio(e - r, e + r),
         }[name]().astype(np.float32, copy=False)
 
@@ -166,7 +195,13 @@ def infer_band(filename):
     hit = re.search(r"(?<!\d)(\d{3,4})\s*nm", base)
     if hit:
         wl = float(hit.group(1))
-        for slot, (lo, hi) in (("blue", (420, 510)), ("green", (510, 590)), ("red", (620, 690)), ("re", (690, 760)), ("nir", (760, 1000))):
+        for slot, (lo, hi) in (
+            ("blue", (420, 510)),
+            ("green", (510, 590)),
+            ("red", (620, 690)),
+            ("re", (690, 760)),
+            ("nir", (760, 1000)),
+        ):
             if lo <= wl < hi:
                 return slot
     return None
@@ -227,7 +262,13 @@ def scan_band_folder(folder):
         if band is None:
             wavelength = dataset_wavelengths(ds, {"ortho_type": "ms"})[0]
             if wavelength is not None:
-                for slot, (lo, hi) in (("blue", (420, 510)), ("green", (510, 590)), ("red", (620, 690)), ("re", (690, 760)), ("nir", (760, 1000))):
+                for slot, (lo, hi) in (
+                    ("blue", (420, 510)),
+                    ("green", (510, 590)),
+                    ("red", (620, 690)),
+                    ("re", (690, 760)),
+                    ("nir", (760, 1000)),
+                ):
                     if lo <= wavelength < hi:
                         band = slot
                         how = "from its wavelength ({:g} nm)".format(wavelength)
@@ -274,7 +315,13 @@ def describe_image(cfg):
                 for w in waves:
                     if w is None:
                         continue
-                    for slot, (lo, hi) in (("blue", (420, 510)), ("green", (510, 590)), ("red", (620, 690)), ("re", (690, 760)), ("nir", (760, 1000))):
+                    for slot, (lo, hi) in (
+                        ("blue", (420, 510)),
+                        ("green", (510, 590)),
+                        ("red", (620, 690)),
+                        ("re", (690, 760)),
+                        ("nir", (760, 1000)),
+                    ):
                         if lo <= w < hi and slot not in slots:
                             slots.append(slot)
                 if len(slots) > len(found):
@@ -284,7 +331,7 @@ def describe_image(cfg):
                 if count == 3:
                     return {"kind": "unnamed3", "bands": [], "count": 3, "named": False}
                 if count == 5:
-                    found = list(CANONICAL)          # read in the standard blue..NIR order
+                    found = list(CANONICAL)  # read in the standard blue..NIR order
                 else:
                     return {"kind": "unnamed", "bands": [], "count": count, "named": False}
         elif mode == "folder" and cfg.get("folder_bands"):
@@ -335,7 +382,11 @@ def dataset_wavelengths(ds, cfg=None):
     for index in range(ds.RasterCount):
         band = ds.GetRasterBand(index + 1)
         candidates = [band.GetDescription()]
-        candidates.extend(value for key, value in band.GetMetadata().items() if "wavelength" in key.lower() or "band_name" in key.lower())
+        candidates.extend(
+            value
+            for key, value in band.GetMetadata().items()
+            if "wavelength" in key.lower() or "band_name" in key.lower()
+        )
         for value in candidates:
             wavelength = _wavelength_number(value)
             if wavelength is not None:
@@ -363,13 +414,16 @@ def dataset_wavelengths(ds, cfg=None):
             if start < 300 or end <= start or interval <= 0:
                 raise ValueError("The HSI wavelength grid requires valid minimum, maximum, and interval values.")
             calculated_end = start + (ds.RasterCount - 1) * interval
-            if abs(calculated_end - end) > max(.1, interval * .5):
-                raise ValueError("The HSI wavelength grid does not match {} bands: its calculated last band is {:.3f} nm, not {:.3f} nm.".format(ds.RasterCount, calculated_end, end))
+            if abs(calculated_end - end) > max(0.1, interval * 0.5):
+                raise ValueError(
+                    "The HSI wavelength grid does not match {} bands: its calculated last band is {:.3f} nm, not"
+                    " {:.3f} nm.".format(ds.RasterCount, calculated_end, end)
+                )
             return [start + i * interval for i in range(ds.RasterCount)]
         if sum(x is not None for x in values) < 3:
             if start >= 300 and interval > 0 and end > start:
                 calculated_end = start + (ds.RasterCount - 1) * interval
-                if abs(calculated_end - end) <= max(.1, interval * .5):
+                if abs(calculated_end - end) <= max(0.1, interval * 0.5):
                     values = [start + i * interval for i in range(ds.RasterCount)]
     return values
 
@@ -400,22 +454,19 @@ def safe_gdal_open(path):
             fname = os.path.basename(path)
             parent = os.path.dirname(os.path.abspath(path))
             raise RuntimeError(
-                "Cannot open '{}': Operation timed out.\n\n"
-                "Root Cause: This file is an online-only cloud placeholder managed by OneDrive or iCloud Files On-Demand, "
-                "and macOS timed out waiting for the file download.\n\n"
-                "How to fix in 10 seconds:\n"
-                "1. Open Finder and go to: {}\n"
-                "2. Right-click on '{}' (or the folder).\n"
-                "3. Click 'Always Keep on This Device' (wait until the solid checkmark finishes downloading).\n"
-                "4. Re-run PPE.".format(fname, parent, fname)
+                "Cannot open '{}': Operation timed out.\n\nRoot Cause: This file is an online-only cloud placeholder"
+                " managed by OneDrive or iCloud Files On-Demand, and macOS timed out waiting for the file"
+                " download.\n\nHow to fix in 10 seconds:\n1. Open Finder and go to: {}\n2. Right-click on '{}' (or the"
+                " folder).\n3. Click 'Always Keep on This Device' (wait until the solid checkmark finishes"
+                " downloading).\n4. Re-run PPE.".format(fname, parent, fname)
             ) from None
         raise
     ds = gdal.Open(path)
     if ds is None:
         fname = os.path.basename(path)
         raise RuntimeError(
-            "GDAL could not open '{}'. If this file is stored in OneDrive or iCloud, "
-            "please right-click it in Finder and select 'Always Keep on This Device' to ensure all bytes are stored locally.".format(fname)
+            "GDAL could not open '{}'. If this file is stored in OneDrive or iCloud, please right-click it in Finder"
+            " and select 'Always Keep on This Device' to ensure all bytes are stored locally.".format(fname)
         )
     return ds
 
@@ -434,7 +485,7 @@ def otsu(x, bins=256):
     mid = (edges[:-1] + edges[1:]) / 2
     mu = np.cumsum(p * mid)
     mt = np.sum(p * mid)
-    score = (mt * w1 - mu)**2 / (w1 * w2 + 1e-12)
+    score = (mt * w1 - mu) ** 2 / (w1 * w2 + 1e-12)
     return float(mid[int(np.argmax(score))])
 
 
@@ -603,7 +654,11 @@ def single_class_check(bands):
     looser rule, and turned a normal dense field (IH, 6 June 2023) into 100 % canopy.
     Returns "soil", "plant" or None, with the referee name and the two percentiles.
     """
-    name = "ndvi" if all(k in bands for k in ("nir", "red")) else ("ngrdi" if all(k in bands for k in ("red", "green")) else None)
+    name = (
+        "ndvi"
+        if all(k in bands for k in ("nir", "red"))
+        else ("ngrdi" if all(k in bands for k in ("red", "green")) else None)
+    )
     if name is None:
         return None, None, None, None
     x = compute_vi(name, bands)
@@ -632,25 +687,25 @@ def multi_otsu(x, bins=256):
     best = (-np.inf, 0, 0)
     for i in range(bins - 2):
         w0 = wp[i]
-        if w0 < .02:
+        if w0 < 0.02:
             continue
         mu0 = mp[i] / w0
         js = np.arange(i + 1, bins - 1)
         w1 = wp[js] - wp[i]
         w2 = 1 - wp[js]
-        good = (w1 >= .02) & (w2 >= .02)
+        good = (w1 >= 0.02) & (w2 >= 0.02)
         if not good.any():
             continue
         mu1 = (mp[js] - mp[i]) / np.maximum(w1, 1e-12)
         mu2 = (total - mp[js]) / np.maximum(w2, 1e-12)
-        vb = w0 * (mu0 - total)**2 + w1 * (mu1 - total)**2 + w2 * (mu2 - total)**2
+        vb = w0 * (mu0 - total) ** 2 + w1 * (mu1 - total) ** 2 + w2 * (mu2 - total) ** 2
         vb[~good] = -np.inf
         q = int(np.argmax(vb))
         if vb[q] > best[0]:
             best = (float(vb[q]), i, int(js[q]))
     _, i, j = best
     t1, t2 = float(edges[i + 1]), float(edges[j + 1])
-    return None if best[0] <= 0 or t2 - t1 < .01 * np.ptp(x) else (t1, t2, max(t2 - t1, float(np.std(x))))
+    return None if best[0] <= 0 or t2 - t1 < 0.01 * np.ptp(x) else (t1, t2, max(t2 - t1, float(np.std(x))))
 
 
 def _smooth_grid2d(grid):
@@ -660,15 +715,15 @@ def _smooth_grid2d(grid):
     count = np.zeros(grid.shape, np.float64)
     for dy in (0, 1, 2):
         for dx in (0, 1, 2):
-            part = pad[dy:dy + grid.shape[0], dx:dx + grid.shape[1]]
+            part = pad[dy: dy + grid.shape[0], dx: dx + grid.shape[1]]
             good = np.isfinite(part)
             total += np.where(good, part, 0.0)
             count += good
     return np.where(count > 0, total / np.maximum(count, 1), 0.0).astype(np.float32)
 
 
-SUGGEST_THRESHOLDS = np.round(np.arange(0.15, 0.951, 0.05), 2)   # candidate slider values
-SUGGEST_MIN_PURE = 30        # pure plant / pure soil sample pixels needed for a tile's own spectra
+SUGGEST_THRESHOLDS = np.round(np.arange(0.15, 0.951, 0.05), 2)  # candidate slider values
+SUGGEST_MIN_PURE = 30  # pure plant / pure soil sample pixels needed for a tile's own spectra
 SUGGEST_MAX_RESIDUAL = 0.25  # pixels a plant-soil mix explains this poorly are left out (algae, shade, objects)
 
 
@@ -729,12 +784,19 @@ def suggest_threshold(votes, bands, valid, grid_h, grid_w):
         return None
     half = frac[use] >= 0.5
     vv = v[use]
-    iou = np.array([((vv >= t - 0.05) & half).sum() / max(1, ((vv >= t - 0.05) | half).sum()) for t in SUGGEST_THRESHOLDS])
+    iou = np.array(
+        [((vv >= t - 0.05) & half).sum() / max(1, ((vv >= t - 0.05) | half).sum()) for t in SUGGEST_THRESHOLDS]
+    )
     best = int(np.argmax(iou))
     good = SUGGEST_THRESHOLDS[iou >= iou[best] - 0.01]
-    return {"threshold": float(SUGGEST_THRESHOLDS[best]), "low": float(good.min()), "high": float(good.max()),
-            "agreement": float(100 * iou[best]), "half_plant_cover": float(100 * half.mean()),
-            "pixels_used": float(use.sum() / ok.sum())}
+    return {
+        "threshold": float(SUGGEST_THRESHOLDS[best]),
+        "low": float(good.min()),
+        "high": float(good.max()),
+        "agreement": float(100 * iou[best]),
+        "half_plant_cover": float(100 * half.mean()),
+        "pixels_used": float(use.sum() / ok.sum()),
+    }
 
 
 def _bilinear_interp_block(grid, y, h, width, grid_h, grid_w, height, x_cache=None):
@@ -771,36 +833,69 @@ def _bilinear_interp_block(grid, y, h, width, grid_h, grid_w, height, x_cache=No
 # A weak NIR band (green leaves under 1.3 x the NIR of sunlit ground, e.g. an uncalibrated one) no longer
 # switches the checks off: the NIR-brightness rules are dropped and NDVI, a ratio, decides instead.
 # The vote is never changed; the user leaves kinds out of the mask (or adds code 6) and can undo it.
-FINDING_NAMES = {1: "plant parts that are not green", 2: "leaf edges over soil", 3: "shaded leaves", 4: "unclear",
-                 5: "dry or yellowing plant parts", 6: "faint plants in sparse spots",
-                 7: "weeds between the rows", 8: "weeds inside the rows"}
-FINDING_FILE_NAMES = {1: "plant_parts", 2: "leaf_edges", 3: "shaded", 4: "unclear", 5: "dry", 6: "sparse",
-                      7: "weeds_between_rows", 8: "weeds_in_rows"}
-FINDING_COLUMNS = {1: "plant_parts_pct", 2: "leaf_edges_pct", 3: "shaded_leaves_pct", 4: "unclear_pct", 5: "dry_parts_pct",
-                   6: "sparse_faint_pct", 7: "weeds_between_rows_pct", 8: "weeds_in_rows_pct"}
+FINDING_NAMES = {
+    1: "plant parts that are not green",
+    2: "leaf edges over soil",
+    3: "shaded leaves",
+    4: "unclear",
+    5: "dry or yellowing plant parts",
+    6: "faint plants in sparse spots",
+    7: "weeds between the rows",
+    8: "weeds inside the rows",
+}
+FINDING_FILE_NAMES = {
+    1: "plant_parts",
+    2: "leaf_edges",
+    3: "shaded",
+    4: "unclear",
+    5: "dry",
+    6: "sparse",
+    7: "weeds_between_rows",
+    8: "weeds_in_rows",
+}
+FINDING_COLUMNS = {
+    1: "plant_parts_pct",
+    2: "leaf_edges_pct",
+    3: "shaded_leaves_pct",
+    4: "unclear_pct",
+    5: "dry_parts_pct",
+    6: "sparse_faint_pct",
+    7: "weeds_between_rows_pct",
+    8: "weeds_in_rows_pct",
+}
 #   7, 8  weeds between / inside the crop rows (4.10.0): the plant counter runs behind the scenes at the
 #         suggested threshold (rows, plant spacing, weed? plants); their pixels get these codes. The user
 #         reviews them piece by piece (weed <-> crop) and leaves them out of the mask.
-ADD_CODES = (6,)                 # kinds PPE finds below the threshold on purpose (faint plants); since 4.6.5 every kind can be added or left out
+ADD_CODES = (
+    6,
+)  # kinds PPE finds below the threshold on purpose (faint plants); since 4.6.5 every kind can be added or left out
 FINDING_CODES = tuple(sorted(FINDING_NAMES))
-LEVEL_SURE = 0.9                 # vote at or above: green plant; at or below 1 - this: ground
-REFERENCE_LEAF_NDVI = 0.88       # Kritis green leaves, where the NDVI cut-offs were first tuned
+LEVEL_SURE = 0.9  # vote at or above: green plant; at or below 1 - this: ground
+REFERENCE_LEAF_NDVI = 0.88  # Kritis green leaves, where the NDVI cut-offs were first tuned
 REFERENCE_LEAF_GREEN_RED = 2.26  # Kritis green leaves' green/red
 LEAF_SIDE = ("pale_low", "pale_high", "shaded", "plant", "canopy", "leaf")
-FIXED_NDVI = {"soil": 0.25, "dark": 0.30, "pale_low": 0.50, "pale_high": 0.82, "shaded": 0.50, "plant": 0.60,
-              "canopy": 0.70, "leaf": 0.80}
-GREEN_RED_SHARE = {"leaf": 2.0 / 2.26, "pale": 1.5 / 2.26, "dry": 1.1 / 2.26}   # of the image's green-leaf green/red
-PALE_NIR_OVER_SOIL = 1.4         # pale parts: NIR well above sunlit ground...
-PALE_NIR_OF_LEAF = 0.5           # ...and at least half that of the green leaves (strong NIR only)
-PALE_CLEAR_OF_SOIL_M = 0.15      # plant parts and dry parts sit inside the canopy: no soil within 15 cm
-FINDING_CLEAR_CANOPY = 0.90      # plant parts sit in closed canopy: at least 90 percent plant within 0.5 m
+FIXED_NDVI = {
+    "soil": 0.25,
+    "dark": 0.30,
+    "pale_low": 0.50,
+    "pale_high": 0.82,
+    "shaded": 0.50,
+    "plant": 0.60,
+    "canopy": 0.70,
+    "leaf": 0.80,
+}
+GREEN_RED_SHARE = {"leaf": 2.0 / 2.26, "pale": 1.5 / 2.26, "dry": 1.1 / 2.26}  # of the image's green-leaf green/red
+PALE_NIR_OVER_SOIL = 1.4  # pale parts: NIR well above sunlit ground...
+PALE_NIR_OF_LEAF = 0.5  # ...and at least half that of the green leaves (strong NIR only)
+PALE_CLEAR_OF_SOIL_M = 0.15  # plant parts and dry parts sit inside the canopy: no soil within 15 cm
+FINDING_CLEAR_CANOPY = 0.90  # plant parts sit in closed canopy: at least 90 percent plant within 0.5 m
 FINDING_CANOPY_M = 0.5
-FINDING_MIN_CONTRAST = 1.3       # NIR is "strong" when green leaves reflect 1.3 x the NIR of sunlit ground
-FINDING_DARK_SHARE = 0.5         # dark = under half as bright as this image's green leaves
-DRY_MIN_VOTE = 0.10              # dry parts only where the vote can reach a mask (the slider starts at 0.15)
-DARK_MIN_VOTE = 0.10             # without NDVI, a dark pixel counts only where some voters call it plant
+FINDING_MIN_CONTRAST = 1.3  # NIR is "strong" when green leaves reflect 1.3 x the NIR of sunlit ground
+FINDING_DARK_SHARE = 0.5  # dark = under half as bright as this image's green leaves
+DRY_MIN_VOTE = 0.10  # dry parts only where the vote can reach a mask (the slider starts at 0.15)
+DARK_MIN_VOTE = 0.10  # without NDVI, a dark pixel counts only where some voters call it plant
 FINDING_PLANT_NDVI = FIXED_NDVI["plant"]
-FINDING_CANOPY_NDVI = FIXED_NDVI["canopy"]   # kept for older callers
+FINDING_CANOPY_NDVI = FIXED_NDVI["canopy"]  # kept for older callers
 # Weak split warning (4.1): Otsu's separability (between-group variance over total variance, 0 to 1)
 # of the top layer, on the sample. Under this, plants and ground are not clearly two groups (very few
 # or tiny plants, RGB-only images) and the mask needs a closer look. Message only.
@@ -858,7 +953,7 @@ def _near(mask, r):
     c = np.pad(m.cumsum(0).cumsum(1), ((1, 0), (1, 0)))
     k = 2 * r + 1
     h, w = mask.shape
-    return (c[k:k + h, k:k + w] - c[0:h, k:k + w] - c[k:k + h, 0:w] + c[0:h, 0:w]) > 0
+    return (c[k: k + h, k: k + w] - c[0:h, k: k + w] - c[k: k + h, 0:w] + c[0:h, 0:w]) > 0
 
 
 def fit_findings(sample, pixel_m=None, vote=None, levels=None, min_pixels=200):
@@ -867,19 +962,32 @@ def fit_findings(sample, pixel_m=None, vote=None, levels=None, min_pixels=200):
     Returns a dict with the references, `checks` (the checks that will run) and `not_checked`
     (name -> reason), or None when not even the dark check can run."""
     has = {k: k in sample for k in ("red", "green", "blue", "nir")}
-    get = lambda k: np.asarray(sample[k], np.float64)
+
+    def get(k):
+        return np.asarray(sample[k], np.float64)
+
     n = len(next(iter(sample.values())))
     vote = np.asarray(vote, np.float64) if vote is not None else np.full(n, np.nan)
     sure_plant = np.isfinite(vote) & (vote >= LEVEL_SURE)
     ground = np.isfinite(vote) & (vote <= 1.0 - LEVEL_SURE)
-    fit = {"levels": None, "checks": [], "not_checked": {}, "strong_nir": None, "soil_nir": None, "dark_threshold": None,
-           "pale": None, "dry": None}
+    fit = {
+        "levels": None,
+        "checks": [],
+        "not_checked": {},
+        "strong_nir": None,
+        "soil_nir": None,
+        "dark_threshold": None,
+        "pale": None,
+        "dry": None,
+    }
     ndvi = None
     if has["nir"] and has["red"]:
         with np.errstate(divide="ignore", invalid="ignore"):
             ndvi = (get("nir") - get("red")) / (get("nir") + get("red"))
     if sure_plant.sum() < min_pixels or ground.sum() < min_pixels:
-        fit["not_checked"]["all but sparse spots"] = "too few pixels the voters agree on to measure this image's leaves and ground"
+        fit["not_checked"][
+            "all but sparse spots"
+        ] = "too few pixels the voters agree on to measure this image's leaves and ground"
         return fit
     bright = _bright(sample)
     levels = dict(levels or {})
@@ -913,22 +1021,32 @@ def fit_findings(sample, pixel_m=None, vote=None, levels=None, min_pixels=200):
                 bare = ground & (ndvi <= np.nanmedian(ndvi[ground]))
         sunlit = bare & (bright >= np.nanmedian(bright[bare])) if bright is not None else bare
         soil_nir = float(np.nanmedian(nir[sunlit]))
-        fit["bare_nir"] = float(np.nanmedian(nir[bare]))          # all bare soil, for the pale-plant floor
-        fit.update(leaf_nir=leaf_nir, soil_nir=soil_nir,
-                   strong_nir=bool(leaf_nir >= FINDING_MIN_CONTRAST * soil_nir))
+        fit["bare_nir"] = float(np.nanmedian(nir[bare]))  # all bare soil, for the pale-plant floor
+        fit.update(leaf_nir=leaf_nir, soil_nir=soil_nir, strong_nir=bool(leaf_nir >= FINDING_MIN_CONTRAST * soil_nir))
     leaf_gr = levels.get("leaf_green_red")
     if ndvi is not None and has["green"] and leaf_gr and fit["strong_nir"] is False:
         fit["not_checked"]["plant parts that are not green, leaf edges, dry parts"] = (
-            "they compare NIR brightness with the ground's, and NIR is weak in this image (green leaves {:.3f}, sunlit ground {:.3f})".format(
-                fit["leaf_nir"], fit["soil_nir"]))
+            "they compare NIR brightness with the ground's, and NIR is weak in this image (green leaves {:.3f}, sunlit"
+            " ground {:.3f})".format(fit["leaf_nir"], fit["soil_nir"])
+        )
     elif ndvi is not None and has["green"] and leaf_gr:
-        floor = max(PALE_NIR_OF_LEAF * fit["leaf_nir"], PALE_NIR_OVER_SOIL * fit["bare_nir"]) if fit["strong_nir"] else None
-        fit["pale"] = {"nir_floor": floor, "leaf_nir": fit["leaf_nir"], "soil_nir": fit["soil_nir"],
-                       "ndvi_low": fit["ndvi_pale_low"], "ndvi_high": fit["ndvi_pale_high"],
-                       "green_red_max": GREEN_RED_SHARE["pale"] * leaf_gr}
-        fit["dry"] = {"ndvi_low": fit["ndvi_dark"], "ndvi_high": fit["ndvi_pale_low"],
-                      "green_red_max": GREEN_RED_SHARE["dry"] * leaf_gr,
-                      "nir_min": fit["soil_nir"] if fit["strong_nir"] else None}
+        floor = (
+            max(PALE_NIR_OF_LEAF * fit["leaf_nir"], PALE_NIR_OVER_SOIL * fit["bare_nir"]) if fit["strong_nir"] else None
+        )
+        fit["pale"] = {
+            "nir_floor": floor,
+            "leaf_nir": fit["leaf_nir"],
+            "soil_nir": fit["soil_nir"],
+            "ndvi_low": fit["ndvi_pale_low"],
+            "ndvi_high": fit["ndvi_pale_high"],
+            "green_red_max": GREEN_RED_SHARE["pale"] * leaf_gr,
+        }
+        fit["dry"] = {
+            "ndvi_low": fit["ndvi_dark"],
+            "ndvi_high": fit["ndvi_pale_low"],
+            "green_red_max": GREEN_RED_SHARE["dry"] * leaf_gr,
+            "nir_min": fit["soil_nir"] if fit["strong_nir"] else None,
+        }
         fit["checks"] += ["plant parts and leaf edges", "dry or yellowing parts"]
     else:
         need = "NIR, red and green bands"
@@ -941,13 +1059,18 @@ def fit_findings(sample, pixel_m=None, vote=None, levels=None, min_pixels=200):
             fit["checks"].append("shaded leaves (by colour, no NIR) and unclear")
         else:
             fit["checks"].append("unclear (dark) pixels")
-            fit["not_checked"]["shaded leaves"] = "telling a shaded leaf from shaded soil needs NIR and red, or red, green and blue; dark pixels are listed as unclear"
+            fit["not_checked"]["shaded leaves"] = (
+                "telling a shaded leaf from shaded soil needs NIR and red, or red, green and blue; dark pixels are"
+                " listed as unclear"
+            )
     else:
         fit["not_checked"]["shaded leaves and unclear"] = "they need a brightness band"
     fit["bright_from_nir"] = bright is not None and sum(has[k] for k in ("red", "green", "blue")) < 2
     if fit["strong_nir"] is False:
-        fit["note"] = "NIR is weak here (green leaves {:.3f}, sunlit ground {:.3f}): shaded leaves are told from unclear pixels by NDVI".format(
-            fit["leaf_nir"], fit["soil_nir"])
+        fit["note"] = (
+            "NIR is weak here (green leaves {:.3f}, sunlit ground {:.3f}): shaded leaves are told from unclear pixels"
+            " by NDVI".format(fit["leaf_nir"], fit["soil_nir"])
+        )
     step = pixel_m or 0.02
     fit["soil_radius_px"] = int(min(20, max(2, round(PALE_CLEAR_OF_SOIL_M / step))))
     fit["canopy_radius_px"] = int(min(60, max(3, round(FINDING_CANOPY_M / step))))
@@ -975,8 +1098,14 @@ def fit_pale_plant(sample, levels=None):
     floor = PALE_NIR_OF_LEAF * leaf_nir
     if soil_nir is not None:
         floor = max(floor, PALE_NIR_OVER_SOIL * soil_nir)
-    return {"nir_floor": floor, "leaf_nir": leaf_nir, "soil_nir": soil_nir,
-            "ndvi_low": level_cut(lv, "pale_low"), "ndvi_high": level_cut(lv, "pale_high"), "green_red_max": 1.5}
+    return {
+        "nir_floor": floor,
+        "leaf_nir": leaf_nir,
+        "soil_nir": soil_nir,
+        "ndvi_low": level_cut(lv, "pale_low"),
+        "ndvi_high": level_cut(lv, "pale_high"),
+        "green_red_max": 1.5,
+    }
 
 
 def pale_plant_mask(bands, fit):
@@ -999,7 +1128,9 @@ def display_stretch(channel_names, values):
     False colour and single-band pictures keep a stretch per band (0.2 and 99 percentiles), the
     usual way to show them. `values` maps band name -> array of sampled values."""
     names = list(channel_names)
-    clean = {n: np.asarray(values[n], np.float64)[np.isfinite(values[n]) & (np.asarray(values[n]) > 0)] for n in set(names)}
+    clean = {
+        n: np.asarray(values[n], np.float64)[np.isfinite(values[n]) & (np.asarray(values[n]) > 0)] for n in set(names)
+    }
     if names == ["red", "green", "blue"] and all(clean[n].size for n in names):
         hi = float(np.percentile(np.concatenate([clean[n] for n in names]), 99.5))
         if np.isfinite(hi) and hi > 0:
@@ -1030,14 +1161,18 @@ def classify_findings(bands, ok, fit, ndvi_halo, offset, vote=None):
     if fit.get("pale") and ndvi is not None and "green" in bands and ndvi_halo is not None:
         pale = pale_plant_mask(bands, fit["pale"]) & ok
         soilish = np.isfinite(ndvi_halo) & (ndvi_halo < fit["ndvi_plant"])
-        near_soil = _near(soilish, fit["soil_radius_px"])[offset:offset + h]
+        near_soil = _near(soilish, fit["soil_radius_px"])[offset: offset + h]
         r = fit["canopy_radius_px"]
-        plantish = (np.isfinite(ndvi_halo) & (ndvi_halo >= fit["ndvi_canopy"])).astype(np.int32)   # integer sums: same cover, half the memory
+        plantish = (np.isfinite(ndvi_halo) & (ndvi_halo >= fit["ndvi_canopy"])).astype(
+            np.int32
+        )  # integer sums: same cover, half the memory
         m = np.pad(plantish, r, mode="edge")
         c = np.pad(m.cumsum(0).cumsum(1), ((1, 0), (1, 0)))
         k = 2 * r + 1
         hh, ww = plantish.shape
-        cover = ((c[k:k + hh, k:k + ww] - c[0:hh, k:k + ww] - c[k:k + hh, 0:ww] + c[0:hh, 0:ww]) / float(k * k))[offset:offset + h]
+        cover = (
+            (c[k: k + hh, k: k + ww] - c[0:hh, k: k + ww] - c[k: k + hh, 0:ww] + c[0:hh, 0:ww]) / float(k * k)
+        )[offset: offset + h]
         parts = pale & ~near_soil & (cover >= FINDING_CLEAR_CANOPY)
         code[parts] = 1
         code[pale & ~parts] = 2
@@ -1048,7 +1183,7 @@ def classify_findings(bands, ok, fit, ndvi_halo, offset, vote=None):
             dark = ok & ~pale & (bright < fit["dark_threshold"]) & np.isfinite(ndvi) & (ndvi >= fit["ndvi_dark"])
             shaded = dark & (ndvi >= fit["ndvi_shaded"])
             if fit.get("strong_nir") and not fit.get("bright_from_nir"):
-                shaded &= bands["nir"] > fit["soil_nir"]      # more NIR than ground in full sun: a leaf
+                shaded &= bands["nir"] > fit["soil_nir"]  # more NIR than ground in full sun: a leaf
             code[shaded] = 3
             code[dark & ~shaded] = 4
         elif vote is not None:
@@ -1066,16 +1201,23 @@ def classify_findings(bands, ok, fit, ndvi_halo, offset, vote=None):
     if dry_fit and ndvi is not None and "green" in bands and ndvi_halo is not None:
         with np.errstate(divide="ignore", invalid="ignore"):
             green_red = bands["green"] / bands["red"]
-        dryish = (ok & ~pale & ~dark & np.isfinite(ndvi) & (ndvi >= dry_fit["ndvi_low"]) & (ndvi < dry_fit["ndvi_high"])
-                  & (green_red < dry_fit["green_red_max"]))
+        dryish = (
+            ok
+            & ~pale
+            & ~dark
+            & np.isfinite(ndvi)
+            & (ndvi >= dry_fit["ndvi_low"])
+            & (ndvi < dry_fit["ndvi_high"])
+            & (green_red < dry_fit["green_red_max"])
+        )
         if dry_fit.get("nir_min") is not None:
             dryish &= bands["nir"] > dry_fit["nir_min"]
         if vote is not None:
             dryish &= np.isfinite(vote) & (vote >= DRY_MIN_VOTE)
         if dryish.any():
             bare = np.isfinite(ndvi_halo) & (ndvi_halo < fit["ndvi_soil"])
-            near_bare = _near(bare, fit["soil_radius_px"])[offset:offset + h]
-            code[dryish & ~near_bare] = 5     # beside bare soil it is more likely a leaf-soil mix: not marked
+            near_bare = _near(bare, fit["soil_radius_px"])[offset: offset + h]
+            code[dryish & ~near_bare] = 5  # beside bare soil it is more likely a leaf-soil mix: not marked
     code[~ok] = 255
     return code
 
@@ -1088,10 +1230,10 @@ def classify_findings(bands, ok, fit, ndvi_halo, offset, vote=None):
 # on the other. Bringing back faint pixels along the crop rows instead did less (82.9), so rows are not
 # used. PPE marks these pixels; the user decides whether to add them.
 SPARSE_BLOCK_M = 3.0
-SPARSE_COVER_MAX = 25.0          # percent plant in a 3 m square at the suggested threshold
-SPARSE_DROP = 0.20               # the lower threshold used inside sparse squares
-SPARSE_MIN_VOTE = 0.10           # never below the lowest mask the slider can make
-SPARSE_MAX_SHARE = 30.0          # if more of the squares than this are thin, the whole field is thin: use the slider
+SPARSE_COVER_MAX = 25.0  # percent plant in a 3 m square at the suggested threshold
+SPARSE_DROP = 0.20  # the lower threshold used inside sparse squares
+SPARSE_MIN_VOTE = 0.10  # never below the lowest mask the slider can make
+SPARSE_MAX_SHARE = 30.0  # if more of the squares than this are thin, the whole field is thin: use the slider
 
 
 def mark_sparse_spots(vote_path, findings_path, threshold, block_px):
@@ -1119,8 +1261,16 @@ def mark_sparse_spots(vote_path, findings_path, threshold, block_px):
     share = 100.0 * sparse / max(1, squares)
     if share > SPARSE_MAX_SHARE:
         f_ds = None
-        return {"threshold": float(threshold), "lower_threshold": float(low + 0.05), "squares_pct": share, "pixels": 0,
-                "pixels_pct": 0.0, "square_m": SPARSE_BLOCK_M, "vote_from": float(low), "whole_field_thin": True}
+        return {
+            "threshold": float(threshold),
+            "lower_threshold": float(low + 0.05),
+            "squares_pct": share,
+            "pixels": 0,
+            "pixels_pct": 0.0,
+            "square_m": SPARSE_BLOCK_M,
+            "vote_from": float(low),
+            "whole_field_thin": True,
+        }
     squares = sparse = 0
     for y in range(0, height, b):
         h = min(b, height - y)
@@ -1147,9 +1297,15 @@ def mark_sparse_spots(vote_path, findings_path, threshold, block_px):
                 marked += int(add.sum())
     f_ds.FlushCache()
     f_ds = None
-    return {"threshold": float(threshold), "lower_threshold": float(low + 0.05), "squares_pct": 100.0 * sparse / max(1, squares),
-            "pixels": int(marked), "pixels_pct": 100.0 * marked / max(1, valid_all), "square_m": SPARSE_BLOCK_M,
-            "vote_from": float(low)}
+    return {
+        "threshold": float(threshold),
+        "lower_threshold": float(low + 0.05),
+        "squares_pct": 100.0 * sparse / max(1, squares),
+        "pixels": int(marked),
+        "pixels_pct": 100.0 * marked / max(1, valid_all),
+        "square_m": SPARSE_BLOCK_M,
+        "vote_from": float(low),
+    }
 
 
 # Confident labels (4.1): PPE's sure pixels as a labels raster, for training a model or checking PPE.
@@ -1184,7 +1340,12 @@ def write_confident_labels(vote_path, out_path, block_rows=512):
     out = None
     v_ds = None
     total = max(1, int(n.sum()))
-    return {"path": out_path, "plant_pct": 100.0 * n[0] / total, "soil_pct": 100.0 * n[1] / total, "unlabelled_pct": 100.0 * n[2] / total}
+    return {
+        "path": out_path,
+        "plant_pct": 100.0 * n[0] / total,
+        "soil_pct": 100.0 * n[1] / total,
+        "unlabelled_pct": 100.0 * n[2] / total,
+    }
 
 
 def findings_histograms(findings_path, vote_path, levels=1200):
@@ -1213,7 +1374,7 @@ def finding_shares(hist, threshold, levels=1200):
     start = int(np.ceil(max(0.0, threshold - 0.05) * levels - 1e-9))
     plant = hist[:, start:].sum(axis=1)
     total = plant.sum()
-    return {k: (100.0 * plant[k] / total if total and k < plant.size else 0.0) for k in FINDING_CODES}
+    return {k: 100.0 * plant[k] / total if total and k < plant.size else 0.0 for k in FINDING_CODES}
 
 
 def physical_memory_bytes():
@@ -1227,17 +1388,25 @@ def physical_memory_bytes():
             import ctypes
 
             class MemoryStatus(ctypes.Structure):
-                _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong), ("total", ctypes.c_ulonglong),
-                            ("available", ctypes.c_ulonglong), ("page_total", ctypes.c_ulonglong),
-                            ("page_available", ctypes.c_ulonglong), ("virtual_total", ctypes.c_ulonglong),
-                            ("virtual_available", ctypes.c_ulonglong), ("extended", ctypes.c_ulonglong)]
+                _fields_ = [
+                    ("length", ctypes.c_ulong),
+                    ("load", ctypes.c_ulong),
+                    ("total", ctypes.c_ulonglong),
+                    ("available", ctypes.c_ulonglong),
+                    ("page_total", ctypes.c_ulonglong),
+                    ("page_available", ctypes.c_ulonglong),
+                    ("virtual_total", ctypes.c_ulonglong),
+                    ("virtual_available", ctypes.c_ulonglong),
+                    ("extended", ctypes.c_ulonglong),
+                ]
+
             status = MemoryStatus()
             status.length = ctypes.sizeof(MemoryStatus)
             if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
                 return float(status.total)
     except Exception:
         _LOG.debug("PPE: ignored error", exc_info=True)
-    return 4.0 * 1024 ** 3
+    return 4.0 * 1024**3
 
 
 def _interp_columns(grid, width, grid_w):
@@ -1256,7 +1425,9 @@ def _strip_thinning(ds):
     pixel-interleaved DEFLATE: 6.2 s -> 0.8 s on 2 threads). Other files keep GDAL's own thinned read."""
     try:
         comp = (ds.GetMetadata("IMAGE_STRUCTURE") or {}).get("COMPRESSION")
-        return bool(comp) and ds.GetRasterBand(1).GetOverviewCount() == 0 and ds.RasterXSize * ds.RasterYSize > 4_000_000
+        return (
+            bool(comp) and ds.GetRasterBand(1).GetOverviewCount() == 0 and ds.RasterXSize * ds.RasterYSize > 4_000_000
+        )
     except Exception:
         return False
 
@@ -1266,6 +1437,7 @@ def _thinned_read(path, band_list, bx, by, threads=2, strip=512):
     nearest pixel: column floor((i + 0.5) * W / bx), the same for rows), read as full-resolution strips in
     parallel, each thread with its own dataset. Returns (bands, by, bx)."""
     from concurrent.futures import ThreadPoolExecutor
+
     ds = safe_gdal_open(path)
     W, H = ds.RasterXSize, ds.RasterYSize
     ds = None
@@ -1282,6 +1454,7 @@ def _thinned_read(path, band_list, bx, by, threads=2, strip=512):
         a = local.ds.ReadAsArray(0, y0, W, min(strip, H - y0), band_list=list(band_list))
         a = a if a.ndim == 3 else a[None]
         return y0, a[:, sel - y0][:, :, cols]
+
     with ThreadPoolExecutor(max_workers=max(1, min(8, int(threads or 1)))) as pool:
         parts = [p for _y, p in sorted(pool.map(one, range(0, H, strip)), key=lambda t: t[0]) if p is not None]
     return np.concatenate(parts, axis=1)
@@ -1319,8 +1492,8 @@ def local_offsets(layer, valid, split, low, high, grid_h, grid_w, min_pixels=80)
     xs = np.linspace(0, cols, grid_w + 1).astype(int)
     for gy in range(grid_h):
         for gx in range(grid_w):
-            block = layer[ys[gy]:ys[gy + 1], xs[gx]:xs[gx + 1]]
-            values = block[valid[ys[gy]:ys[gy + 1], xs[gx]:xs[gx + 1]]]
+            block = layer[ys[gy]: ys[gy + 1], xs[gx]: xs[gx + 1]]
+            values = block[valid[ys[gy]: ys[gy + 1], xs[gx]: xs[gx + 1]]]
             values = values[np.isfinite(values)]
             if values.size < min_pixels:
                 continue
@@ -1355,8 +1528,10 @@ def display_channels(bands):
 # ---- plot boundaries ------------------------------------------------------------------------
 # Any polygon file GDAL reads: Shapefile (pick the .shp or any of its side files), a zipped
 # Shapefile or GeoPackage, GeoPackage, GeoJSON, KML/KMZ, GML, FlatGeobuf, SpatiaLite, MapInfo.
-PLOT_FILE_FILTER = ("Plot boundaries (*.shp *.zip *.gpkg *.geojson *.json *.kml *.kmz *.gml *.fgb *.sqlite *.tab "
-                    "*.dbf *.shx *.prj *.cpg);;All files (*)")
+PLOT_FILE_FILTER = (
+    "Plot boundaries (*.shp *.zip *.gpkg *.geojson *.json *.kml *.kmz *.gml *.fgb *.sqlite *.tab "
+    "*.dbf *.shx *.prj *.cpg);;All files (*)"
+)
 SHAPEFILE_SIDE_FILES = (".dbf", ".shx", ".prj", ".cpg", ".sbn", ".sbx", ".qix", ".qmd", ".shp.xml")
 VECTOR_IN_ARCHIVE = (".shp", ".gpkg", ".geojson", ".json", ".kml", ".gml", ".fgb", ".sqlite", ".tab")
 POLYGON_TYPES = {ogr.wkbPolygon, ogr.wkbMultiPolygon, ogr.wkbCurvePolygon, ogr.wkbMultiSurface}
@@ -1377,17 +1552,42 @@ def _plot_datasource_path(path):
             if not os.path.isfile(shp):
                 shp = path[: -len(side)] + ".SHP"
             if os.path.isfile(shp):
-                return shp, "using {} (the Shapefile that {} belongs to)".format(os.path.basename(shp), os.path.basename(path))
-            raise ValueError("{} is part of a Shapefile, but {} is not beside it. A Shapefile needs its .shp, .shx and .dbf "
-                             "files in the same folder.".format(os.path.basename(path), os.path.basename(path[: -len(side)] + ".shp")))
+                return shp, "using {} (the Shapefile that {} belongs to)".format(
+                    os.path.basename(shp), os.path.basename(path)
+                )
+            raise ValueError(
+                "{} is part of a Shapefile, but {} is not beside it. A Shapefile needs its .shp, .shx and .dbf "
+                "files in the same folder.".format(
+                    os.path.basename(path), os.path.basename(path[: -len(side)] + ".shp")
+                )
+            )
     if lower.endswith(".zip"):
         root = "/vsizip/" + path
         listed = gdal.ReadDirRecursive(root) or []
-        inside = [name for name in listed if name.lower().endswith(VECTOR_IN_ARCHIVE) and "__macosx" not in name.lower()
-                  and not os.path.basename(name).startswith("._")]
+        inside = [
+            name
+            for name in listed
+            if name.lower().endswith(VECTOR_IN_ARCHIVE)
+            and "__macosx" not in name.lower()
+            and not os.path.basename(name).startswith("._")
+        ]
         if not inside:
-            raise ValueError("No plot file found inside {} (looked for .shp, .gpkg, .geojson, .kml and similar).".format(os.path.basename(path)))
-        inside.sort(key=lambda name: (VECTOR_IN_ARCHIVE.index(os.path.splitext(name.lower())[1]) if os.path.splitext(name.lower())[1] in VECTOR_IN_ARCHIVE else 99, name.count("/"), name))
+            raise ValueError(
+                "No plot file found inside {} (looked for .shp, .gpkg, .geojson, .kml and similar).".format(
+                    os.path.basename(path)
+                )
+            )
+        inside.sort(
+            key=lambda name: (
+                (
+                    VECTOR_IN_ARCHIVE.index(os.path.splitext(name.lower())[1])
+                    if os.path.splitext(name.lower())[1] in VECTOR_IN_ARCHIVE
+                    else 99
+                ),
+                name.count("/"),
+                name,
+            )
+        )
         note = "using {} inside the zip file".format(inside[0])
         if len(inside) > 1:
             note += " ({} other vector files ignored)".format(len(inside) - 1)
@@ -1423,9 +1623,14 @@ def open_plot_file(path, layer_name=None):
         if count:
             polygon_layers.append((layer.GetName(), count))
     if not polygon_layers:
-        kinds = sorted({ogr.GeometryTypeToName(datasource.GetLayer(i).GetGeomType()) for i in range(datasource.GetLayerCount())})
-        raise ValueError("{} has no polygons (found: {}). Plot statistics need plot polygons, not points or lines."
-                         .format(os.path.basename(path), ", ".join(kinds) or "no features"))
+        kinds = sorted(
+            {ogr.GeometryTypeToName(datasource.GetLayer(i).GetGeomType()) for i in range(datasource.GetLayerCount())}
+        )
+        raise ValueError(
+            "{} has no polygons (found: {}). Plot statistics need plot polygons, not points or lines.".format(
+                os.path.basename(path), ", ".join(kinds) or "no features"
+            )
+        )
     names = [name for name, _ in polygon_layers]
     chosen = layer_name if layer_name in names else names[0]
     layer = datasource.GetLayerByName(chosen)
@@ -1437,15 +1642,36 @@ def open_plot_file(path, layer_name=None):
         code = srs.GetAuthorityCode(None)
         crs_name = "{}{}".format(srs.GetName() or "", " (EPSG:{})".format(code) if code else "")
     uri = source if datasource.GetLayerCount() == 1 else "{}|layername={}".format(source, chosen)
-    info = {"source": source, "uri": uri, "layer": chosen, "layers": names, "features": dict(polygon_layers)[chosen],
-            "fields": fields, "crs_wkt": srs.ExportToWkt() if srs is not None else "", "crs_name": crs_name, "note": note}
+    info = {
+        "source": source,
+        "uri": uri,
+        "layer": chosen,
+        "layers": names,
+        "features": dict(polygon_layers)[chosen],
+        "fields": fields,
+        "crs_wkt": srs.ExportToWkt() if srs is not None else "",
+        "crs_name": crs_name,
+        "note": note,
+    }
     return datasource, layer, info
 
 
 def guess_plot_id_field(fields):
     """The attribute most likely to hold plot IDs (plot_id, plot, id, name ...), or ''."""
     lower = {name.lower(): name for name in fields}
-    for wanted in ("plot_id", "plotid", "plot", "plot_no", "plot_num", "plotnumber", "plot_name", "id", "name", "label", "fid_plot"):
+    for wanted in (
+        "plot_id",
+        "plotid",
+        "plot",
+        "plot_no",
+        "plot_num",
+        "plotnumber",
+        "plot_name",
+        "id",
+        "name",
+        "label",
+        "fid_plot",
+    ):
         if wanted in lower:
             return lower[wanted]
     for name in fields:
@@ -1496,7 +1722,10 @@ def plots_over_image(path, image_path, layer_name=None):
     raster_wkt = image.GetProjection()
     note = ""
     if layer.GetSpatialRef() is None:
-        note = "the plot file has no coordinate system (for a Shapefile: no .prj file), so it is assumed to match the image"
+        note = (
+            "the plot file has no coordinate system (for a Shapefile: no .prj file), so it is assumed to match the"
+            " image"
+        )
     transform = _plot_transform(layer, raster_wkt)
     over = 0
     layer.ResetReading()
@@ -1554,7 +1783,7 @@ def list_batch_images(folder):
             if sum(1 for f in scan["files"] if f.get("use")) >= 2:
                 items.append({"name": name, "source_mode": "folder", "folder_path": path})
     seen = {}
-    for item in items:                       # two files with the same name stem get distinct output folders
+    for item in items:  # two files with the same name stem get distinct output folders
         k = item["name"].lower()
         seen[k] = seen.get(k, 0) + 1
         if seen[k] > 1:
@@ -1596,7 +1825,7 @@ def load_batch_result(path):
         return json.load(f)
 
 
-DISPLAY_ZERO_BORDER = 0.02   # zeros in at least 2 percent of the image: an outside border, drawn see-through
+DISPLAY_ZERO_BORDER = 0.02  # zeros in at least 2 percent of the image: an outside border, drawn see-through
 
 
 class Cancelled(RuntimeError):
@@ -1667,9 +1896,17 @@ class NativePPEEngine:
         elif mode == "folder" and cfg.get("folder_bands"):
             paths = {band: path for band, path in cfg["folder_bands"].items() if path}
             detection = "band files ticked in the folder"
-            self.log_cb("Band files ticked by the user: {}".format(", ".join("{}={}".format(b, os.path.basename(p)) for b, p in paths.items())))
+            self.log_cb(
+                "Band files ticked by the user: {}".format(
+                    ", ".join("{}={}".format(b, os.path.basename(p)) for b, p in paths.items())
+                )
+            )
         elif mode == "folder":
-            files = [os.path.join(cfg["folder_path"], p) for p in sorted(os.listdir(cfg["folder_path"])) if p.lower().endswith((".tif", ".tiff"))]
+            files = [
+                os.path.join(cfg["folder_path"], p)
+                for p in sorted(os.listdir(cfg["folder_path"]))
+                if p.lower().endswith((".tif", ".tiff"))
+            ]
             paths = {}
             ignored = []
             for path in files:
@@ -1689,7 +1926,11 @@ class NativePPEEngine:
                     ignored.append(os.path.basename(path))
                     continue
                 if name in paths:
-                    raise ValueError("Folder contains more than one candidate for the {} band: {} and {}".format(name, os.path.basename(paths[name]), os.path.basename(path)))
+                    raise ValueError(
+                        "Folder contains more than one candidate for the {} band: {} and {}".format(
+                            name, os.path.basename(paths[name]), os.path.basename(path)
+                        )
+                    )
                 paths[name] = path
             detection = "TIFF filename and embedded metadata"
             if ignored:
@@ -1705,7 +1946,10 @@ class NativePPEEngine:
             if is_hsi:
                 wavelengths = dataset_wavelengths(ds, cfg)
                 if sum(x is not None for x in wavelengths) != ds.RasterCount:
-                    raise ValueError("Hyperspectral bands have incomplete wavelength metadata. Re-select the cube and provide minimum, maximum, and interval values.")
+                    raise ValueError(
+                        "Hyperspectral bands have incomplete wavelength metadata. Re-select the cube and provide"
+                        " minimum, maximum, and interval values."
+                    )
                 mapping = self._wavelength_proxy_map(ds, wavelengths)
                 paths = {name: (path, index) for name, index in mapping.items()}
                 detection = "correlation-aware HSI spectral proxies"
@@ -1716,7 +1960,9 @@ class NativePPEEngine:
                 key = cfg.get("rgb_order", "rgb")
                 order = THREE_BAND_ORDERS.get(key, THREE_BAND_ORDERS["rgb"])
                 paths = {name: (path, i + 1) for i, name in enumerate(order) if i < ds.RasterCount}
-                detection = "unnamed 3-band file read as {} (band order chosen in the panel)".format(", ".join(BAND_LABELS[n] for n in order))
+                detection = "unnamed 3-band file read as {} (band order chosen in the panel)".format(
+                    ", ".join(BAND_LABELS[n] for n in order)
+                )
             elif kind == "ms" and ds.RasterCount == 5:
                 order = CANONICAL
                 paths = {name: (path, i + 1) for i, name in enumerate(order)}
@@ -1732,12 +1978,19 @@ class NativePPEEngine:
                     paths = {name: (path, i + 1) for i, name in enumerate(order)}
                     detection = "standard blue/green/red/red-edge/NIR order"
                 elif ds.RasterCount > 15:
-                    raise ValueError("Hyperspectral bands have no usable wavelengths. Re-select the cube and supply minimum, maximum, and interval.")
+                    raise ValueError(
+                        "Hyperspectral bands have no usable wavelengths. Re-select the cube and supply minimum,"
+                        " maximum, and interval."
+                    )
                 else:
-                    raise ValueError("This unnamed {}-band stack has no color, name, or wavelength metadata, so its bands cannot be identified safely. Use named individual/folder TIFFs or add band descriptions; automatic guessing could produce a wrong mask.".format(ds.RasterCount))
+                    raise ValueError(
+                        "This unnamed {}-band stack has no color, name, or wavelength metadata, so its bands cannot be"
+                        " identified safely. Use named individual/folder TIFFs or add band descriptions; automatic"
+                        " guessing could produce a wrong mask.".format(ds.RasterCount)
+                    )
         if len(paths) < 1:
             raise ValueError("No recognizable raster bands were found.")
-        self.sources = {k: (v if isinstance(v, tuple) else (v, 1)) for k, v in paths.items() if k in CANONICAL}
+        self.sources = {k: v if isinstance(v, tuple) else (v, 1) for k, v in paths.items() if k in CANONICAL}
         first = next(iter(self.sources.values()))
         self.template = safe_gdal_open(first[0])
         self.width = self.template.RasterXSize
@@ -1748,12 +2001,24 @@ class NativePPEEngine:
                 raise ValueError("Could not open {} band: {}".format(name, path))
             if ds.RasterXSize != self.width or ds.RasterYSize != self.height:
                 raise ValueError("Band rasters must have matching rows and columns. Align them in QGIS first.")
-            if not np.allclose(ds.GetGeoTransform(), self.template.GetGeoTransform(), rtol=0, atol=1e-9) or ds.GetProjection() != self.template.GetProjection():
-                raise ValueError("Band rasters must share the same CRS, extent, and pixel grid. Align them in QGIS first.")
+            if (
+                not np.allclose(ds.GetGeoTransform(), self.template.GetGeoTransform(), rtol=0, atol=1e-9)
+                or ds.GetProjection() != self.template.GetProjection()
+            ):
+                raise ValueError(
+                    "Band rasters must share the same CRS, extent, and pixel grid. Align them in QGIS first."
+                )
         self.datasets = {k: safe_gdal_open(v[0]) for k, v in self.sources.items()}
         self.detection_method = detection
         self.log_cb("Band detection: {}.".format(detection))
-        self.log_cb("Resolved mapping: {}".format(", ".join("{}=band {} ({})".format(name, band, os.path.basename(path)) for name, (path, band) in self.sources.items())))
+        self.log_cb(
+            "Resolved mapping: {}".format(
+                ", ".join(
+                    "{}=band {} ({})".format(name, band, os.path.basename(path))
+                    for name, (path, band) in self.sources.items()
+                )
+            )
+        )
 
     def _read_sample(self, sample_n):
         self.scale = 1.0
@@ -1766,7 +2031,11 @@ class NativePPEEngine:
         mx = float(np.nanpercentile(np.concatenate(finite), 99))
         if mx > 10000:
             self.scale = 65535.0 if mx > 20000 else max(10000.0, float(mx / 0.95))
-            self.log_cb("High/uncalibrated DN imagery detected (99th percentile {:.1f}); scaled by {:.1f}.".format(mx, self.scale))
+            self.log_cb(
+                "High/uncalibrated DN imagery detected (99th percentile {:.1f}); scaled by {:.1f}.".format(
+                    mx, self.scale
+                )
+            )
         elif mx > 255:
             self.scale = 10000.0
         elif mx > 2:
@@ -1813,21 +2082,37 @@ class NativePPEEngine:
                         parts.append(block[np.isfinite(block) & (block > 0)])
                 cache[name] = np.concatenate(parts) if parts else np.array([], np.float32)
         # the same stretch rule as the display image the run writes (one stretch for true colour)
-        stretch = display_stretch(channels, cache) if all(cache[n].size >= 50 for n in cache) else None   # else QGIS works out its own
+        stretch = (
+            display_stretch(channels, cache) if all(cache[n].size >= 50 for n in cache) else None
+        )  # else QGIS works out its own
         preview_dir = os.path.join(cfg.get("work_dir") or os.path.dirname(self.sources[channels[0]][0]), "ppe_preview")
         os.makedirs(preview_dir, exist_ok=True)
         available = [name for name, meta in VI_META.items() if all(x in bands for x in meta[0])]
         self.log_cb("Shown on the map as {}.".format(mode))
-        return {"action": "preview", "rgb_path": "", "display_mode": mode, "display_stretch": stretch,
-                "rgb_sources": [self.sources[name][0] for name in channels], "rgb_source_bands": [self.sources[name][1] for name in channels],
-                "rgb_bands": list(dict.fromkeys(channels)), "true_rgb": mode == "true colour", "source_bands": bands,
-                "available_vis": available, "band_detection": self.detection_method, "hsi_proxies": self.hsi_proxy_info,
-                "run_dir": preview_dir, "width": self.width, "height": self.height,
-                "preview_key": cfg.get("preview_key", "")}
+        return {
+            "action": "preview",
+            "rgb_path": "",
+            "display_mode": mode,
+            "display_stretch": stretch,
+            "rgb_sources": [self.sources[name][0] for name in channels],
+            "rgb_source_bands": [self.sources[name][1] for name in channels],
+            "rgb_bands": list(dict.fromkeys(channels)),
+            "true_rgb": mode == "true colour",
+            "source_bands": bands,
+            "available_vis": available,
+            "band_detection": self.detection_method,
+            "hsi_proxies": self.hsi_proxy_info,
+            "run_dir": preview_dir,
+            "width": self.width,
+            "height": self.height,
+            "preview_key": cfg.get("preview_key", ""),
+        }
 
     @staticmethod
     def _slot_for_wavelength(wavelength):
-        matches = [(name, abs(wavelength - (lo + hi) / 2)) for name, (lo, hi) in HSI_WINDOWS.items() if lo <= wavelength <= hi]
+        matches = [
+            (name, abs(wavelength - (lo + hi) / 2)) for name, (lo, hi) in HSI_WINDOWS.items() if lo <= wavelength <= hi
+        ]
         return min(matches, key=lambda item: item[1])[0] if matches else None
 
     def _wavelength_proxy_map(self, ds, wavelengths):
@@ -1838,12 +2123,19 @@ class NativePPEEngine:
         by = max(1, min(ds.RasterYSize, int(8000 / bx)))
         candidates_by_window = {}
         for name, (lo, hi) in HSI_WINDOWS.items():
-            candidates = [i for i, wavelength in enumerate(wavelengths, 1) if wavelength is not None and lo <= wavelength <= hi]
+            candidates = [
+                i for i, wavelength in enumerate(wavelengths, 1) if wavelength is not None and lo <= wavelength <= hi
+            ]
             if not candidates:
                 if name in ("blue", "re"):
-                    self.log_cb("HSI sensor range does not cover the {} window ({:.0f}–{:.0f} nm); continuing with available spectral windows.".format(name, lo, hi))
+                    self.log_cb(
+                        "HSI sensor range does not cover the {} window ({:.0f}–{:.0f} nm); continuing with available"
+                        " spectral windows.".format(name, lo, hi)
+                    )
                     continue
-                raise ValueError("The HSI wavelength range does not contain a {} proxy band ({:.0f}–{:.0f} nm).".format(name, lo, hi))
+                raise ValueError(
+                    "The HSI wavelength range does not contain a {} proxy band ({:.0f}–{:.0f} nm).".format(name, lo, hi)
+                )
             scored = []
             for index in candidates:
                 values = ds.GetRasterBand(index).ReadAsArray(buf_xsize=bx, buf_ysize=by).astype(float)
@@ -1851,7 +2143,14 @@ class NativePPEEngine:
                 if nodata is not None:
                     values[values == nodata] = np.nan
                 spread = np.nanpercentile(values, 75) - np.nanpercentile(values, 25)
-                scored.append({"spread": float(spread), "center": abs(wavelengths[index - 1] - (lo + hi) / 2), "index": index, "values": values.ravel()})
+                scored.append(
+                    {
+                        "spread": float(spread),
+                        "center": abs(wavelengths[index - 1] - (lo + hi) / 2),
+                        "index": index,
+                        "values": values.ravel(),
+                    }
+                )
             candidates_by_window[name] = sorted(scored, key=lambda x: (-x["spread"], x["center"]))
         for name in CANONICAL:
             if name not in candidates_by_window:
@@ -1861,18 +2160,42 @@ class NativePPEEngine:
                 correlations = []
                 for previous in selected_samples:
                     valid = np.isfinite(candidate["values"]) & np.isfinite(previous)
-                    if valid.sum() < 20 or np.nanstd(candidate["values"][valid]) == 0 or np.nanstd(previous[valid]) == 0:
+                    if (
+                        valid.sum() < 20
+                        or np.nanstd(candidate["values"][valid]) == 0
+                        or np.nanstd(previous[valid]) == 0
+                    ):
                         correlations.append(1.0)
                     else:
                         correlations.append(abs(float(np.corrcoef(candidate["values"][valid], previous[valid])[0, 1])))
                 candidate["max_correlation"] = max(correlations) if correlations else 0.0
-            acceptable = [candidate for candidate in ranked if candidate["max_correlation"] <= .85]
-            chosen = acceptable[0] if acceptable else min(ranked, key=lambda x: (x["max_correlation"], -x["spread"], x["center"]))
+            acceptable = [candidate for candidate in ranked if candidate["max_correlation"] <= 0.85]
+            chosen = (
+                acceptable[0]
+                if acceptable
+                else min(ranked, key=lambda x: (x["max_correlation"], -x["spread"], x["center"]))
+            )
             mapping[name] = chosen["index"]
             selected_samples.append(chosen["values"])
-            entry = {"name": name, "band": chosen["index"], "wavelength": float(wavelengths[chosen["index"] - 1]), "iqr": chosen["spread"], "max_correlation": chosen["max_correlation"], "decorrelated": bool(acceptable)}
+            entry = {
+                "name": name,
+                "band": chosen["index"],
+                "wavelength": float(wavelengths[chosen["index"] - 1]),
+                "iqr": chosen["spread"],
+                "max_correlation": chosen["max_correlation"],
+                "decorrelated": bool(acceptable),
+            }
             info.append(entry)
-            self.log_cb("HSI proxy {}: band {} at {:.2f} nm · IQR {:.4g} · max |r| {:.3f}{}.".format(name, entry["band"], entry["wavelength"], entry["iqr"], entry["max_correlation"], "" if acceptable else " (least-correlated fallback)"))
+            self.log_cb(
+                "HSI proxy {}: band {} at {:.2f} nm · IQR {:.4g} · max |r| {:.3f}{}.".format(
+                    name,
+                    entry["band"],
+                    entry["wavelength"],
+                    entry["iqr"],
+                    entry["max_correlation"],
+                    "" if acceptable else " (least-correlated fallback)",
+                )
+            )
         self.hsi_proxy_info = info
         return mapping
 
@@ -1890,13 +2213,15 @@ class NativePPEEngine:
             ds = self.datasets[name]
         band = ds.GetRasterBand(self.sources[name][1])
         if bx and by and (x, y, w, h) == (0, 0, self.width, self.height) and _strip_thinning(ds):
-            a = _thinned_read(self.sources[name][0], [self.sources[name][1]], bx, by, self.thread_count)[0].astype(np.float32, copy=False)
+            a = _thinned_read(self.sources[name][0], [self.sources[name][1]], bx, by, self.thread_count)[0].astype(
+                np.float32, copy=False
+            )
         else:
             a = band.ReadAsArray(x, y, w, h, buf_xsize=bx, buf_ysize=by).astype(np.float32, copy=False)
         nd = band.GetNoDataValue()
         if nd is not None:
             a[a == nd] = np.nan
-        a /= self.scale                # in place: one copy of the block, not two (same values)
+        a /= self.scale  # in place: one copy of the block, not two (same values)
         return a
 
     def _read_bands(self, names, x=0, y=0, w=None, h=None, bx=None, by=None):
@@ -1943,11 +2268,12 @@ class NativePPEEngine:
         bx = min(self.width, max(1, int(math.sqrt(n * ratio))))
         by = min(self.height, max(1, int(n / bx)))
         if len({p for p, _b in self.sources.values()}) < len(self.sources):
-            return self._read_bands(list(self.sources), bx=bx, by=by)       # one file holds several bands: read once
+            return self._read_bands(list(self.sources), bx=bx, by=by)  # one file holds several bands: read once
         if len(self.sources) < 2 or self.thread_count < 2:
             return {name: self._read_band(name, bx=bx, by=by) for name in self.sources}
         # Each band is decompressed in its own thread (with its own GDAL dataset).
         from concurrent.futures import ThreadPoolExecutor
+
         self._thread_local = threading.local()
         try:
             with ThreadPoolExecutor(max_workers=min(self.thread_count, len(self.sources))) as pool:
@@ -1959,10 +2285,10 @@ class NativePPEEngine:
     def _valid(self, bands):
         valid = np.logical_and.reduce([np.isfinite(v) for v in bands.values()])
         ref = bands.get("nir", bands.get("red", next(iter(bands.values()))))
-        valid &= (ref >= .0001) & (ref <= 1.5)
+        valid &= (ref >= 0.0001) & (ref <= 1.5)
         alt = bands.get("red") if "nir" in bands else bands.get("green")
         if alt is not None:
-            valid &= ~((ref > .85) & (np.abs(ref - alt) < .03))
+            valid &= ~((ref > 0.85) & (np.abs(ref - alt) < 0.03))
         return valid
 
     def _create_output(self, path, dtype, nodata):
@@ -1979,7 +2305,7 @@ class NativePPEEngine:
         """Display stretch of each channel from the fitting sample (see display_stretch)."""
         return display_stretch(channel_names, sampled)
 
-    BLOCK_MEMORY_MAX = 1.0e9          # bytes of row blocks in memory at once, at most (QGIS keeps the rest)
+    BLOCK_MEMORY_MAX = 1.0e9  # bytes of row blocks in memory at once, at most (QGIS keeps the rest)
 
     def _block_budget(self):
         return min(0.25 * physical_memory_bytes(), float(os.environ.get("PPE_BLOCK_MEMORY", self.BLOCK_MEMORY_MAX)))
@@ -1995,9 +2321,11 @@ class NativePPEEngine:
         """How many row blocks to process at once: no more than the CPU threads PPE may use, and
         few enough that the blocks in memory stay within a quarter of the computer's RAM, so a
         small laptop runs safely (just with fewer workers) and QGIS keeps room to draw."""
-        per_block = float(block_rows) * self.width * 4.0 * (len(self.sources) + 12)   # bands + votes, indices, guards (measured ~10)
+        per_block = (
+            float(block_rows) * self.width * 4.0 * (len(self.sources) + 12)
+        )  # bands + votes, indices, guards (measured ~10)
         budget = self._block_budget()
-        by_memory = int(budget // max(per_block, 1.0)) - 1        # one more block waits in the queue
+        by_memory = int(budget // max(per_block, 1.0)) - 1  # one more block waits in the queue
         return max(1, min(self.thread_count, n_blocks, by_memory, 8))
 
     def _display_writer(self, path, channel_names, sampled):
@@ -2012,8 +2340,10 @@ class NativePPEEngine:
         # unless zeros cover a border-sized share of the image, they are drawn black (1), not see-through.
         zero_is_outside = True
         try:
-            ov = [np.asarray(sampled[n]) for n in channel_names]          # the fitting sample: no extra read of the image
-            zero_is_outside = float(np.logical_and.reduce([np.isfinite(o) & (o <= 0) for o in ov]).mean()) >= DISPLAY_ZERO_BORDER
+            ov = [np.asarray(sampled[n]) for n in channel_names]  # the fitting sample: no extra read of the image
+            zero_is_outside = (
+                float(np.logical_and.reduce([np.isfinite(o) & (o <= 0) for o in ov]).mean()) >= DISPLAY_ZERO_BORDER
+            )
         except Exception:
             _LOG.debug("PPE: ignored error", exc_info=True)
         for index in range(1, 4):
@@ -2039,6 +2369,7 @@ class NativePPEEngine:
                 nonlocal out
                 out.FlushCache()
                 out = None
+
         return Writer()
 
     def _write_rgb_display(self, path, channel_names, sampled):
@@ -2093,10 +2424,24 @@ class NativePPEEngine:
         self.progress(7, "Preparing the display image ({})".format(display_mode))
         display_sample = self._sample_cache
         display_path = rgb_path = os.path.join(run_dir, "ppe_rgb_display.tif")
-        imported = {"rgb_path": rgb_path, "rgb_sources": rgb_sources, "rgb_source_bands": rgb_source_bands, "rgb_bands": list(dict.fromkeys(channels)), "true_rgb": rgb, "display_mode": display_mode, "source_bands": bands, "available_vis": available, "band_detection": self.detection_method, "hsi_proxies": self.hsi_proxy_info, "run_dir": run_dir}
+        imported = {
+            "rgb_path": rgb_path,
+            "rgb_sources": rgb_sources,
+            "rgb_source_bands": rgb_source_bands,
+            "rgb_bands": list(dict.fromkeys(channels)),
+            "true_rgb": rgb,
+            "display_mode": display_mode,
+            "source_bands": bands,
+            "available_vis": available,
+            "band_detection": self.detection_method,
+            "hsi_proxies": self.hsi_proxy_info,
+            "run_dir": run_dir,
+        }
         # The display file is written during the vote pass; until then QGIS draws the source bands
         # with the same stretch (in the units of the files).
-        early_stretch = [(lo * self.scale, hi * self.scale) for lo, hi in self._display_stretches(channels, display_sample)]
+        early_stretch = [
+            (lo * self.scale, hi * self.scale) for lo, hi in self._display_stretches(channels, display_sample)
+        ]
         self.import_cb(dict(imported, rgb_path="", display_stretch=early_stretch))
         self.progress(12, "Sampling the full field and calculating possible vegetation indices")
         sample_2d = self._sample_cache
@@ -2132,7 +2477,7 @@ class NativePPEEngine:
         leaders.sort(key=lambda item: (-item[0], item[1]))
         max_layers = max(1, int(cfg.get("max_layers", MAX_LAYERS)))
         chosen = [name for _spread, name, _group in leaders[:max_layers]]
-        forced = [str(n).lower().strip() for n in (cfg.get("layers") or [])]
+        forced = [str(n).lower().strip() for n in cfg.get("layers") or []]
         if forced:
             # "layers" lets a script name the voting layers itself; the panel never sets it.
             missing = [n for n in forced if n not in clean]
@@ -2148,25 +2493,38 @@ class NativePPEEngine:
                     break
                 if name not in chosen and all(self._correlation(clean[name], clean[c]) <= 0.95 for c in chosen):
                     chosen.append(name)
-        self.log_cb("Spread ranking (best index of each spectral group): {}".format(
-            ", ".join("{} {:.3f}".format(name, spread) for spread, name, _g in leaders)))
+        self.log_cb(
+            "Spread ranking (best index of each spectral group): {}".format(
+                ", ".join("{} {:.3f}".format(name, spread) for spread, name, _g in leaders)
+            )
+        )
         self.progress(30, "Highest-spread layers selected: {}".format(", ".join(chosen)))
         split_sep = separability(clean[chosen[0]])
         weak_split = ""
         if np.isfinite(split_sep) and split_sep < WEAK_SPLIT:
-            weak_split = ("Plants and ground do not separate clearly in this image (separation {:.2f} on a 0 to 1 scale; under {:.2f} is weak). "
-                          "This happens when plants are very few or tiny, or with RGB-only images. Check the mask closely; "
-                          "a higher threshold or the What PPE found card may help.").format(split_sep, WEAK_SPLIT)
+            weak_split = (
+                "Plants and ground do not separate clearly in this image (separation {:.2f} on a 0 to 1 scale; under"
+                " {:.2f} is weak). This happens when plants are very few or tiny, or with RGB-only images. Check the"
+                " mask closely; a higher threshold or the What PPE found card may help."
+            ).format(split_sep, WEAK_SPLIT)
             self.log_cb("Warning: " + weak_split)
         else:
-            self.log_cb("Plant and ground separation: {:.2f} (0 to 1; under {:.2f} would be weak).".format(split_sep, WEAK_SPLIT))
+            self.log_cb(
+                "Plant and ground separation: {:.2f} (0 to 1; under {:.2f} would be weak).".format(
+                    split_sep, WEAK_SPLIT
+                )
+            )
 
         # Thresholds are fitted to the whole field and then follow local conditions (see local_offsets).
         adaptive = str(cfg.get("adaptation_mode", "adaptive")).lower().strip() not in ("global", "off", "none", "false")
         tile = max(64, int(cfg.get("tile_pixels", 512)))
         grid_w = max(2, min(48, int(round(self.width / float(tile)))))
         grid_h = max(2, min(48, int(round(self.height / float(tile)))))
-        self.log_cb("Thresholds: fitted to the whole field, then shifted locally on a {} x {} grid.".format(grid_w, grid_h) if adaptive else "Thresholds: one set for the whole field.")
+        self.log_cb(
+            "Thresholds: fitted to the whole field, then shifted locally on a {} x {} grid.".format(grid_w, grid_h)
+            if adaptive
+            else "Thresholds: one set for the whole field."
+        )
 
         # Step 2: four thresholds on every chosen layer.
         half_mixture = bool(cfg.get("half_mixture", False))
@@ -2200,12 +2558,28 @@ class NativePPEEngine:
                 layer_2d = np.asarray(compute_vi(name, sample_2d), dtype=np.float32)
                 offsets[name] = local_offsets(layer_2d, valid_2d, o, low, high, grid_h, grid_w)
                 shift_range = [float(offsets[name].min()), float(offsets[name].max())]
-            layer_details.append({"layer": name, "spread": spreads[name], "methods": [m[0] for m in methods],
-                                  "thresholds": {m[0]: (list(m[1]) if isinstance(m[1], tuple) else m[1]) for m in methods},
-                                  "local_shift_range": shift_range})
-            self.log_cb("{}: spread {:.3f}; Otsu {:.4g}; CDF {}; k-means {:.4g}; multi-Otsu {}; local shift {:+.3f} to {:+.3f}".format(
-                name, spreads[name], o, "{:.4g} / {:.4g}".format(*c) if isinstance(c, tuple) else "{:.4g}".format(c), methods[2][1],
-                "{:.4g} / {:.4g}".format(mo[0], mo[1]) if mo else "not used", shift_range[0], shift_range[1]))
+            layer_details.append(
+                {
+                    "layer": name,
+                    "spread": spreads[name],
+                    "methods": [m[0] for m in methods],
+                    "thresholds": {m[0]: list(m[1]) if isinstance(m[1], tuple) else m[1] for m in methods},
+                    "local_shift_range": shift_range,
+                }
+            )
+            self.log_cb(
+                "{}: spread {:.3f}; Otsu {:.4g}; CDF {}; k-means {:.4g}; multi-Otsu {}; local shift {:+.3f}"
+                " to {:+.3f}".format(
+                    name,
+                    spreads[name],
+                    o,
+                    "{:.4g} / {:.4g}".format(*c) if isinstance(c, tuple) else "{:.4g}".format(c),
+                    methods[2][1],
+                    "{:.4g} / {:.4g}".format(mo[0], mo[1]) if mo else "not used",
+                    shift_range[0],
+                    shift_range[1],
+                )
+            )
 
         # What PPE found: every reference is measured on this image, from the sample pixels the
         # voters agree on (the sample vote below, with the thresholds just fitted).
@@ -2214,7 +2588,11 @@ class NativePPEEngine:
         for name, polarity, methods in models:
             x = clean[name]
             for method, param in methods:
-                vote = (np.where(x > param[1], 1.0, np.where(x > param[0], 0.5, 0.0)) if isinstance(param, tuple) else (x >= param)).astype(np.float32)
+                vote = (
+                    np.where(x > param[1], 1.0, np.where(x > param[0], 0.5, 0.0))
+                    if isinstance(param, tuple)
+                    else (x >= param)
+                ).astype(np.float32)
                 total_s += (1.0 - vote) if polarity < 0 else vote
                 n_s += 1
         finding_fit = fit_findings(sample, math.sqrt(area_m2) if area_m2 else None, total_s / max(1, n_s))
@@ -2224,11 +2602,24 @@ class NativePPEEngine:
             self.log_cb("What PPE found: " + finding_fit["note"] + ".")
         lv = finding_fit.get("levels") or {}
         if finding_fit["checks"]:
-            self.log_cb("What PPE found, this image's references: green leaves NDVI {}, green/red {}, brightness {}; sunlit ground NIR {}; leaf-side NDVI cut-offs x {:.2f} (plant from {:.2f}, canopy from {:.2f}). Checks: {}.".format(
-                "{:.2f}".format(lv["leaf_ndvi"]) if "leaf_ndvi" in lv else "n/a", "{:.2f}".format(lv["leaf_green_red"]) if "leaf_green_red" in lv else "n/a",
-                "{:.4f}".format(finding_fit["leaf_bright"]) if finding_fit.get("leaf_bright") is not None else "n/a",
-                "{:.3f}".format(finding_fit["soil_nir"]) if finding_fit.get("soil_nir") is not None else "n/a",
-                level_cut(lv, "leaf", 1.0), finding_fit["ndvi_plant"], finding_fit["ndvi_canopy"], ", ".join(finding_fit["checks"])))
+            self.log_cb(
+                "What PPE found, this image's references: green leaves NDVI {}, green/red {}, brightness {}; sunlit"
+                " ground NIR {}; leaf-side NDVI cut-offs x {:.2f} (plant from {:.2f}, canopy from {:.2f})."
+                " Checks: {}.".format(
+                    "{:.2f}".format(lv["leaf_ndvi"]) if "leaf_ndvi" in lv else "n/a",
+                    "{:.2f}".format(lv["leaf_green_red"]) if "leaf_green_red" in lv else "n/a",
+                    (
+                        "{:.4f}".format(finding_fit["leaf_bright"])
+                        if finding_fit.get("leaf_bright") is not None
+                        else "n/a"
+                    ),
+                    "{:.3f}".format(finding_fit["soil_nir"]) if finding_fit.get("soil_nir") is not None else "n/a",
+                    level_cut(lv, "leaf", 1.0),
+                    finding_fit["ndvi_plant"],
+                    finding_fit["ndvi_canopy"],
+                    ", ".join(finding_fit["checks"]),
+                )
+            )
         pale_fit = finding_fit.get("pale")
         findings_not_checked = finding_fit["not_checked"]
         findings_note = finding_fit.get("note", "")
@@ -2242,14 +2633,28 @@ class NativePPEEngine:
         if cfg.get("colour_guard", True) and "nir" not in bands and all(b in sample for b in ("red", "green", "blue")):
             colour_guard = self._fit_colour_guard(sample, clean, models)
             if colour_guard:
-                self.log_cb("Colour guard: soil colour R {:.3g} G {:.3g} B {:.3g}; plant pixels must be greener than soil.".format(*colour_guard["soil"]))
+                self.log_cb(
+                    "Colour guard: soil colour R {:.3g} G {:.3g} B {:.3g}; plant pixels must be greener than"
+                    " soil.".format(
+                        *colour_guard["soil"]
+                    )
+                )
                 if colour_guard["plant_excess"] < WEAK_GREEN:
-                    self.log_cb("WARNING: plants and soil have almost the same colour in this image (excess green {:.3f}). It may hold little or no green vegetation, so check the mask before using it.".format(colour_guard["plant_excess"]))
+                    self.log_cb(
+                        "WARNING: plants and soil have almost the same colour in this image (excess green {:.3f}). It"
+                        " may hold little or no green vegetation, so check the mask before using it.".format(
+                            colour_guard["plant_excess"]
+                        )
+                    )
 
         one_class, referee, low_end, high_end = single_class_check(sample)
         if one_class:
-            self.log_cb("WARNING: this image looks like all {} ({} runs only from {:.2f} to {:.2f}). Automatic thresholds always split an image in two, so check the mask before using it.".format(
-                "bare soil" if one_class == "soil" else "canopy", referee.upper(), low_end, high_end))
+            self.log_cb(
+                "WARNING: this image looks like all {} ({} runs only from {:.2f} to {:.2f}). Automatic thresholds"
+                " always split an image in two, so check the mask before using it.".format(
+                    "bare soil" if one_class == "soil" else "canopy", referee.upper(), low_end, high_end
+                )
+            )
         n_masks = sum(len(x[2]) for x in models)
         vote_path = os.path.join(run_dir, "vote_fraction.tif")
         out = self._create_output(vote_path, gdal.GDT_Float32, NODATA)
@@ -2262,9 +2667,9 @@ class NativePPEEngine:
         # What PPE found (4.1). A pale pixel is a plant part (tassel, flower, head) only inside closed
         # canopy; beside soil it is a leaf edge with a little soil in the pixel (IH corn at V6). Shaded
         # leaves keep more NIR than bare soil in full sun; dark pixels that do not are unclear.
-        findings_path = os.path.join(run_dir, "ppe_findings.tif")       # always: it also holds the sparse spots (code 6)
+        findings_path = os.path.join(run_dir, "ppe_findings.tif")  # always: it also holds the sparse spots (code 6)
         findings_out = self._create_output(findings_path, gdal.GDT_Byte, 255)
-        pale_path = findings_path                      # code 1 = plant parts (the 3.9/4.0 pale-plant layer)
+        pale_path = findings_path  # code 1 = plant parts (the 3.9/4.0 pale-plant layer)
         rejected_count = shadow_rejected_count = biofilm_rejected_count = colour_rejected_count = valid_count = 0
         block_rows = self._block_rows()
 
@@ -2283,12 +2688,12 @@ class NativePPEEngine:
                 top0 = max(0, y - halo_r)
                 bottom0 = min(self.height, y + h + halo_r)
                 wide = self._read_bands(list(self.sources), y=top0, h=bottom0 - top0)
-                raw = {k: v[y - top0:y - top0 + h] for k, v in wide.items()}
+                raw = {k: v[y - top0: y - top0 + h] for k, v in wide.items()}
             else:
                 raw = self._read_bands(list(self.sources), y=y, h=h)
             ok = self._valid(raw)
             total = np.zeros((h, self.width), np.float32)
-            wsum = 0.
+            wsum = 0.0
             rgb = display.convert(raw)
             for name, polarity, methods in models:
                 x = raw[name] if name in raw else compute_vi(name, raw)
@@ -2335,8 +2740,8 @@ class NativePPEEngine:
                 bottom = min(self.height, y + h + r)
                 ndvi_h = None
                 if "nir" in self.sources and "red" in self.sources:
-                    nir_h = wide["nir"][top - top0:bottom - top0]        # read with the block (see above)
-                    red_h = wide["red"][top - top0:bottom - top0]
+                    nir_h = wide["nir"][top - top0: bottom - top0]  # read with the block (see above)
+                    red_h = wide["red"][top - top0: bottom - top0]
                     with np.errstate(divide="ignore", invalid="ignore"):
                         ndvi_h = (nir_h - red_h) / (nir_h + red_h)
                 findings = classify_findings(raw, ok, finding_fit, ndvi_h, y - top, result)
@@ -2344,10 +2749,15 @@ class NativePPEEngine:
             return y, h, result, ok, masks, counts, nvalid, rgb, findings
 
         from concurrent.futures import ThreadPoolExecutor
+
         self._thread_local = threading.local()
         starts = list(range(0, self.height, block_rows))
         workers = self._block_workers(block_rows, len(starts))
-        self.log_cb("Full-resolution pass: {} blocks of {} rows on {} worker thread(s).".format(len(starts), block_rows, workers))
+        self.log_cb(
+            "Full-resolution pass: {} blocks of {} rows on {} worker thread(s).".format(
+                len(starts), block_rows, workers
+            )
+        )
         with ThreadPoolExecutor(max_workers=workers) as pool:
             pending = []
             nxt = 0
@@ -2357,6 +2767,7 @@ class NativePPEEngine:
                 if nxt < len(starts):
                     pending.append(pool.submit(block_votes, starts[nxt]))
                     nxt += 1
+
             for _ in range(workers + 1):
                 submit()
             while pending:
@@ -2369,12 +2780,21 @@ class NativePPEEngine:
                 shadow_rejected_count += counts.get("shadow", 0)
                 colour_rejected_count += counts.get("colour", 0)
                 biofilm_rejected_count += counts.get("algae", 0)
-                for key, target in (("bright", rejection_out), ("shadow", shadow_rejection_out), ("algae", biofilm_rejection_out)):
+                for key, target in (
+                    ("bright", rejection_out),
+                    ("shadow", shadow_rejection_out),
+                    ("algae", biofilm_rejection_out),
+                ):
                     if key in masks and target is not None:
-                        target.GetRasterBand(1).WriteArray(np.where(ok, masks[key].astype(np.uint8), 255).astype(np.uint8), 0, y)
+                        target.GetRasterBand(1).WriteArray(
+                            np.where(ok, masks[key].astype(np.uint8), 255).astype(np.uint8), 0, y
+                        )
                 valid_count += nvalid
                 out.GetRasterBand(1).WriteArray(result, 0, y)
-                self.progress(40 + int(45 * (y + h) / self.height), "Combining {} full-resolution layer×method votes".format(n_masks))
+                self.progress(
+                    40 + int(45 * (y + h) / self.height),
+                    "Combining {} full-resolution layer×method votes".format(n_masks),
+                )
         display.close()
         self._thread_local = None
         out.FlushCache()
@@ -2420,40 +2840,127 @@ class NativePPEEngine:
             sample_votes[(sample_votes == NODATA) | (sample_votes < 0) | (sample_votes > 1)] = np.nan
             suggestion = suggest_threshold(sample_votes, sample_2d, valid_2d, grid_h, grid_w)
         if suggestion:
-            self.log_cb("Suggested threshold {:.2f} (good range {:.2f}-{:.2f}): best match to pixels that are at least half plant.".format(
-                suggestion["threshold"], suggestion["low"], suggestion["high"]))
+            self.log_cb(
+                "Suggested threshold {:.2f} (good range {:.2f}-{:.2f}): best match to pixels that are at least half"
+                " plant.".format(suggestion["threshold"], suggestion["low"], suggestion["high"])
+            )
         else:
             self.log_cb("No threshold suggestion ({}); starting at 0.50.".format(no_suggestion_reason))
         start_threshold = suggestion["threshold"] if suggestion else 0.5
         sparse_spots = {}
         if cfg.get("sparse_spots", True) and area_m2:
-            sparse_spots = mark_sparse_spots(vote_path, findings_path, start_threshold, round(SPARSE_BLOCK_M / math.sqrt(area_m2)))
+            sparse_spots = mark_sparse_spots(
+                vote_path, findings_path, start_threshold, round(SPARSE_BLOCK_M / math.sqrt(area_m2))
+            )
             if sparse_spots.get("whole_field_thin"):
-                self.log_cb("Faint plants in sparse spots: not marked. {:.0f}% of the {:.0f} m squares have under {:.0f}% plant at {:.2f}, so the whole field is thin, not a few spots: move the slider instead.".format(
-                    sparse_spots["squares_pct"], SPARSE_BLOCK_M, SPARSE_COVER_MAX, start_threshold))
+                self.log_cb(
+                    "Faint plants in sparse spots: not marked. {:.0f}% of the {:.0f} m squares have under {:.0f}% plant"
+                    " at {:.2f}, so the whole field is thin, not a few spots: move the slider instead.".format(
+                        sparse_spots["squares_pct"], SPARSE_BLOCK_M, SPARSE_COVER_MAX, start_threshold
+                    )
+                )
             else:
-                self.log_cb("Faint plants in sparse spots: {:.1f}% of the {:.0f} m squares have under {:.0f}% plant at {:.2f}; {:,} pixels there reach {:.2f} ({:.2f}% of the image). They can be added to the mask.".format(
-                    sparse_spots["squares_pct"], SPARSE_BLOCK_M, SPARSE_COVER_MAX, start_threshold, sparse_spots["pixels"], sparse_spots["lower_threshold"], sparse_spots["pixels_pct"]))
+                self.log_cb(
+                    "Faint plants in sparse spots: {:.1f}% of the {:.0f} m squares have under {:.0f}% plant at {:.2f};"
+                    " {:,} pixels there reach {:.2f} ({:.2f}% of the image). They can be added to the mask.".format(
+                        sparse_spots["squares_pct"],
+                        SPARSE_BLOCK_M,
+                        SPARSE_COVER_MAX,
+                        start_threshold,
+                        sparse_spots["pixels"],
+                        sparse_spots["lower_threshold"],
+                        sparse_spots["pixels_pct"],
+                    )
+                )
         weeds = {}
         if cfg.get("weeds", True) and area_m2:
             self.progress(92, "Looking for weeds between and inside the crop rows")
             try:
                 from .plant_count import mark_weeds
-                weeds = mark_weeds(vote_path, findings_path, start_threshold, run_dir, keep_dir=os.path.join(run_dir, "ppe_weeds"),
-                                   cfg={"row_spacing_cm": cfg["row_spacing_cm"]} if cfg.get("row_spacing_cm") else None)
-                self.log_cb("Weeds: {}.".format(weeds.get("note", "none found")) +
-                            (" Review them on the What PPE found card." if weeds.get("between") or weeds.get("in_row") else ""))
-            except Exception as error:            # weeds are extra information: a failure must not stop the run
+
+                weeds = mark_weeds(
+                    vote_path,
+                    findings_path,
+                    start_threshold,
+                    run_dir,
+                    keep_dir=os.path.join(run_dir, "ppe_weeds"),
+                    cfg={"row_spacing_cm": cfg["row_spacing_cm"]} if cfg.get("row_spacing_cm") else None,
+                )
+                self.log_cb(
+                    "Weeds: {}.".format(weeds.get("note", "none found"))
+                    + (
+                        " Review them on the What PPE found card."
+                        if weeds.get("between") or weeds.get("in_row")
+                        else ""
+                    )
+                )
+            except Exception as error:  # weeds are extra information: a failure must not stop the run
                 weeds = {"note": "weeds not checked ({})".format(error)}
                 self.log_cb("Weeds: not checked ({}).".format(error))
         labels = {}
         if cfg.get("confident_labels", True):
             labels = write_confident_labels(vote_path, os.path.join(run_dir, "ppe_confident_labels.tif"))
-            self.log_cb("Confident labels for model training (ppe_confident_labels.tif): plant {:.1f}%, soil {:.1f}%, not labelled {:.1f}% (1 plant, 0 soil, 255 not labelled).".format(
-                labels["plant_pct"], labels["soil_pct"], labels["unlabelled_pct"]))
+            self.log_cb(
+                "Confident labels for model training (ppe_confident_labels.tif): plant {:.1f}%, soil {:.1f}%, not"
+                " labelled {:.1f}% (1 plant, 0 soil, 255 not labelled).".format(
+                    labels["plant_pct"], labels["soil_pct"], labels["unlabelled_pct"]
+                )
+            )
         findings_hist = findings_histograms(findings_path, vote_path)
         pale_pct, pale_lost_pct = self._log_findings(findings_hist if finding_fit else None)
-        result = dict(imported, vote_path=vote_path, curve_path=curve_path, threshold=start_threshold, suggestion=suggestion or {}, suggestion_note="" if suggestion else no_suggestion_reason, selected_layers=chosen, chosen_layers=chosen, layer_details=layer_details, n_voters=n_masks, n_method_masks=n_masks, canopy_regime="classic", adaptation_mode="adaptive" if adaptive else "global", half_mixture=half_mixture, spread_ranking=[{"layer": name, "group": group, "spread": spread} for spread, name, group in leaders], mixed_class_vote=.5, bright_guard=bool(guard), bright_rejection_path=rejection_path, bright_rejected_pct=rejected_pct, shadow_guard=bool(shadow_guard), shadow_rejection_path=shadow_rejection_path, shadow_rejected_pct=shadow_rejected_pct, biofilm_guard=bool(algae_guard), algae_guard_fit=algae_guard or {}, biofilm_rejection_path=biofilm_rejection_path, biofilm_rejected_pct=biofilm_rejected_pct, colour_guard=bool(colour_guard), colour_rejected_pct=colour_rejected_pct, weak_green_warning=bool(colour_guard and colour_guard["plant_excess"] < WEAK_GREEN), single_class="", one_class_warning=one_class or "", pale_plant_path=pale_path, pale_plant_pct=pale_pct, pale_plant_lost_pct=pale_lost_pct, pale_plant_fit=pale_fit or {}, findings_path=findings_path, findings_hist=findings_hist, findings_judged=bool(finding_fit), sparse_spots=sparse_spots, weeds=weeds, findings_fit={k: v for k, v in (finding_fit or {}).items() if k != "pale"}, findings_not_checked=dict(findings_not_checked), findings_note=findings_note, split_separability=split_sep, weak_split_warning=weak_split, confident_labels=labels, confident_labels_path=labels.get("path", ""), ppe_version="native-" + PLUGIN_VERSION, processing_threads=self.thread_count, output_dir=cfg["output_dir"], timings={"total": time.time() - started})
+        result = dict(
+            imported,
+            vote_path=vote_path,
+            curve_path=curve_path,
+            threshold=start_threshold,
+            suggestion=suggestion or {},
+            suggestion_note="" if suggestion else no_suggestion_reason,
+            selected_layers=chosen,
+            chosen_layers=chosen,
+            layer_details=layer_details,
+            n_voters=n_masks,
+            n_method_masks=n_masks,
+            canopy_regime="classic",
+            adaptation_mode="adaptive" if adaptive else "global",
+            half_mixture=half_mixture,
+            spread_ranking=[{"layer": name, "group": group, "spread": spread} for spread, name, group in leaders],
+            mixed_class_vote=0.5,
+            bright_guard=bool(guard),
+            bright_rejection_path=rejection_path,
+            bright_rejected_pct=rejected_pct,
+            shadow_guard=bool(shadow_guard),
+            shadow_rejection_path=shadow_rejection_path,
+            shadow_rejected_pct=shadow_rejected_pct,
+            biofilm_guard=bool(algae_guard),
+            algae_guard_fit=algae_guard or {},
+            biofilm_rejection_path=biofilm_rejection_path,
+            biofilm_rejected_pct=biofilm_rejected_pct,
+            colour_guard=bool(colour_guard),
+            colour_rejected_pct=colour_rejected_pct,
+            weak_green_warning=bool(colour_guard and colour_guard["plant_excess"] < WEAK_GREEN),
+            single_class="",
+            one_class_warning=one_class or "",
+            pale_plant_path=pale_path,
+            pale_plant_pct=pale_pct,
+            pale_plant_lost_pct=pale_lost_pct,
+            pale_plant_fit=pale_fit or {},
+            findings_path=findings_path,
+            findings_hist=findings_hist,
+            findings_judged=bool(finding_fit),
+            sparse_spots=sparse_spots,
+            weeds=weeds,
+            findings_fit={k: v for k, v in (finding_fit or {}).items() if k != "pale"},
+            findings_not_checked=dict(findings_not_checked),
+            findings_note=findings_note,
+            split_separability=split_sep,
+            weak_split_warning=weak_split,
+            confident_labels=labels,
+            confident_labels_path=labels.get("path", ""),
+            ppe_version="native-" + PLUGIN_VERSION,
+            processing_threads=self.thread_count,
+            output_dir=cfg["output_dir"],
+            timings={"total": time.time() - started},
+        )
         with open(os.path.join(run_dir, "run_summary.json"), "w", encoding="utf-8") as handle:
             json.dump(result, handle, indent=2)
         self.progress(100, "Plant vote raster and threshold curve are ready")
@@ -2510,7 +3017,9 @@ class NativePPEEngine:
         red, green, blue = bands["red"], bands["green"], bands["blue"]
         brightness = (red + green + blue) / 3.0
         chroma = np.maximum(np.maximum(red, green), blue) - np.minimum(np.minimum(red, green), blue)
-        evidence_names = [name for name in ("ndvi", "ndre") if name in VI_META and all(b in bands for b in VI_META[name][0])]
+        evidence_names = [
+            name for name in ("ndvi", "ndre") if name in VI_META and all(b in bands for b in VI_META[name][0])
+        ]
         if not evidence_names:
             evidence_names = [name for name in ("ngrdi", "exg") if all(b in bands for b in VI_META[name][0])]
         evidence = {}
@@ -2521,8 +3030,16 @@ class NativePPEEngine:
                 evidence[name] = threshold
         if not evidence:
             return None
-        fitted = {"brightness": float(np.nanpercentile(brightness[valid], 90)), "chroma": float(np.nanpercentile(chroma[valid], 25)), "evidence": evidence}
-        self.log_cb("Bright-soil safeguard: brightness ≥ {:.4g}, RGB chroma ≤ {:.4g}, and no {} support.".format(fitted["brightness"], fitted["chroma"], "/".join(evidence)))
+        fitted = {
+            "brightness": float(np.nanpercentile(brightness[valid], 90)),
+            "chroma": float(np.nanpercentile(chroma[valid], 25)),
+            "evidence": evidence,
+        }
+        self.log_cb(
+            "Bright-soil safeguard: brightness ≥ {:.4g}, RGB chroma ≤ {:.4g}, and no {} support.".format(
+                fitted["brightness"], fitted["chroma"], "/".join(evidence)
+            )
+        )
         return fitted
 
     @staticmethod
@@ -2600,10 +3117,18 @@ class NativePPEEngine:
             "ndre_keep": ndre_keep,
         }
         if nirv_floor is not None:
-            self.log_cb("Shadow guard: dark means brightness < {:.5g}; a dark pixel is kept as plant if NIRv ≥ {:.5g}{}.".format(
-                b_thresh, nirv_floor, " or NDVI ≥ {:.3f} (a shaded leaf)".format(ndvi_keep) if ndvi_keep is not None else ""))
+            self.log_cb(
+                "Shadow guard: dark means brightness < {:.5g}; a dark pixel is kept as plant if NIRv ≥"
+                " {:.5g}{}.".format(
+                    b_thresh,
+                    nirv_floor,
+                    " or NDVI ≥ {:.3f} (a shaded leaf)".format(ndvi_keep) if ndvi_keep is not None else "",
+                )
+            )
         else:
-            self.log_cb("Shadow & black-pixel safeguard: brightness < {:.5g}, requiring visible greenness.".format(b_thresh))
+            self.log_cb(
+                "Shadow & black-pixel safeguard: brightness < {:.5g}, requiring visible greenness.".format(b_thresh)
+            )
         return fitted
 
     @staticmethod
@@ -2686,7 +3211,11 @@ class NativePPEEngine:
             self.log_cb("Algae guard skipped: red-edge contrast does not separate soil from plants in this image.")
             return None
         floor = soil_mid + ALGAE_GUARD_SHARE * (plant_mid - soil_mid)
-        self.log_cb("Algae guard: a plant must have NDRE above {:.3f} (bare soil is typically {:.3f}, plants {:.3f}).".format(floor, soil_mid, plant_mid))
+        self.log_cb(
+            "Algae guard: a plant must have NDRE above {:.3f} (bare soil is typically {:.3f}, plants {:.3f}).".format(
+                floor, soil_mid, plant_mid
+            )
+        )
         return {"ndre_floor": floor, "soil_ndre_median": soil_mid, "plant_ndre_median": plant_mid}
 
     @staticmethod
@@ -2704,8 +3233,8 @@ class NativePPEEngine:
         with open(curve_path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(("plant_thresh", "canopy_pct"))
-            for t in np.arange(.15, .951, .01):
-                w.writerow((round(float(t), 2), float(100 * np.mean(x >= max(0, t - .05)))))
+            for t in np.arange(0.15, 0.951, 0.01):
+                w.writerow((round(float(t), 2), float(100 * np.mean(x >= max(0, t - 0.05)))))
 
     @_bigger_gdal_cache
     def batch_run(self, cfg):
@@ -2720,10 +3249,29 @@ class NativePPEEngine:
         work_root = cfg.get("work_dir") or os.path.join(root, "ppe_work")
         manifest_path = os.path.join(root, "ppe_batch.json")
         started = time.time()
-        common = {k: v for k, v in cfg.items() if k not in ("action", "batch_items", "batch_folder", "output_dir", "work_dir",
-                                                            "source_mode", "stacked_path", "folder_path", "band_files")}
-        manifest = {"batch_folder": cfg.get("batch_folder", ""), "output_dir": root, "created": datetime.now().isoformat(timespec="seconds"),
-                    "ppe_version": "native-" + PLUGIN_VERSION, "items": []}
+        common = {
+            k: v
+            for k, v in cfg.items()
+            if k
+            not in (
+                "action",
+                "batch_items",
+                "batch_folder",
+                "output_dir",
+                "work_dir",
+                "source_mode",
+                "stacked_path",
+                "folder_path",
+                "band_files",
+            )
+        }
+        manifest = {
+            "batch_folder": cfg.get("batch_folder", ""),
+            "output_dir": root,
+            "created": datetime.now().isoformat(timespec="seconds"),
+            "ppe_version": "native-" + PLUGIN_VERSION,
+            "items": [],
+        }
         outer = self.progress_cb
         n = len(items)
         self.log_cb("Batch: {} image(s) in {}.".format(n, cfg.get("batch_folder", "the list")))
@@ -2732,40 +3280,84 @@ class NativePPEEngine:
                 raise Cancelled("Batch cancelled after {} of {} images; those are kept in ppe_batch.json.".format(i, n))
             name = item["name"]
             out_dir = os.path.join(root, name)
-            entry = {"name": name, "source_mode": item["source_mode"], "source": item.get("stacked_path") or item.get("folder_path"),
-                     "output_dir": out_dir, "status": "running"}
-            self.progress_cb = (lambda p, m, i=i, name=name: outer(int(100 * (i + p / 100.0) / n), "{} ({}/{}): {}".format(name, i + 1, n, m)))
+            entry = {
+                "name": name,
+                "source_mode": item["source_mode"],
+                "source": item.get("stacked_path") or item.get("folder_path"),
+                "output_dir": out_dir,
+                "status": "running",
+            }
+            self.progress_cb = lambda p, m, i=i, name=name: outer(
+                int(100 * (i + p / 100.0) / n), "{} ({}/{}): {}".format(name, i + 1, n, m)
+            )
             t0 = time.time()
             try:
-                r = self.run(dict(common, **{k: v for k, v in item.items() if k != "name"}, output_dir=out_dir, work_dir=os.path.join(work_root, name)))
+                r = self.run(
+                    dict(
+                        common,
+                        **{k: v for k, v in item.items() if k != "name"},
+                        output_dir=out_dir,
+                        work_dir=os.path.join(work_root, name),
+                    )
+                )
                 os.makedirs(out_dir, exist_ok=True)
                 result_path = os.path.join(out_dir, "ppe_batch_result.json")
                 with open(result_path, "w", encoding="utf-8") as f:
                     json.dump(_jsonable(r), f)
                 t = float(r.get("threshold", 0.5))
-                entry.update(status="done", result_path=result_path, threshold=t, suggested_threshold=t if r.get("suggestion") else None,
-                             canopy_pct=canopy_at(r.get("curve_path"), t), split_separability=r.get("split_separability"),
-                             weak_split=bool(r.get("weak_split_warning")), warnings=[w for w in (
-                                 "plants and ground do not separate clearly" if r.get("weak_split_warning") else "",
-                                 "looks like bare soil only" if r.get("one_class_warning") == "soil" else "",
-                                 "looks like closed canopy only" if r.get("one_class_warning") == "plant" else "",
-                                 "plants barely greener than soil" if r.get("weak_green_warning") else "") if w],
-                             layers=r.get("chosen_layers"), seconds=time.time() - t0)
-                self.log_cb("Batch {}/{}: {} done in {:.0f} s (threshold {:.2f}{}).".format(i + 1, n, name, entry["seconds"], t,
-                            "; check it: " + ", ".join(entry["warnings"]) if entry["warnings"] else ""))
+                entry.update(
+                    status="done",
+                    result_path=result_path,
+                    threshold=t,
+                    suggested_threshold=t if r.get("suggestion") else None,
+                    canopy_pct=canopy_at(r.get("curve_path"), t),
+                    split_separability=r.get("split_separability"),
+                    weak_split=bool(r.get("weak_split_warning")),
+                    warnings=[
+                        w
+                        for w in (
+                            "plants and ground do not separate clearly" if r.get("weak_split_warning") else "",
+                            "looks like bare soil only" if r.get("one_class_warning") == "soil" else "",
+                            "looks like closed canopy only" if r.get("one_class_warning") == "plant" else "",
+                            "plants barely greener than soil" if r.get("weak_green_warning") else "",
+                        )
+                        if w
+                    ],
+                    layers=r.get("chosen_layers"),
+                    seconds=time.time() - t0,
+                )
+                self.log_cb(
+                    "Batch {}/{}: {} done in {:.0f} s (threshold {:.2f}{}).".format(
+                        i + 1,
+                        n,
+                        name,
+                        entry["seconds"],
+                        t,
+                        "; check it: " + ", ".join(entry["warnings"]) if entry["warnings"] else "",
+                    )
+                )
             except Cancelled:
                 raise
             except Exception as exc:
-                entry.update(status="failed", error="{}: {}".format(type(exc).__name__, str(exc).strip() or "no details"), seconds=time.time() - t0)
-                self.log_cb("Batch {}/{}: {} failed ({}); going on with the next image.".format(i + 1, n, name, entry["error"]))
+                entry.update(
+                    status="failed",
+                    error="{}: {}".format(type(exc).__name__, str(exc).strip() or "no details"),
+                    seconds=time.time() - t0,
+                )
+                self.log_cb(
+                    "Batch {}/{}: {} failed ({}); going on with the next image.".format(i + 1, n, name, entry["error"])
+                )
             manifest["items"].append(entry)
             manifest["seconds"] = time.time() - started
             with open(manifest_path, "w", encoding="utf-8") as f:
                 json.dump(_jsonable(manifest), f, indent=1)
         self.progress_cb = outer
         done = sum(1 for e in manifest["items"] if e["status"] == "done")
-        self.log_cb("Batch finished: {} of {} images done in {:.0f} s; {} to check first.".format(
-            done, n, time.time() - started, sum(1 for e in manifest["items"] if e.get("warnings"))))
+        self.log_cb(
+            "Batch finished: {} of {} images done in {:.0f} s; {} to check first.".format(
+                done, n, time.time() - started, sum(1 for e in manifest["items"] if e.get("warnings"))
+            )
+        )
         manifest["manifest_path"] = manifest_path
         return manifest
 
@@ -2789,16 +3381,41 @@ class NativePPEEngine:
             r = load_batch_result(e["result_path"])
             c = choices.get(e["name"]) or {}
             t = float(c.get("threshold", e.get("threshold", 0.5)))
-            self.progress_cb = (lambda p, m, i=i, name=e["name"]: outer(int(100 * (i + p / 100.0) / n), "{} ({}/{}): {}".format(name, i + 1, n, m)))
-            a = self.apply({"vote_path": r["vote_path"], "threshold": t, "output_dir": e["output_dir"], "findings_path": r.get("findings_path"),
-                            "clip_codes": c.get("clip_codes") or [], "add_codes": c.get("add_codes") or [], "chosen_layers": r.get("chosen_layers"),
-                            "source_mode": e["source_mode"], "stacked_path": e["source"] if e["source_mode"] == "stacked" else "",
-                            "folder_path": e["source"] if e["source_mode"] == "folder" else "", "threads": cfg.get("threads")})
-            rows.append({"image": e["name"], "threshold": round(t, 3), "reviewed": bool(c.get("reviewed")), "canopy_pct": round(a["canopy_pct"], 3),
-                         "left_out": "; ".join(a.get("left_out") or {}), "added_pixels": a.get("added_pixels", 0),
-                         "check": "; ".join(e.get("warnings") or []), "separation": e.get("split_separability"), "mask_path": a["mask_path"],
-                         "confident_labels": r.get("confident_labels_path", "")})
-            self.log_cb("Finalized {} ({}/{}): threshold {:.2f}, plant {:.1f}%.".format(e["name"], i + 1, n, t, a["canopy_pct"]))
+            self.progress_cb = lambda p, m, i=i, name=e["name"]: outer(
+                int(100 * (i + p / 100.0) / n), "{} ({}/{}): {}".format(name, i + 1, n, m)
+            )
+            a = self.apply(
+                {
+                    "vote_path": r["vote_path"],
+                    "threshold": t,
+                    "output_dir": e["output_dir"],
+                    "findings_path": r.get("findings_path"),
+                    "clip_codes": c.get("clip_codes") or [],
+                    "add_codes": c.get("add_codes") or [],
+                    "chosen_layers": r.get("chosen_layers"),
+                    "source_mode": e["source_mode"],
+                    "stacked_path": e["source"] if e["source_mode"] == "stacked" else "",
+                    "folder_path": e["source"] if e["source_mode"] == "folder" else "",
+                    "threads": cfg.get("threads"),
+                }
+            )
+            rows.append(
+                {
+                    "image": e["name"],
+                    "threshold": round(t, 3),
+                    "reviewed": bool(c.get("reviewed")),
+                    "canopy_pct": round(a["canopy_pct"], 3),
+                    "left_out": "; ".join(a.get("left_out") or {}),
+                    "added_pixels": a.get("added_pixels", 0),
+                    "check": "; ".join(e.get("warnings") or []),
+                    "separation": e.get("split_separability"),
+                    "mask_path": a["mask_path"],
+                    "confident_labels": r.get("confident_labels_path", ""),
+                }
+            )
+            self.log_cb(
+                "Finalized {} ({}/{}): threshold {:.2f}, plant {:.1f}%.".format(e["name"], i + 1, n, t, a["canopy_pct"])
+            )
         self.progress_cb = outer
         summary = os.path.join(os.path.dirname(manifest_path), "ppe_batch_summary.csv")
         with open(summary, "w", newline="", encoding="utf-8") as f:
@@ -2822,28 +3439,41 @@ class NativePPEEngine:
         out_dir = cfg["output_dir"]
         os.makedirs(out_dir, exist_ok=True)
         zone_path = cfg.get("zone_path") or ""
-        zone_t = [float(t) for t in (cfg.get("zone_thresholds") or [])]
+        zone_t = [float(t) for t in cfg.get("zone_thresholds") or []]
         zones = safe_gdal_open(zone_path) if zone_path and len(zone_t) > 1 else None
         if zones is not None and (zones.RasterXSize != self.width or zones.RasterYSize != self.height):
             zones = None
         if zones is not None:
             zone_t[0] = threshold
-        cut = np.maximum(0, np.array(zone_t if zones is not None else [threshold], dtype=float) - .05)
-        clip = sorted({int(c) for c in (cfg.get("clip_codes") or []) if int(c) in FINDING_NAMES})
-        add = sorted({int(c) for c in (cfg.get("add_codes") or []) if int(c) in FINDING_NAMES and int(c) not in clip})   # 4.6.5: any kind; leaving out wins
+        cut = np.maximum(0, np.array(zone_t if zones is not None else [threshold], dtype=float) - 0.05)
+        clip = sorted({int(c) for c in cfg.get("clip_codes") or [] if int(c) in FINDING_NAMES})
+        add = sorted(
+            {int(c) for c in cfg.get("add_codes") or [] if int(c) in FINDING_NAMES and int(c) not in clip}
+        )  # 4.6.5: any kind; leaving out wins
         # Each choice of left-out findings gets its own file, so QGIS can never show an older copy of the mask.
-        mask_path = os.path.join(out_dir, ("ppe_plant_mask_by_crop" if zones is not None else "ppe_plant_mask_{:.2f}".format(threshold))
-                                 + ("_without_" + "_".join(FINDING_FILE_NAMES[k] for k in clip) if clip else "")
-                                 + ("_with_" + "_".join(FINDING_FILE_NAMES[k] for k in add) if add else "") + ".tif")
+        mask_path = os.path.join(
+            out_dir,
+            ("ppe_plant_mask_by_crop" if zones is not None else "ppe_plant_mask_{:.2f}".format(threshold))
+            + ("_without_" + "_".join(FINDING_FILE_NAMES[k] for k in clip) if clip else "")
+            + ("_with_" + "_".join(FINDING_FILE_NAMES[k] for k in add) if add else "")
+            + ".tif",
+        )
         out = self._create_output(mask_path, gdal.GDT_Byte, 255)
         n = len(cut)
         count = np.zeros(n, np.int64)
         valid_count = np.zeros(n, np.int64)
-        findings = safe_gdal_open(cfg["findings_path"]) if (clip or add) and cfg.get("findings_path") and os.path.isfile(cfg["findings_path"]) else None
+        findings = (
+            safe_gdal_open(cfg["findings_path"])
+            if (clip or add) and cfg.get("findings_path") and os.path.isfile(cfg["findings_path"])
+            else None
+        )
         if findings is not None and (findings.RasterXSize != self.width or findings.RasterYSize != self.height):
             findings = None
         if (clip or add) and findings is None:
-            raise ValueError("The findings layer of this run is missing, so nothing can be left out of or added to the mask. Run PPE again.")
+            raise ValueError(
+                "The findings layer of this run is missing, so nothing can be left out of or added to the mask. Run PPE"
+                " again."
+            )
         added = 0
         added_by = np.zeros(max(FINDING_CODES) + 1, np.int64)
         removed = np.zeros(max(FINDING_CODES) + 1, np.int64)
@@ -2851,7 +3481,11 @@ class NativePPEEngine:
             h = min(512, self.height - y)
             x = ds.GetRasterBand(1).ReadAsArray(0, y, self.width, h)
             valid = (x != NODATA) & np.isfinite(x)
-            z = zones.GetRasterBand(1).ReadAsArray(0, y, self.width, h).astype(np.intp) if zones is not None else np.zeros(x.shape, np.intp)
+            z = (
+                zones.GetRasterBand(1).ReadAsArray(0, y, self.width, h).astype(np.intp)
+                if zones is not None
+                else np.zeros(x.shape, np.intp)
+            )
             z = np.clip(z, 0, n - 1)
             plant = valid & (x >= cut[z])
             if findings is not None:
@@ -2860,9 +3494,13 @@ class NativePPEEngine:
                     extra = valid & ~plant & np.isin(f, add)
                     added += int(extra.sum())
                     plant |= extra
-                    added_by += np.bincount(np.clip(f[extra].astype(np.intp), 0, added_by.size - 1), minlength=added_by.size)[:added_by.size]
+                    added_by += np.bincount(
+                        np.clip(f[extra].astype(np.intp), 0, added_by.size - 1), minlength=added_by.size
+                    )[: added_by.size]
                 out_of_mask = plant & np.isin(f, clip)
-                removed += np.bincount(np.clip(f[out_of_mask].astype(np.intp), 0, removed.size - 1), minlength=removed.size)[:removed.size]
+                removed += np.bincount(
+                    np.clip(f[out_of_mask].astype(np.intp), 0, removed.size - 1), minlength=removed.size
+                )[: removed.size]
                 plant &= ~out_of_mask
             m = np.where(valid, plant.astype(np.uint8), 255).astype(np.uint8)
             out.GetRasterBand(1).WriteArray(m, 0, y)
@@ -2871,21 +3509,45 @@ class NativePPEEngine:
             self.progress(int(100 * (y + h) / self.height), "Writing native-resolution plant mask")
         out.FlushCache()
         out = None
-        result = {"mask_path": mask_path, "mask_qgis_path": mask_path, "threshold": threshold, "canopy_pct": 100 * count.sum() / max(1, valid_count.sum()),
-                  "clip_codes": clip, "left_out": {FINDING_NAMES[k]: int(removed[k]) for k in clip},
-                  "left_out_pct": 100.0 * removed.sum() / max(1, valid_count.sum()),
-                  "left_out_pixels": int(removed.sum()), "canopy_before_clip_pct": 100 * (count.sum() + removed.sum() - added) / max(1, valid_count.sum()),
-                  "add_codes": add, "added_pixels": added, "added": {FINDING_NAMES[k]: int(added_by[k]) for k in add}}
+        result = {
+            "mask_path": mask_path,
+            "mask_qgis_path": mask_path,
+            "threshold": threshold,
+            "canopy_pct": 100 * count.sum() / max(1, valid_count.sum()),
+            "clip_codes": clip,
+            "left_out": {FINDING_NAMES[k]: int(removed[k]) for k in clip},
+            "left_out_pct": 100.0 * removed.sum() / max(1, valid_count.sum()),
+            "left_out_pixels": int(removed.sum()),
+            "canopy_before_clip_pct": 100 * (count.sum() + removed.sum() - added) / max(1, valid_count.sum()),
+            "add_codes": add,
+            "added_pixels": added,
+            "added": {FINDING_NAMES[k]: int(added_by[k]) for k in add},
+        }
         if add:
-            self.log_cb("Added to the mask: {} ({:,} pixels).".format(", ".join("{} {:,}".format(FINDING_NAMES[k], int(added_by[k])) for k in add), added))
+            self.log_cb(
+                "Added to the mask: {} ({:,} pixels).".format(
+                    ", ".join("{} {:,}".format(FINDING_NAMES[k], int(added_by[k])) for k in add), added
+                )
+            )
         if clip:
-            self.log_cb("Left out of the mask: " + ", ".join("{} ({:,} pixels)".format(FINDING_NAMES[k], int(removed[k])) for k in clip) + ".")
+            self.log_cb(
+                "Left out of the mask: "
+                + ", ".join("{} ({:,} pixels)".format(FINDING_NAMES[k], int(removed[k])) for k in clip)
+                + "."
+            )
         if zones is not None:
             names = list(cfg.get("zone_names") or [])
             result["zone_path"] = zone_path
             result["zone_thresholds"] = zone_t
-            result["crops"] = [{"crop": (names[k - 1] if k - 1 < len(names) else "crop {}".format(k)), "threshold": zone_t[k],
-                                "pixels": int(valid_count[k]), "canopy_pct": (100 * count[k] / valid_count[k] if valid_count[k] else None)} for k in range(1, n)]
+            result["crops"] = [
+                {
+                    "crop": names[k - 1] if k - 1 < len(names) else "crop {}".format(k),
+                    "threshold": zone_t[k],
+                    "pixels": int(valid_count[k]),
+                    "canopy_pct": 100 * count[k] / valid_count[k] if valid_count[k] else None,
+                }
+                for k in range(1, n)
+            ]
             result["rest_canopy_pct"] = 100 * count[0] / valid_count[0] if valid_count[0] else None
         record = self.write_run_record(cfg, result, out_dir)
         if record:
@@ -2898,8 +3560,11 @@ class NativePPEEngine:
         if hist is None:
             return 0.0, 0.0
         shares = finding_shares(hist, 0.30)
-        self.log_cb("What PPE found (percent of the plant at 0.30): " + "; ".join("{} {:.2f}%".format(FINDING_NAMES[k], shares[k]) for k in FINDING_CODES if k not in ADD_CODES) +
-                    ". Information only; the mask is not changed unless you leave them out.")
+        self.log_cb(
+            "What PPE found (percent of the plant at 0.30): "
+            + "; ".join("{} {:.2f}%".format(FINDING_NAMES[k], shares[k]) for k in FINDING_CODES if k not in ADD_CODES)
+            + ". Information only; the mask is not changed unless you leave them out."
+        )
         h = np.asarray(hist[1])
         levels = h.size - 1
         low = h[int(np.ceil(0.25 * levels - 1e-9)):].sum()
@@ -2918,7 +3583,7 @@ class NativePPEEngine:
         self.template = vote
         self.width = vote.RasterXSize
         self.height = vote.RasterYSize
-        areas = [a for a in (cfg.get("crop_areas") or []) if a.get("wkt")]
+        areas = [a for a in cfg.get("crop_areas") or [] if a.get("wkt")]
         if not areas:
             raise ValueError("Draw at least one crop area first.")
         out_dir = cfg.get("output_dir") or os.path.dirname(cfg["vote_path"])
@@ -2936,7 +3601,7 @@ class NativePPEEngine:
         memory = ogr.GetDriverByName("Memory").CreateDataSource("")
         layer = memory.CreateLayer("crops", srs=srs if wkt else None, geom_type=ogr.wkbMultiPolygon)
         layer.CreateField(ogr.FieldDefn("zone", ogr.OFTInteger))
-        for k in range(len(areas), 0, -1):                       # last first, so the crop listed first wins overlaps
+        for k in range(len(areas), 0, -1):  # last first, so the crop listed first wins overlaps
             geometry = ogr.CreateGeometryFromWkt(areas[k - 1]["wkt"])
             if geometry is None or geometry.IsEmpty():
                 continue
@@ -2948,9 +3613,11 @@ class NativePPEEngine:
         zones.FlushCache()
         preview = self._create_output(preview_path, gdal.GDT_Float32, NODATA)
         n = len(areas) + 1
-        levels = 1200                            # votes are multiples of 1/24 (1/30 with half-mixture)
+        levels = 1200  # votes are multiples of 1/24 (1/30 with half-mixture)
         hist = np.zeros((n, levels + 1), np.int64)
-        pale_ds = safe_gdal_open(cfg["pale_path"]) if cfg.get("pale_path") and os.path.isfile(cfg["pale_path"]) else None
+        pale_ds = (
+            safe_gdal_open(cfg["pale_path"]) if cfg.get("pale_path") and os.path.isfile(cfg["pale_path"]) else None
+        )
         pale_n = np.zeros(n, np.int64)
         plant_n = np.zeros(n, np.int64)
         for y in range(0, self.height, 512):
@@ -2972,34 +3639,62 @@ class NativePPEEngine:
         preview = None
         zones = None
         values = np.arange(levels + 1) / levels
-        thresholds = np.round(np.arange(.15, .951, .01), 2)
+        thresholds = np.round(np.arange(0.15, 0.951, 0.01), 2)
         curves = []
         for k in range(n):
             total = hist[k].sum()
-            above = [int(hist[k][values >= max(0, t - .05) - 1e-9].sum()) for t in thresholds]
+            above = [int(hist[k][values >= max(0, t - 0.05) - 1e-9].sum()) for t in thresholds]
             curves.append([(float(t), (100.0 * a / total if total else None)) for t, a in zip(thresholds, above)])
         names = [a.get("name") or "crop {}".format(i + 1) for i, a in enumerate(areas)]
         self.progress(100, "Crop areas ready")
-        return {"zone_path": zone_path, "preview_path": preview_path, "zone_names": names, "zone_pixels": [int(hist[k].sum()) for k in range(n)],
-                "zone_curves": curves,
-                "zone_pale_pct": [(float(100.0 * pale_n[k] / plant_n[k]) if plant_n[k] else None) for k in range(n)] if pale_ds is not None else None}
+        return {
+            "zone_path": zone_path,
+            "preview_path": preview_path,
+            "zone_names": names,
+            "zone_pixels": [int(hist[k].sum()) for k in range(n)],
+            "zone_curves": curves,
+            "zone_pale_pct": (
+                [(float(100.0 * pale_n[k] / plant_n[k]) if plant_n[k] else None) for k in range(n)]
+                if pale_ds is not None
+                else None
+            ),
+        }
 
     def write_run_record(self, cfg, result, out_dir):
         """Save what was run and chosen as ppe_run_record.json (the start of a data catalogue)."""
         try:
-            record = {"plugin_version": PLUGIN_VERSION, "written": datetime.now().isoformat(timespec="seconds"),
-                      "source_mode": cfg.get("source_mode"), "source": cfg.get("stacked_path") or cfg.get("folder_path") or cfg.get("bands"),
-                      "field_info": cfg.get("field_info") or {}, "suggestion": cfg.get("suggestion") or {},
-                      "final_threshold": result.get("threshold"), "canopy_pct": result.get("canopy_pct"),
-                      "crops": result.get("crops") or [], "rest_of_image_canopy_pct": result.get("rest_canopy_pct"),
-                      "chosen_layers": cfg.get("chosen_layers") or [], "mask_path": result.get("mask_path"),
-                      "pale_plant_pct": cfg.get("pale_plant_pct"), "pale_plant_path": cfg.get("pale_path") or "",
-                      "findings_at_threshold_pct": cfg.get("findings_shares") or {}, "left_out_of_mask": list(result.get("left_out") or {}), "added_to_mask": list(result.get("added") or {}) if result.get("added_pixels") else [],
-                      "left_out_pct": result.get("left_out_pct")}
+            record = {
+                "plugin_version": PLUGIN_VERSION,
+                "written": datetime.now().isoformat(timespec="seconds"),
+                "source_mode": cfg.get("source_mode"),
+                "source": cfg.get("stacked_path") or cfg.get("folder_path") or cfg.get("bands"),
+                "field_info": cfg.get("field_info") or {},
+                "suggestion": cfg.get("suggestion") or {},
+                "final_threshold": result.get("threshold"),
+                "canopy_pct": result.get("canopy_pct"),
+                "crops": result.get("crops") or [],
+                "rest_of_image_canopy_pct": result.get("rest_canopy_pct"),
+                "chosen_layers": cfg.get("chosen_layers") or [],
+                "mask_path": result.get("mask_path"),
+                "pale_plant_pct": cfg.get("pale_plant_pct"),
+                "pale_plant_path": cfg.get("pale_path") or "",
+                "findings_at_threshold_pct": cfg.get("findings_shares") or {},
+                "left_out_of_mask": list(result.get("left_out") or {}),
+                "added_to_mask": list(result.get("added") or {}) if result.get("added_pixels") else [],
+                "left_out_pct": result.get("left_out_pct"),
+            }
             if self.template is not None:
                 gt = self.template.GetGeoTransform()
-                record["image"] = {"width": self.width, "height": self.height, "pixel_size": [gt[1], abs(gt[5])],
-                                   "crs": (osr.SpatialReference(wkt=self.template.GetProjection()).GetName() if self.template.GetProjection() else "")}
+                record["image"] = {
+                    "width": self.width,
+                    "height": self.height,
+                    "pixel_size": [gt[1], abs(gt[5])],
+                    "crs": (
+                        osr.SpatialReference(wkt=self.template.GetProjection()).GetName()
+                        if self.template.GetProjection()
+                        else ""
+                    ),
+                }
             path = os.path.join(out_dir, "ppe_run_record.json")
             with open(path, "w", encoding="utf-8") as handle:
                 json.dump(record, handle, indent=2, default=str)
@@ -3017,7 +3712,10 @@ class NativePPEEngine:
         if mask.RasterXSize != self.width or mask.RasterYSize != self.height:
             raise ValueError("Finalized mask dimensions do not match the source imagery.")
         tolerance = max(1e-10, max(abs(x) for x in self.template.GetGeoTransform()) * 1e-12)
-        if any(abs(a - b) > tolerance for a, b in zip(mask.GetGeoTransform(), self.template.GetGeoTransform())) or mask.GetProjection() != self.template.GetProjection():
+        if (
+            any(abs(a - b) > tolerance for a, b in zip(mask.GetGeoTransform(), self.template.GetGeoTransform()))
+            or mask.GetProjection() != self.template.GetProjection()
+        ):
             raise ValueError("Finalized mask CRS or pixel grid does not match the source imagery.")
 
     def export_plant_only(self, cfg):
@@ -3043,8 +3741,16 @@ class NativePPEEngine:
             if cfg.get("source_mode") == "stacked":
                 source_path = cfg["stacked_path"]
                 source = safe_gdal_open(source_path)
-                canonical = {band: name for name, (path, band) in self.sources.items() if os.path.abspath(path) == os.path.abspath(source_path)}
-                wavelengths = dataset_wavelengths(source, cfg) if cfg.get("ortho_type") == "hsi" or source.RasterCount > 15 else [None] * source.RasterCount
+                canonical = {
+                    band: name
+                    for name, (path, band) in self.sources.items()
+                    if os.path.abspath(path) == os.path.abspath(source_path)
+                }
+                wavelengths = (
+                    dataset_wavelengths(source, cfg)
+                    if cfg.get("ortho_type") == "hsi" or source.RasterCount > 15
+                    else [None] * source.RasterCount
+                )
                 for index in range(1, source.RasterCount + 1):
                     description = source.GetRasterBand(index).GetDescription()
                     wavelength = wavelengths[index - 1] if index <= len(wavelengths) else None
@@ -3069,7 +3775,15 @@ class NativePPEEngine:
                 out = self._create_output(path, gdal.GDT_Float32, NODATA)
                 out.GetRasterBand(1).SetDescription(name)
                 normalized.append((name, source, index, out, path))
-                raw_metadata[name] = {"source_band": index, "source_description": source.GetRasterBand(index).GetDescription() or None, "wavelength_nm": (wavelengths[index - 1] if cfg.get("source_mode") == "stacked" and index <= len(wavelengths) else None)}
+                raw_metadata[name] = {
+                    "source_band": index,
+                    "source_description": source.GetRasterBand(index).GetDescription() or None,
+                    "wavelength_nm": (
+                        wavelengths[index - 1]
+                        if cfg.get("source_mode") == "stacked" and index <= len(wavelengths)
+                        else None
+                    ),
+                }
             raw_entries = normalized
         vi_entries = []
         if do_vis:
@@ -3102,8 +3816,12 @@ class NativePPEEngine:
                 keep = plant & valid
                 for name, out, _path in vi_entries:
                     values = compute_vi(name, bands)
-                    out.GetRasterBand(1).WriteArray(np.where(keep & np.isfinite(values), values, NODATA).astype(np.float32), 0, y)
-            self.progress(5 + int(92 * (y + h) / self.height), "Exporting {} plant-only GeoTIFFs".format(total_products))
+                    out.GetRasterBand(1).WriteArray(
+                        np.where(keep & np.isfinite(values), values, NODATA).astype(np.float32), 0, y
+                    )
+            self.progress(
+                5 + int(92 * (y + h) / self.height), "Exporting {} plant-only GeoTIFFs".format(total_products)
+            )
         for name, _source, _index, out, path in raw_entries:
             out.FlushCache()
             outputs["band:" + name] = path
@@ -3112,7 +3830,15 @@ class NativePPEEngine:
             outputs["vi:" + name] = path
         raw_entries = []
         vi_entries = []
-        manifest = {"export_dir": export_root, "mask_path": cfg["mask_path"], "soil_encoding": "NoData ({})".format(NODATA), "raw_band_metadata": raw_metadata, "products": outputs, "export_count": len(outputs), "elapsed_seconds": time.time() - started}
+        manifest = {
+            "export_dir": export_root,
+            "mask_path": cfg["mask_path"],
+            "soil_encoding": "NoData ({})".format(NODATA),
+            "raw_band_metadata": raw_metadata,
+            "products": outputs,
+            "export_count": len(outputs),
+            "elapsed_seconds": time.time() - started,
+        }
         manifest_path = os.path.join(export_root, "ppe_plant_only_manifest.json")
         with open(manifest_path, "w", encoding="utf-8") as handle:
             json.dump(manifest, handle, indent=2)
@@ -3132,14 +3858,28 @@ class NativePPEEngine:
         mean = float(np.mean(values))
         sd = float(np.std(values, ddof=1)) if values.size > 1 else 0.0
         p = np.percentile(values, [0, 10, 25, 50, 75, 90, 100])
-        return {"pixel_count": int(values.size), "mean": mean, "median": float(p[3]), "sd": sd,
-                "cv_pct": (100.0 * sd / abs(mean) if abs(mean) > 1e-12 else None),
-                "min": float(p[0]), "p10": float(p[1]), "q25": float(p[2]), "q75": float(p[4]), "p90": float(p[5]), "max": float(p[6])}
+        return {
+            "pixel_count": int(values.size),
+            "mean": mean,
+            "median": float(p[3]),
+            "sd": sd,
+            "cv_pct": 100.0 * sd / abs(mean) if abs(mean) > 1e-12 else None,
+            "min": float(p[0]),
+            "p10": float(p[1]),
+            "q25": float(p[2]),
+            "q75": float(p[4]),
+            "p90": float(p[5]),
+            "max": float(p[6]),
+        }
 
     def _aoi_window(self, geometry):
         envelope = geometry.GetEnvelope()  # min x, max x, min y, max y
         inverse = gdal.InvGeoTransform(self.template.GetGeoTransform())
-        corners = [gdal.ApplyGeoTransform(inverse, x, y) for x in (envelope[0], envelope[1]) for y in (envelope[2], envelope[3])]
+        corners = [
+            gdal.ApplyGeoTransform(inverse, x, y)
+            for x in (envelope[0], envelope[1])
+            for y in (envelope[2], envelope[3])
+        ]
         x0 = max(0, int(math.floor(min(point[0] for point in corners))))
         x1 = min(self.width, int(math.ceil(max(point[0] for point in corners))))
         y0 = max(0, int(math.floor(min(point[1] for point in corners))))
@@ -3185,7 +3925,9 @@ class NativePPEEngine:
         vector, layer, info = open_plot_file(cfg.get("aoi_path", ""), cfg.get("aoi_layer") or None)
         if info["note"]:
             self.log_cb("Plot file: {}.".format(info["note"]))
-        self.log_cb("Plot layer '{}': {} polygons; CRS {}.".format(info["layer"], info["features"], info["crs_name"] or "none"))
+        self.log_cb(
+            "Plot layer '{}': {} polygons; CRS {}.".format(info["layer"], info["features"], info["crs_name"] or "none")
+        )
         transform = _plot_transform(layer, self.template.GetProjection())
         if layer.GetSpatialRef() is None:
             self.log_cb("The plot file has no coordinate system; its coordinates are assumed to match the image.")
@@ -3199,21 +3941,38 @@ class NativePPEEngine:
         if pale is not None and (pale.RasterXSize != self.width or pale.RasterYSize != self.height):
             pale = None
         field_info = cfg.get("field_info") or {}
-        info_columns = {key: field_info.get(key, "") for key in ("growth_stage", "planting_date", "flight_date", "irrigation", "weeds")}
-        is_hsi = cfg.get("ortho_type") == "hsi" or (cfg.get("source_mode") == "stacked" and gdal.Open(cfg["stacked_path"]).RasterCount > 15)
+        info_columns = {
+            key: field_info.get(key, "")
+            for key in ("growth_stage", "planting_date", "flight_date", "irrigation", "weeds")
+        }
+        is_hsi = cfg.get("ortho_type") == "hsi" or (
+            cfg.get("source_mode") == "stacked" and gdal.Open(cfg["stacked_path"]).RasterCount > 15
+        )
         raw = []
         if cfg.get("source_mode") == "stacked":
             source = gdal.Open(cfg["stacked_path"])
             wavelengths = dataset_wavelengths(source, cfg) if is_hsi else [None] * source.RasterCount
-            canonical = {band: name for name, (path, band) in self.sources.items() if os.path.abspath(path) == os.path.abspath(cfg["stacked_path"])}
+            canonical = {
+                band: name
+                for name, (path, band) in self.sources.items()
+                if os.path.abspath(path) == os.path.abspath(cfg["stacked_path"])
+            }
             for index in range(1, source.RasterCount + 1):
                 wavelength = wavelengths[index - 1] if index <= len(wavelengths) else None
-                name = ("band_{:03d}_{:g}nm".format(index, wavelength) if wavelength is not None else canonical.get(index) or source.GetRasterBand(index).GetDescription() or "band_{:03d}".format(index))
+                name = (
+                    "band_{:03d}_{:g}nm".format(index, wavelength)
+                    if wavelength is not None
+                    else canonical.get(index)
+                    or source.GetRasterBand(index).GetDescription()
+                    or "band_{:03d}".format(index)
+                )
                 raw.append((self._safe_filename(name), source, index, wavelength))
         else:
             for name, (path, index) in self.sources.items():
                 raw.append((name, self.datasets[name], index, None))
-        vis = [] if is_hsi else [name for name, meta in VI_META.items() if all(band in self.sources for band in meta[0])]
+        vis = (
+            [] if is_hsi else [name for name, meta in VI_META.items() if all(band in self.sources for band in meta[0])]
+        )
         id_field = cfg.get("aoi_id_field") or ""
         rows = []
         canopy_rows = []
@@ -3227,11 +3986,22 @@ class NativePPEEngine:
             if geometry is None:
                 continue
             position += 1
-            plot_id = feature.GetField(id_field) if id_field and feature.GetFieldIndex(id_field) >= 0 else feature.GetFID()
+            plot_id = (
+                feature.GetField(id_field) if id_field and feature.GetFieldIndex(id_field) >= 0 else feature.GetFID()
+            )
             if isinstance(plot_id, float) and plot_id.is_integer():
-                plot_id = int(plot_id)   # KML and GeoJSON often store 401 as 401.0
-            base = {"plot_id": plot_id, "feature_id": feature.GetFID(), "crop": "", "threshold": (cfg.get("threshold") if cfg.get("threshold") is not None else ""),
-                    "plot_pixels": 0, "plant_pixels": 0, "canopy_pct": None, "plot_area_m2": None, "plant_area_m2": None}
+                plot_id = int(plot_id)  # KML and GeoJSON often store 401 as 401.0
+            base = {
+                "plot_id": plot_id,
+                "feature_id": feature.GetFID(),
+                "crop": "",
+                "threshold": cfg.get("threshold") if cfg.get("threshold") is not None else "",
+                "plot_pixels": 0,
+                "plant_pixels": 0,
+                "canopy_pct": None,
+                "plot_area_m2": None,
+                "plant_area_m2": None,
+            }
             x, y, width, height = self._aoi_window(geometry)
             if width < 1 or height < 1:
                 outside += 1
@@ -3242,7 +4012,7 @@ class NativePPEEngine:
             m = mask.GetRasterBand(1).ReadAsArray(x, y, width, height)
             valid = inside & ((m == 0) | (m == 1))
             keep = valid & (m == 1)
-            if zones is not None:                                   # the crop area holding most of the plot
+            if zones is not None:  # the crop area holding most of the plot
                 z = zones.GetRasterBand(1).ReadAsArray(x, y, width, height)[inside]
                 z = z[(z > 0) & (z <= len(zone_names))]
                 if z.size:
@@ -3252,14 +4022,19 @@ class NativePPEEngine:
                         base["threshold"] = zone_t[k]
             n_valid = int(valid.sum())
             n_plant = int(keep.sum())
-            if pale is not None:                                    # what PPE found in the plot, whatever the threshold
+            if pale is not None:  # what PPE found in the plot, whatever the threshold
                 f = pale.GetRasterBand(1).ReadAsArray(x, y, width, height)
                 for code, column in FINDING_COLUMNS.items():
                     base[column] = 100.0 * int(((f == code) & valid).sum()) / n_valid if n_valid else None
             base["left_out_of_mask"] = "; ".join(cfg.get("left_out") or [])
             base["added_to_mask"] = "; ".join(cfg.get("added") or [])
-            base.update(plot_pixels=n_valid, plant_pixels=n_plant, canopy_pct=(100.0 * n_plant / n_valid if n_valid else None),
-                        plot_area_m2=(n_valid * pixel_area if pixel_area else None), plant_area_m2=(n_plant * pixel_area if pixel_area else None))
+            base.update(
+                plot_pixels=n_valid,
+                plant_pixels=n_plant,
+                canopy_pct=(100.0 * n_plant / n_valid if n_valid else None),
+                plot_area_m2=(n_valid * pixel_area if pixel_area else None),
+                plant_area_m2=(n_plant * pixel_area if pixel_area else None),
+            )
             canopy_rows.append(base)
             plots += 1
             for name, source, index, wavelength in raw:
@@ -3268,22 +4043,57 @@ class NativePPEEngine:
                 good = keep & np.isfinite(values)
                 if nodata is not None:
                     good &= values != nodata
-                rows.append(dict(base, variable=name, variable_type="raw_band", source_band=index, wavelength_nm=wavelength, **self._summary(values[good])))
+                rows.append(
+                    dict(
+                        base,
+                        variable=name,
+                        variable_type="raw_band",
+                        source_band=index,
+                        wavelength_nm=wavelength,
+                        **self._summary(values[good]),
+                    )
+                )
             if vis:
                 bands = self._read_bands(list(self.sources), x=x, y=y, w=width, h=height)
                 vi_keep = keep & self._valid(bands)
                 for name in vis:
                     values = compute_vi(name, bands)
-                    rows.append(dict(base, variable=name, variable_type="vegetation_index", source_band=None, wavelength_nm=None, **self._summary(values[vi_keep & np.isfinite(values)])))
+                    rows.append(
+                        dict(
+                            base,
+                            variable=name,
+                            variable_type="vegetation_index",
+                            source_band=None,
+                            wavelength_nm=None,
+                            **self._summary(values[vi_keep & np.isfinite(values)]),
+                        )
+                    )
             self.progress(5 + int(90 * position / total), "Plot statistics: plot {} of {}".format(position, total))
         if not plots:
-            raise ValueError("None of the {} plots overlap the image. Check that the plot file belongs to this field and has the "
-                             "right coordinate system (for a Shapefile, its .prj file).".format(position))
+            raise ValueError(
+                "None of the {} plots overlap the image. Check that the plot file belongs to this field and has the "
+                "right coordinate system (for a Shapefile, its .prj file).".format(position)
+            )
         export_root = os.path.abspath(os.path.expanduser(cfg["export_dir"]))
         os.makedirs(export_root, exist_ok=True)
         for row in canopy_rows:
             row.update(info_columns)
-        canopy_fields = ("plot_id", "feature_id", "crop", "threshold", "plot_pixels", "plant_pixels", "canopy_pct", "plot_area_m2", "plant_area_m2") + (tuple(FINDING_COLUMNS.values()) if pale is not None else ()) + ("left_out_of_mask", "added_to_mask") + tuple(info_columns)
+        canopy_fields = (
+            (
+                "plot_id",
+                "feature_id",
+                "crop",
+                "threshold",
+                "plot_pixels",
+                "plant_pixels",
+                "canopy_pct",
+                "plot_area_m2",
+                "plant_area_m2",
+            )
+            + (tuple(FINDING_COLUMNS.values()) if pale is not None else ())
+            + ("left_out_of_mask", "added_to_mask")
+            + tuple(info_columns)
+        )
         canopy_path = os.path.join(export_root, "ppe_plot_canopy.csv")
         with open(canopy_path, "w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=canopy_fields)
@@ -3298,8 +4108,21 @@ class NativePPEEngine:
         record = cfg.get("run_record") or ""
         if record and os.path.isfile(record):
             import shutil
+
             shutil.copyfile(record, os.path.join(export_root, "ppe_run_record.json"))
         if outside:
-            self.log_cb("{} of {} plots lie outside the image; they are listed in ppe_plot_canopy.csv with 0 pixels.".format(outside, position))
+            self.log_cb(
+                "{} of {} plots lie outside the image; they are listed in ppe_plot_canopy.csv with 0 pixels.".format(
+                    outside, position
+                )
+            )
         self.progress(100, "Plot statistics export complete")
-        return {"aoi_csv": path, "canopy_csv": canopy_path, "export_dir": export_root, "plot_count": plots, "plots_outside": outside, "row_count": len(rows), "elapsed_seconds": time.time() - started}
+        return {
+            "aoi_csv": path,
+            "canopy_csv": canopy_path,
+            "export_dir": export_root,
+            "plot_count": plots,
+            "plots_outside": outside,
+            "row_count": len(rows),
+            "elapsed_seconds": time.time() - started,
+        }

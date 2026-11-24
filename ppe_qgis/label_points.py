@@ -19,6 +19,7 @@ radius, cut to the pixels of the same class (the same clear-pixel rule), so a bu
 the other class. Every pixel in a buffer gets the point's label. A point the user moved to the other
 class (or added) keeps just its own pixel, because PPE's mask disagrees with it there.
 """
+
 import csv
 import json
 import math
@@ -33,14 +34,14 @@ from .native_engine import LEVEL_SURE, NODATA, NativePPEEngine, safe_gdal_open
 PLANT, SOIL, WEED = 1, 0, 2
 NAMES = {PLANT: "plant", SOIL: "soil", WEED: "weed"}
 CODE = {v: k for k, v in NAMES.items()}
-WEED_CODES = (7, 8)          # 4.10.1: weeds of What PPE found (between / inside the rows): never plant labels;
-WEED_SHARE = 0.1             # with label_weeds they are a third class, about this share of the points (on top)
-CANDIDATES = 20000           # cLHS chooses from this many clear pixels per class (spread over the image)
-EDGE_PX = 1                  # a clear pixel needs this many pixels of its own class all round
+WEED_CODES = (7, 8)  # 4.10.1: weeds of What PPE found (between / inside the rows): never plant labels;
+WEED_SHARE = 0.1  # with label_weeds they are a third class, about this share of the points (on top)
+CANDIDATES = 20000  # cLHS chooses from this many clear pixels per class (spread over the image)
+EDGE_PX = 1  # a clear pixel needs this many pixels of its own class all round
 MAX_BUFFER_CM = 50.0
-MAX_BUFFER_PX = 64           # 4.10.1: and at most 64 pixels: on very sharp images (1 mm) 50 cm was 500 pixels and a buffer
+MAX_BUFFER_PX = 64  # 4.10.1: and at most 64 pixels: on very sharp images (1 mm) 50 cm was 500 pixels and a buffer
 # search took minutes per point; at drone resolution (1-3 cm) 50 cm stays under the cap
-STEP_CM = 0.5                # buffer slider step
+STEP_CM = 0.5  # buffer slider step
 BLOCK = 512
 LAYER = "points"
 STATUS_PROPOSED, STATUS_CHANGED, STATUS_ADDED = "proposed", "changed", "added"
@@ -56,7 +57,7 @@ def _erode(m, n):
     out = np.ones_like(m)
     for dy in range(-n, n + 1):
         for dx in range(-n, n + 1):
-            out &= p[n + dy:n + dy + h, n + dx:n + dx + w]
+            out &= p[n + dy: n + dy + h, n + dx: n + dx + w]
     return out
 
 
@@ -106,14 +107,14 @@ class _Rasters:
         x0, y0 = max(0, x - edge), max(0, y - edge)
         x1, y1 = min(self.w, x + w + edge), min(self.h, y + h + edge)
         m = self.mask.GetRasterBand(1).ReadAsArray(x0, y0, x1 - x0, y1 - y0)
-        c = (m == (0 if label == SOIL else 1))
-        if label in (PLANT, WEED) and self.findings is not None:     # weeds are never plant; weed buffers stay on weeds
+        c = m == (0 if label == SOIL else 1)
+        if label in (PLANT, WEED) and self.findings is not None:  # weeds are never plant; weed buffers stay on weeds
             wd = np.isin(self.findings.GetRasterBand(1).ReadAsArray(x0, y0, x1 - x0, y1 - y0), WEED_CODES)
             c &= wd if label == WEED else ~wd
         if self.area is not None:
             c &= self.area.GetRasterBand(1).ReadAsArray(x0, y0, x1 - x0, y1 - y0).astype(bool)
         c = _erode(c, edge)
-        return c[y - y0:y - y0 + h, x - x0:x - x0 + w]
+        return c[y - y0: y - y0 + h, x - x0: x - x0 + w]
 
     def classes(self, x, y, w, h, edge=EDGE_PX, weeds=False):
         """Clear plant and soil in a window (and clear weeds with weeds=True: a third array); reads a margin
@@ -123,7 +124,11 @@ class _Rasters:
         m = self.mask.GetRasterBand(1).ReadAsArray(x0, y0, x1 - x0, y1 - y0)
         v = self.vote.GetRasterBand(1).ReadAsArray(x0, y0, x1 - x0, y1 - y0).astype(np.float32)
         f = self.findings.GetRasterBand(1).ReadAsArray(x0, y0, x1 - x0, y1 - y0) if self.findings is not None else None
-        a = self.area.GetRasterBand(1).ReadAsArray(x0, y0, x1 - x0, y1 - y0).astype(bool) if self.area is not None else None
+        a = (
+            self.area.GetRasterBand(1).ReadAsArray(x0, y0, x1 - x0, y1 - y0).astype(bool)
+            if self.area is not None
+            else None
+        )
         p, s = clear_classes(m, v, f, edge, a)
         sl = (slice(y - y0, y - y0 + h), slice(x - x0, x - x0 + w))
         if weeds:
@@ -139,7 +144,7 @@ def _area_raster(cfg, out_dir, stem="ppe_labels_area"):
     """The chosen area as a raster aligned with the mask (1 inside), or '' for the whole image.
     cfg area_wkts: polygons in the image CRS (drawn on the map), or area_path: a polygon file in any CRS.
     The polygons are also kept as <stem>.gpkg."""
-    wkts = [w for w in (cfg.get("area_wkts") or []) if w]
+    wkts = [w for w in cfg.get("area_wkts") or [] if w]
     src = cfg.get("area_path") or ""
     raster = os.path.join(out_dir, stem + ".tif")
     vec = os.path.join(out_dir, stem + ".gpkg")
@@ -182,7 +187,14 @@ def _area_raster(cfg, out_dir, stem="ppe_labels_area"):
         f = ogr.Feature(VL.GetLayerDefn())
         f.SetGeometry(ogr.ForceToMultiPolygon(g))
         VL.CreateFeature(f)
-    out = gdal.GetDriverByName("GTiff").Create(raster, mask.RasterXSize, mask.RasterYSize, 1, gdal.GDT_Byte, options=["COMPRESS=DEFLATE", "TILED=YES", "SPARSE_OK=TRUE"])
+    out = gdal.GetDriverByName("GTiff").Create(
+        raster,
+        mask.RasterXSize,
+        mask.RasterYSize,
+        1,
+        gdal.GDT_Byte,
+        options=["COMPRESS=DEFLATE", "TILED=YES", "SPARSE_OK=TRUE"],
+    )
     out.SetGeoTransform(mask.GetGeoTransform())
     out.SetProjection(wkt)
     out.GetRasterBand(1).Fill(0)
@@ -213,7 +225,7 @@ def clhs(X, n, iterations=None, seed=0, weights=(1.0, 1.0)):
     sd[sd == 0] = 1
     Z = (X - X.mean(0)) / sd
     edges = [np.unique(np.quantile(Z[:, j], np.linspace(0, 1, n + 1)[1:-1])) for j in range(k)]
-    S = np.stack([np.searchsorted(edges[j], Z[:, j], side="right") for j in range(k)], 1)       # stratum of each candidate
+    S = np.stack([np.searchsorted(edges[j], Z[:, j], side="right") for j in range(k)], 1)  # stratum of each candidate
     nstr = np.array([len(e) + 1 for e in edges])
     target = np.array([N / ns for ns in nstr]) * n / N  # points per stratum (1 when unique)
     C_all = np.corrcoef(Z, rowvar=False) if k > 1 else np.ones((1, 1))
@@ -239,12 +251,12 @@ def clhs(X, n, iterations=None, seed=0, weights=(1.0, 1.0)):
     T = 1.0
     cool = 0.95
     best = (obj, sample.copy())
-    pool = np.flatnonzero(~inside)                 # candidates not in the sample
+    pool = np.flatnonzero(~inside)  # candidates not in the sample
     for it in range(iterations):
         if it % 50 == 0 and it:
             T *= cool
         pos = rng.integers(n)
-        if rng.random() < 0.3:                     # targeted: drop the point that sits in the most crowded strata
+        if rng.random() < 0.3:  # targeted: drop the point that sits in the most crowded strata
             crowd = np.zeros(n)
             for j in range(k):
                 crowd += counts[j][S[sample, j]] - target[j]
@@ -281,7 +293,13 @@ def clhs(X, n, iterations=None, seed=0, weights=(1.0, 1.0)):
 # ---- create the points ---------------------------------------------------------------------------
 def _engine(cfg):
     e = NativePPEEngine(log=lambda m: None)
-    e._resolve(dict(cfg, output_dir=cfg.get("output_dir") or cfg.get("work_dir") or "", work_dir=cfg.get("work_dir") or cfg.get("output_dir") or ""))
+    e._resolve(
+        dict(
+            cfg,
+            output_dir=cfg.get("output_dir") or cfg.get("work_dir") or "",
+            work_dir=cfg.get("work_dir") or cfg.get("output_dir") or "",
+        )
+    )
     return e
 
 
@@ -329,8 +347,11 @@ def create_points(cfg, progress=lambda p, m: None, log=lambda m: None, cancelled
             raise RuntimeError("Cancelled.")
     for c in (PLANT, SOIL):
         if count[c] == 0:
-            raise ValueError("No clear {} pixels{}: check the finalized mask (tab 3){}.".format(
-                NAMES[c], " inside the area" if area_path else "", " or draw a bigger area" if area_path else ""))
+            raise ValueError(
+                "No clear {} pixels{}: check the finalized mask (tab 3){}.".format(
+                    NAMES[c], " inside the area" if area_path else "", " or draw a bigger area" if area_path else ""
+                )
+            )
     if weeds_on and count[WEED] == 0:
         log("No clear weed pixels (PPE found no weeds, or none is sure): plant and soil points only.")
         want.pop(WEED)
@@ -381,26 +402,68 @@ def create_points(cfg, progress=lambda p, m: None, log=lambda m: None, cancelled
         progress({PLANT: 60, SOIL: 72, WEED: 84}[c], "Choosing {} {} points (cLHS)".format(n, NAMES[c]))
         cov = A[:, 2:]
         xy = A[:, :2]
-        idx = clhs(np.column_stack([cov, xy]), n, seed=seed + c)          # spread over bands, NDVI and position
+        idx = clhs(np.column_stack([cov, xy]), n, seed=seed + c)  # spread over bands, NDVI and position
         for i in idx:
             points.append((c, A[i]))
     path = os.path.join(out_dir, "ppe_labels.gpkg")
     _write_points(path, points, cols, R, cfg)
     hist = _buffer_histograms(R, points, out_dir)
-    info = {"points_path": path, "plant_points": sum(1 for c, _ in points if c == PLANT), "soil_points": sum(1 for c, _ in points if c == SOIL),
-            "weed_points": sum(1 for c, _ in points if c == WEED), "label_weeds": weeds_on, "clear_weed_pixels": count[WEED],
-            "clear_plant_pixels": count[PLANT], "clear_soil_pixels": count[SOIL], "pixel_cm": R.pixel_cm, "bands": bands,
-            "mask_path": cfg["mask_path"], "vote_path": cfg["vote_path"], "findings_path": cfg.get("findings_path", ""), "area_path": area_path,
-            "area_polygons": len(cfg.get("area_wkts") or []) or (1 if cfg.get("area_path") else 0),
-            "image": {k: cfg[k] for k in ("source_mode", "stacked_path", "folder_path", "folder_bands", "bands", "ortho_type", "rgb_order", "hsi_min_wavelength", "hsi_max_wavelength", "hsi_interval", "hsi_grid_confirmed") if k in cfg},
-            "max_buffer_cm": min(MAX_BUFFER_CM, MAX_BUFFER_PX * R.pixel_cm), "step_cm": STEP_CM, "buffer_pixels": hist, "seed": seed, "seconds": round(time.time() - t0, 1),
-            "rule": "plant: in the mask, vote >= {:.1f}, no finding (so never a weed), {} px from the edge; soil: outside the mask, vote <= {:.1f}, no finding, {} px from the edge; weed: in the mask, vote >= {:.1f}, marked weed in What PPE found".format(
-                LEVEL_SURE, EDGE_PX, 1 - LEVEL_SURE, EDGE_PX, LEVEL_SURE)}
+    info = {
+        "points_path": path,
+        "plant_points": sum(1 for c, _ in points if c == PLANT),
+        "soil_points": sum(1 for c, _ in points if c == SOIL),
+        "weed_points": sum(1 for c, _ in points if c == WEED),
+        "label_weeds": weeds_on,
+        "clear_weed_pixels": count[WEED],
+        "clear_plant_pixels": count[PLANT],
+        "clear_soil_pixels": count[SOIL],
+        "pixel_cm": R.pixel_cm,
+        "bands": bands,
+        "mask_path": cfg["mask_path"],
+        "vote_path": cfg["vote_path"],
+        "findings_path": cfg.get("findings_path", ""),
+        "area_path": area_path,
+        "area_polygons": len(cfg.get("area_wkts") or []) or (1 if cfg.get("area_path") else 0),
+        "image": {
+            k: cfg[k]
+            for k in (
+                "source_mode",
+                "stacked_path",
+                "folder_path",
+                "folder_bands",
+                "bands",
+                "ortho_type",
+                "rgb_order",
+                "hsi_min_wavelength",
+                "hsi_max_wavelength",
+                "hsi_interval",
+                "hsi_grid_confirmed",
+            )
+            if k in cfg
+        },
+        "max_buffer_cm": min(MAX_BUFFER_CM, MAX_BUFFER_PX * R.pixel_cm),
+        "step_cm": STEP_CM,
+        "buffer_pixels": hist,
+        "seed": seed,
+        "seconds": round(time.time() - t0, 1),
+        "rule": (
+            "plant: in the mask, vote >= {:.1f}, no finding (so never a weed), {} px from the edge; soil: outside the"
+            " mask, vote <= {:.1f}, no finding, {} px from the edge; weed: in the mask, vote >= {:.1f}, marked weed in"
+            " What PPE found".format(LEVEL_SURE, EDGE_PX, 1 - LEVEL_SURE, EDGE_PX, LEVEL_SURE)
+        ),
+    }
     with open(os.path.join(out_dir, "ppe_labels_info.json"), "w", encoding="utf-8") as f:
         json.dump(info, f)
     progress(100, "Points ready")
-    log("Created {} plant, {} soil and {} weed points in {:.0f} s (cLHS over {} candidates).".format(info["plant_points"], info["soil_points"], info["weed_points"], info["seconds"],
-                                                                                                     sum(len(np.concatenate(v)) if v else 0 for v in cand.values())))
+    log(
+        "Created {} plant, {} soil and {} weed points in {:.0f} s (cLHS over {} candidates).".format(
+            info["plant_points"],
+            info["soil_points"],
+            info["weed_points"],
+            info["seconds"],
+            sum(len(np.concatenate(v)) if v else 0 for v in cand.values()),
+        )
+    )
     return info
 
 
@@ -408,14 +471,18 @@ def run_and_create(cfg, progress=lambda p, m: None, log=lambda m: None, cancelle
     """One click (4.6): run PPE on the image, finalize the mask at PPE's suggested threshold, then
     create the points. cfg: the image and output_dir (as for a run), n_points, plant_share, labels_dir,
     area_wkts / area_path."""
+
     def part(a, b):
         return lambda p, m="": progress(int(a + (b - a) * max(0, min(100, p)) / 100), m)
+
     if cfg.get("use_result") and all(cfg.get(k) and os.path.isfile(cfg[k]) for k in ("mask_path", "vote_path")):
         # 4.10.1: the PPE result already on the map (finalized mask, with the user's weed review in the findings)
         out = cfg.get("labels_dir") or os.path.join(cfg["output_dir"], "ppe_labels")
         log("Labels from the finalized mask on the map ({}).".format(os.path.basename(cfg["mask_path"])))
         info = create_points(dict(cfg, output_dir=out), progress, log, cancelled)
-        info.update(threshold=cfg.get("threshold"), vote_path=cfg["vote_path"], mask_path=cfg["mask_path"], from_result=True)
+        info.update(
+            threshold=cfg.get("threshold"), vote_path=cfg["vote_path"], mask_path=cfg["mask_path"], from_result=True
+        )
         return info
     e = NativePPEEngine(part(0, 55), log, lambda *a: None, cancelled)
     r = e.run(dict(cfg, action="run", work_dir=cfg.get("work_dir") or os.path.join(cfg["output_dir"], "ppe_work")))
@@ -426,10 +493,24 @@ def run_and_create(cfg, progress=lambda p, m: None, log=lambda m: None, cancelle
     c.update(r)
     c.update(output_dir=cfg["output_dir"], threshold=threshold, action="apply")
     a = NativePPEEngine(part(55, 62), log, lambda *x: None, cancelled).apply(c)
-    log("PPE mask finalized at its suggested threshold {:.2f} ({:.1f} % plant).".format(threshold, a.get("canopy_pct", 0)))
+    log(
+        "PPE mask finalized at its suggested threshold {:.2f} ({:.1f} % plant).".format(
+            threshold, a.get("canopy_pct", 0)
+        )
+    )
     out = cfg.get("labels_dir") or os.path.join(cfg["output_dir"], "ppe_labels")
-    info = create_points(dict(cfg, mask_path=a["mask_path"], vote_path=r["vote_path"], findings_path=r.get("findings_path", ""), output_dir=out),
-                         part(62, 100), log, cancelled)
+    info = create_points(
+        dict(
+            cfg,
+            mask_path=a["mask_path"],
+            vote_path=r["vote_path"],
+            findings_path=r.get("findings_path", ""),
+            output_dir=out,
+        ),
+        part(62, 100),
+        log,
+        cancelled,
+    )
     info.update(threshold=threshold, canopy_pct=a.get("canopy_pct"), vote_path=r["vote_path"], mask_path=a["mask_path"])
     return info
 
@@ -441,8 +522,14 @@ def _write_points(path, points, cols, R, cfg):
     srs.ImportFromWkt(R.wkt)
     ds = ogr.GetDriverByName("GPKG").CreateDataSource(path)
     L = ds.CreateLayer(LAYER, srs, ogr.wkbPoint)
-    for name, t in (("id", ogr.OFTInteger), ("label", ogr.OFTString), ("ppe_label", ogr.OFTString), ("status", ogr.OFTString),
-                    ("px", ogr.OFTInteger), ("py", ogr.OFTInteger)) + tuple((c, ogr.OFTReal) for c in cols[2:]):
+    for name, t in (
+        ("id", ogr.OFTInteger),
+        ("label", ogr.OFTString),
+        ("ppe_label", ogr.OFTString),
+        ("status", ogr.OFTString),
+        ("px", ogr.OFTInteger),
+        ("py", ogr.OFTInteger),
+    ) + tuple((c, ogr.OFTReal) for c in cols[2:]):
         L.CreateField(ogr.FieldDefn(name, t))
     gt = R.gt
     ds.StartTransaction()
@@ -450,7 +537,7 @@ def _write_points(path, points, cols, R, cfg):
         f = ogr.Feature(L.GetLayerDefn())
         x, y = int(a[0]), int(a[1])
         g = ogr.Geometry(ogr.wkbPoint)
-        g.AddPoint_2D(gt[0] + (x + .5) * gt[1] + (y + .5) * gt[2], gt[3] + (x + .5) * gt[4] + (y + .5) * gt[5])
+        g.AddPoint_2D(gt[0] + (x + 0.5) * gt[1] + (y + 0.5) * gt[2], gt[3] + (x + 0.5) * gt[4] + (y + 0.5) * gt[5])
         f.SetGeometry(g)
         f.SetField("id", i)
         f.SetField("label", NAMES[c])
@@ -466,16 +553,17 @@ def _write_points(path, points, cols, R, cfg):
 
 
 # ---- buffers -------------------------------------------------------------------------------------
-def _radius_px(R, cm): return min(cm / R.pixel_cm, MAX_BUFFER_PX)
+def _radius_px(R, cm):
+    return min(cm / R.pixel_cm, MAX_BUFFER_PX)
 
 
 def _disc(r_px):
     n = int(math.floor(r_px))
-    yy, xx = np.mgrid[-n:n + 1, -n:n + 1]
+    yy, xx = np.mgrid[-n: n + 1, -n: n + 1]
     return yy, xx, np.hypot(yy, xx)
 
 
-BUFFER_MODES = ("sure", "class")    # sure: clear pixels only (most accurate); class: every pixel of PPE's class (fuller)
+BUFFER_MODES = ("sure", "class")  # sure: clear pixels only (most accurate); class: every pixel of PPE's class (fuller)
 
 
 def _geodesic(allowed, sy, sx, rmax):
@@ -489,7 +577,7 @@ def _geodesic(allowed, sy, sx, rmax):
         p = np.pad(d, 1, constant_values=np.inf)
         new = d.copy()
         for dy, dx, c in steps:
-            np.minimum(new, p[1 + dy:1 + dy + h, 1 + dx:1 + dx + w] + c, out=new)
+            np.minimum(new, p[1 + dy: 1 + dy + h, 1 + dx: 1 + dx + w] + c, out=new)
         new[~allowed] = np.inf
         new[sy, sx] = 0.0
         new[new > rmax] = np.inf
@@ -524,7 +612,7 @@ def _same_class(R, x, y, label, r_px, mode="sure"):
     return m & np.isfinite(d), d, x0, y0, agrees
 
 
-SOIL_OFFSET = 1000.0      # buffer distance raster: plant pixels hold their distance in cm, soil pixels 1000 + it
+SOIL_OFFSET = 1000.0  # buffer distance raster: plant pixels hold their distance in cm, soil pixels 1000 + it
 
 
 def buffer_raster_path(out_dir, mode):
@@ -547,7 +635,9 @@ def _buffer_histograms(R, points, out_dir=None, agrees_only=None):
             path = buffer_raster_path(out_dir, mode)
             if os.path.exists(path):
                 os.remove(path)
-            rast = gdal.GetDriverByName("GTiff").Create(path, R.w, R.h, 1, gdal.GDT_Float32, options=["COMPRESS=DEFLATE", "TILED=YES", "SPARSE_OK=TRUE"])
+            rast = gdal.GetDriverByName("GTiff").Create(
+                path, R.w, R.h, 1, gdal.GDT_Float32, options=["COMPRESS=DEFLATE", "TILED=YES", "SPARSE_OK=TRUE"]
+            )
             rast.SetGeoTransform(R.gt)
             rast.SetProjection(R.wkt)
             band = rast.GetRasterBand(1)
@@ -568,7 +658,7 @@ def _buffer_histograms(R, points, out_dir=None, agrees_only=None):
                 val = np.where(m, d * R.pixel_cm + {PLANT: 0.0, SOIL: SOIL_OFFSET, WEED: 2 * SOIL_OFFSET}[c], -1.0)
                 cur = np.where(win < 0, np.inf, win % SOIL_OFFSET)
                 new = np.where(m, d * R.pixel_cm, np.inf)
-                win = np.where(new < cur, val, win)          # the nearer point's buffer wins
+                win = np.where(new < cur, val, win)  # the nearer point's buffer wins
                 band.WriteArray(win.astype(np.float32), x0, y0)
         if rast is not None:
             rast.FlushCache()
@@ -617,8 +707,18 @@ def read_points(path):
         if lab not in CODE:
             continue
         g = f.GetGeometryRef()
-        out.append({"id": f.GetField("id"), "label": CODE[lab], "ppe_label": (f.GetField("ppe_label") or ""),
-                    "status": f.GetField("status") or "", "px": f.GetField("px"), "py": f.GetField("py"), "X": g.GetX(), "Y": g.GetY()})
+        out.append(
+            {
+                "id": f.GetField("id"),
+                "label": CODE[lab],
+                "ppe_label": f.GetField("ppe_label") or "",
+                "status": f.GetField("status") or "",
+                "px": f.GetField("px"),
+                "py": f.GetField("py"),
+                "X": g.GetX(),
+                "Y": g.GetY(),
+            }
+        )
     return out
 
 
@@ -629,7 +729,7 @@ def buffer_preview(info, points, radius_cm, max_px=0, mode="sure"):
     if isinstance(hist, dict):
         hist = hist.get(mode) or hist.get("sure") or []
     ids = info.get("buffer_ids")
-    if ids is not None:                                # rebuilt after checks: one row per current point, in this order
+    if ids is not None:  # rebuilt after checks: one row per current point, in this order
         step = int(round(min(radius_cm, MAX_BUFFER_CM) / STEP_CM))
         tot = {PLANT: 0, SOIL: 0, WEED: 0}
         pos = {i: k for k, i in enumerate(ids)}
@@ -683,7 +783,9 @@ def write_labels(cfg, progress=lambda p, m: None, log=lambda m: None, cancelled=
     rb = None
     rast = None
     if not preview:
-        rast = gdal.GetDriverByName("GTiff").Create(raster_path, R.w, R.h, 1, gdal.GDT_Byte, options=["COMPRESS=DEFLATE", "TILED=YES", "SPARSE_OK=TRUE"])
+        rast = gdal.GetDriverByName("GTiff").Create(
+            raster_path, R.w, R.h, 1, gdal.GDT_Byte, options=["COMPRESS=DEFLATE", "TILED=YES", "SPARSE_OK=TRUE"]
+        )
         rast.SetGeoTransform(gt)
         rast.SetProjection(R.wkt)
         rb = rast.GetRasterBand(1)
@@ -695,7 +797,12 @@ def write_labels(cfg, progress=lambda p, m: None, log=lambda m: None, cancelled=
     srs.ImportFromWkt(R.wkt)
     pds = ogr.GetDriverByName("GPKG").CreateDataSource(poly_path)
     PL = pds.CreateLayer("buffers", srs, ogr.wkbMultiPolygon)
-    for name, t in (("id", ogr.OFTInteger), ("label", ogr.OFTString), ("pixels", ogr.OFTInteger), ("point_only", ogr.OFTInteger)):
+    for name, t in (
+        ("id", ogr.OFTInteger),
+        ("label", ogr.OFTString),
+        ("pixels", ogr.OFTInteger),
+        ("point_only", ogr.OFTInteger),
+    ):
         PL.CreateField(ogr.FieldDefn(name, t))
     taken = set()
     totals = {PLANT: 0, SOIL: 0, WEED: 0}
@@ -704,12 +811,14 @@ def write_labels(cfg, progress=lambda p, m: None, log=lambda m: None, cancelled=
     with open(csv_path, "w", newline="", encoding="utf-8") as fh:
         wcsv = csv.writer(fh)
         ndvi_col = "nir" in bands and "red" in bands
-        wcsv.writerow(["point_id", "label", "label_value", "px", "py", "x", "y"] + bands + (["ndvi"] if ndvi_col else []))
+        wcsv.writerow(
+            ["point_id", "label", "label_value", "px", "py", "x", "y"] + bands + (["ndvi"] if ndvi_col else [])
+        )
         for k, p in enumerate(pts):
             if cancelled():
                 raise RuntimeError("Cancelled.")
             x, y = int(p["px"]) if p["px"] is not None else None, int(p["py"]) if p["py"] is not None else None
-            if x is None or y is None:            # a point the user added: find its pixel
+            if x is None or y is None:  # a point the user added: find its pixel
                 inv = gdal.InvGeoTransform(gt)
                 x, y = (int(v) for v in gdal.ApplyGeoTransform(inv, p["X"], p["Y"]))
             if not (0 <= x < R.w and 0 <= y < R.h):
@@ -737,13 +846,23 @@ def write_labels(cfg, progress=lambda p, m: None, log=lambda m: None, cancelled=
                 win[rr, cc] = p["label"]
                 rb.WriteArray(win, x0, y0)
                 vals = _features(e, bands, x0, y0, sel.shape[1], sel.shape[0])
-                gx = gt[0] + (cc + x0 + .5) * gt[1] + (rr + y0 + .5) * gt[2]
-                gy = gt[3] + (cc + x0 + .5) * gt[4] + (rr + y0 + .5) * gt[5]
+                gx = gt[0] + (cc + x0 + 0.5) * gt[1] + (rr + y0 + 0.5) * gt[2]
+                gy = gt[3] + (cc + x0 + 0.5) * gt[4] + (rr + y0 + 0.5) * gt[5]
                 bv = {b: vals[b][rr, cc] for b in bands}
                 nd = _ndvi(bv) if ndvi_col else None
-                wcsv.writerows(zip([p["id"]] * rr.size, [NAMES[p["label"]]] * rr.size, [p["label"]] * rr.size, (cc + x0).tolist(), (rr + y0).tolist(),
-                                   np.round(gx, 4).tolist(), np.round(gy, 4).tolist(), *[np.round(bv[b], 6).tolist() for b in bands],
-                                   *([np.round(nd, 4).tolist()] if nd is not None else [])))
+                wcsv.writerows(
+                    zip(
+                        [p["id"]] * rr.size,
+                        [NAMES[p["label"]]] * rr.size,
+                        [p["label"]] * rr.size,
+                        (cc + x0).tolist(),
+                        (rr + y0).tolist(),
+                        np.round(gx, 4).tolist(),
+                        np.round(gy, 4).tolist(),
+                        *[np.round(bv[b], 6).tolist() for b in bands],
+                        *([np.round(nd, 4).tolist()] if nd is not None else [])
+                    )
+                )
             totals[p["label"]] += int(rr.size)
             PL.CreateFeature(_polygon(PL, sel, rr, cc, x0, y0, gt, R.wkt, p, int(rr.size), int(not agrees)))
             if k % 25 == 0:
@@ -753,13 +872,25 @@ def write_labels(cfg, progress=lambda p, m: None, log=lambda m: None, cancelled=
     if rast is not None:
         rast.FlushCache()
         rast = None
-    result = {"points": len(pts), "plant_pixels": totals[PLANT], "soil_pixels": totals[SOIL], "weed_pixels": totals[WEED], "radius_cm": radius_cm, "max_px": max_px,
-              "point_only": point_only, "buffer_mode": mode, "raster_path": raster_path, "csv_path": csv_path, "buffers_path": poly_path, "seconds": round(time.time() - t0, 1),
-              "preview": preview}
+    result = {
+        "points": len(pts),
+        "plant_pixels": totals[PLANT],
+        "soil_pixels": totals[SOIL],
+        "weed_pixels": totals[WEED],
+        "radius_cm": radius_cm,
+        "max_px": max_px,
+        "point_only": point_only,
+        "buffer_mode": mode,
+        "raster_path": raster_path,
+        "csv_path": csv_path,
+        "buffers_path": poly_path,
+        "seconds": round(time.time() - t0, 1),
+        "preview": preview,
+    }
     if preview:
         progress(100, "Buffers shown")
         return result
-    if os.path.abspath(out_dir) != os.path.abspath(work_dir):          # export: the checked points (and the area) go along
+    if os.path.abspath(out_dir) != os.path.abspath(work_dir):  # export: the checked points (and the area) go along
         for name, layer in (("ppe_labels.gpkg", LAYER), ("ppe_labels_area.gpkg", "area")):
             src = os.path.join(work_dir, name)
             dst = os.path.join(out_dir, name)
@@ -767,14 +898,28 @@ def write_labels(cfg, progress=lambda p, m: None, log=lambda m: None, cancelled=
                 continue
             if os.path.exists(dst):
                 gdal.GetDriverByName("GPKG").Delete(dst)
-            gdal.VectorTranslate(dst, src, format="GPKG", layers=[layer])   # reads through SQLite, so edits still in the journal come along
+            gdal.VectorTranslate(
+                dst, src, format="GPKG", layers=[layer]
+            )  # reads through SQLite, so edits still in the journal come along
         with open(os.path.join(out_dir, "ppe_labels_info.json"), "w", encoding="utf-8") as f:
             json.dump(info, f)
     result["export_dir"] = out_dir
     with open(os.path.join(out_dir, "ppe_label_buffers_info.json"), "w", encoding="utf-8") as f:
         json.dump(result, f)
-    log("Labels: {:,} plant, {:,} soil and {:,} weed pixels from {} points (buffer {:.1f} cm){}.".format(
-        totals[PLANT], totals[SOIL], totals[WEED], len(pts), radius_cm, "; {} points where PPE disagrees with your label keep only their own pixel".format(point_only) if point_only else ""))
+    log(
+        "Labels: {:,} plant, {:,} soil and {:,} weed pixels from {} points (buffer {:.1f} cm){}.".format(
+            totals[PLANT],
+            totals[SOIL],
+            totals[WEED],
+            len(pts),
+            radius_cm,
+            (
+                "; {} points where PPE disagrees with your label keep only their own pixel".format(point_only)
+                if point_only
+                else ""
+            ),
+        )
+    )
     progress(100, "Labels written")
     return result
 

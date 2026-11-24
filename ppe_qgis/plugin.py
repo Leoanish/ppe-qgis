@@ -39,7 +39,7 @@ class PPEPlugin:
         self.runner = PPEProcessRunner(iface.mainWindow())
         self.previewer = PPEPreviewRunner(iface.mainWindow())
         self.layers = {}
-        self._removing = False            # True while PPE itself removes its layers
+        self._removing = False  # True while PPE itself removes its layers
         self._project_hooked = False
         self._image_removed = False
         self.current_action = "run"
@@ -85,7 +85,7 @@ class PPEPlugin:
 
     def _create_dock(self):
         self.dock = PPEDockWidget(self.iface)
-        self.iface.addDockWidget(Qt.RightDockWidgetArea, self.dock)
+        self.iface.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dock)
         self.dock.generate_requested.connect(self._start_generate)
         self.dock.apply_requested.connect(self._start_apply)
         self.dock.export_requested.connect(self._start_export)
@@ -144,7 +144,7 @@ class PPEPlugin:
             try:
                 if layer is not None:
                     ids[layer.id()] = role
-            except RuntimeError:          # the layer object is already gone
+            except RuntimeError:  # the layer object is already gone
                 self.layers[role] = None
         return ids
 
@@ -161,7 +161,11 @@ class PPEPlugin:
         layer, bring the panel in line with what is still on the map."""
         if self.dock is not None and not self._removing:
             # What PPE found is one layer per kind: the button follows only when the last one goes
-            pale = [l.id() for l in QgsProject.instance().mapLayers().values() if l.customProperty(ROLE_KEY, "") == "pale"]
+            pale = [
+                lyr.id()
+                for lyr in QgsProject.instance().mapLayers().values()
+                if lyr.customProperty(ROLE_KEY, "") == "pale"
+            ]
             if pale and all(i in layer_ids for i in pale):
                 self.dock.pale_layer_removed()
         if self._removing or self.dock is None:
@@ -184,7 +188,7 @@ class PPEPlugin:
     def _layers_removed(self, _layer_ids):
         if not self._removing:
             with self._own_changes():
-                arrange_layers()          # e.g. the What PPE found group once its last kind is deleted
+                arrange_layers()  # e.g. the What PPE found group once its last kind is deleted
         if self._image_removed and not self._removing:
             self._image_removed = False
             self._image_layer_gone()
@@ -192,7 +196,7 @@ class PPEPlugin:
     def _image_layer_gone(self):
         self._reset_layers()
         self.dock.image_layer_removed()
-        self._message("The PPE image was removed from the map, so PPE was reset.", Qgis.Info)
+        self._message("The PPE image was removed from the map, so PPE was reset.", Qgis.MessageLevel.Info)
 
     def _start_preview(self, config):
         """The user has just chosen an image: find its bands and show it, before any analysis."""
@@ -204,8 +208,8 @@ class PPEPlugin:
         if self.runner.is_running or self.dock is None:
             return
         if result.get("preview_key") and result.get("preview_key") != self.dock._preview_key:
-            return                      # the image was changed or removed while this one was being read
-        self._clear_ppe_layers()        # a new image: masks and votes of the previous one no longer apply
+            return  # the image was changed or removed while this one was being read
+        self._clear_ppe_layers()  # a new image: masks and votes of the previous one no longer apply
         self.layers = {}
         with self._own_changes():
             layer = load_import_layer(self.iface, result)
@@ -221,7 +225,9 @@ class PPEPlugin:
 
     def _start_generate(self, config):
         self.current_action = "run"
-        self._clear_ppe_layers(keep=("rgb", "plots", "crops"))   # image, plot and crop outlines stay on the map while PPE works
+        self._clear_ppe_layers(
+            keep=("rgb", "plots", "crops")
+        )  # image, plot and crop outlines stay on the map while PPE works
         self.layers = {"rgb": self.layers.get("rgb")} if self.layers.get("rgb") is not None else {}
         self.dock.log_view.clear()
         self.dock.set_running(True, "run")
@@ -261,29 +267,43 @@ class PPEPlugin:
         try:
             result = load_batch_result(entry["result_path"])
         except (OSError, KeyError, ValueError) as exc:
-            self._message("Could not open {}: {}".format(entry.get("name", "this image"), exc), Qgis.Warning)
+            self._message(
+                "Could not open {}: {}".format(entry.get("name", "this image"), exc), Qgis.MessageLevel.Warning
+            )
             return
         if not os.path.isfile(result.get("vote_path", "")):
-            self._message("The vote raster of {} is missing (was the working folder cleared?). Run the batch again.".format(entry.get("name")), Qgis.Warning)
+            self._message(
+                "The vote raster of {} is missing (was the working folder cleared?). Run the batch again.".format(
+                    entry.get("name")
+                ),
+                Qgis.MessageLevel.Warning,
+            )
             return
         aligned, detail = validate_aligned([result.get("rgb_path"), result.get("vote_path")])
         if not aligned:
-            self._message("{}: image and vote raster do not line up ({}).".format(entry.get("name"), detail), Qgis.Warning)
+            self._message(
+                "{}: image and vote raster do not line up ({}).".format(entry.get("name"), detail),
+                Qgis.MessageLevel.Warning,
+            )
             return
         self.current_action = "run"
         curve = read_curve(result.get("curve_path"))
         with self._own_changes():
             self.layers = load_result_layers(self.iface, result, float(result.get("threshold", 0.5)))
         if self.layers.get("votes") is None:
-            self._message("QGIS could not load the vote raster of {}.".format(entry.get("name")), Qgis.Warning)
+            self._message(
+                "QGIS could not load the vote raster of {}.".format(entry.get("name")), Qgis.MessageLevel.Warning
+            )
             return
         rgb = self.layers.get("rgb")
         if rgb is not None and rgb.crs().isValid() and QgsProject.instance().crs() != rgb.crs():
-            QgsProject.instance().setCrs(rgb.crs())   # batch images may come from different UTM zones: show each in its own
+            QgsProject.instance().setCrs(
+                rgb.crs()
+            )  # batch images may come from different UTM zones: show each in its own
             QTimer.singleShot(0, lambda layer=rgb: zoom_to_layer(self.iface, layer))
         self.dock.set_results(result, curve)
         self.dock.batch_opened(entry, payload.get("choice"))
-        self._refresh_preview()          # the user stays on the tab they opened it from (tab 6 or tab 3)
+        self._refresh_preview()  # the user stays on the tab they opened it from (tab 6 or tab 3)
 
     def _start_apply(self, config):
         self.current_action = "apply"
@@ -321,36 +341,52 @@ class PPEPlugin:
             done = sum(1 for e in result.get("items", []) if e.get("status") == "done")
             n = len(result.get("items", []))
             check = sum(1 for e in result.get("items", []) if e.get("warnings"))
-            self._message("Batch done: {} of {} images{}. Review them on the Batch tab.".format(done, n, "; {} to check first".format(check) if check else ""),
-                          Qgis.Success if done == n else Qgis.Warning)
+            self._message(
+                "Batch done: {} of {} images{}. Review them on the Batch tab.".format(
+                    done, n, "; {} to check first".format(check) if check else ""
+                ),
+                Qgis.MessageLevel.Success if done == n else Qgis.MessageLevel.Warning,
+            )
             return
         if self.current_action == "batch_finalize":
             self.dock.set_batch_finalized(result)
-            self._message("Batch masks written: {} images. Summary: {}".format(len(result.get("rows", [])), result.get("summary_csv", "")), Qgis.Success)
+            self._message(
+                "Batch masks written: {} images. Summary: {}".format(
+                    len(result.get("rows", [])), result.get("summary_csv", "")
+                ),
+                Qgis.MessageLevel.Success,
+            )
             return
         if self.current_action == "count":
             self.dock.set_counted(result)
             if result.get("points_path"):
                 try:
                     from .layer_utils import show_plant_points
+
                     with self._own_changes():
                         if show_plant_points(result["points_path"]) is not None:
                             self.dock.plants_shown()
                 except Exception as exc:
                     self.dock.append_log("Could not show the plant points: {}".format(exc))
-            self._message("Counted {} plants.".format(result.get("plants", 0)), Qgis.Success)
+            self._message("Counted {} plants.".format(result.get("plants", 0)), Qgis.MessageLevel.Success)
             return
         if self.current_action == "labels_create":
             self.dock.set_labels_created(result)
             try:
                 from .layer_utils import show_label_points
+
                 with self._own_changes():
                     if show_label_points(result["points_path"]) is not None:
                         self.dock.labels_shown()
-                    self.dock.show_buffers()          # filled buffers, following the slider
+                    self.dock.show_buffers()  # filled buffers, following the slider
             except Exception as exc:
                 self.dock.append_log("Could not show the label points: {}".format(exc))
-            self._message("Label points: {} plant and {} soil. Check them on the map.".format(result.get("plant_points", 0), result.get("soil_points", 0)), Qgis.Success)
+            self._message(
+                "Label points: {} plant and {} soil. Check them on the map.".format(
+                    result.get("plant_points", 0), result.get("soil_points", 0)
+                ),
+                Qgis.MessageLevel.Success,
+            )
             return
         if self.current_action == "labels_buffers":
             with self._own_changes():
@@ -359,16 +395,28 @@ class PPEPlugin:
         if self.current_action == "labels_write":
             self.dock.set_labels_written(result)
             # the exported buffers are the ones already on the map (the slider's layer stays)
-            self._message("Labels written: {:,} plant and {:,} soil pixels.".format(result.get("plant_pixels", 0), result.get("soil_pixels", 0)), Qgis.Success)
+            self._message(
+                "Labels written: {:,} plant and {:,} soil pixels.".format(
+                    result.get("plant_pixels", 0), result.get("soil_pixels", 0)
+                ),
+                Qgis.MessageLevel.Success,
+            )
             return
         if self.current_action == "training":
             self.dock.set_training_done(result)
-            self._message("Training data: {} tiles in {}".format(len(result.get("tiles", [])), result.get("output_dir", "")), Qgis.Success)
+            self._message(
+                "Training data: {} tiles in {}".format(len(result.get("tiles", [])), result.get("output_dir", "")),
+                Qgis.MessageLevel.Success,
+            )
             return
         if self.current_action.startswith("export"):
             self.dock.set_exported(result)
-            message = "AOI plot statistics export complete." if result.get("aoi_csv") else "Plant-only GeoTIFF export complete."
-            self._message(message, Qgis.Success)
+            message = (
+                "AOI plot statistics export complete."
+                if result.get("aoi_csv")
+                else "Plant-only GeoTIFF export complete."
+            )
+            self._message(message, Qgis.MessageLevel.Success)
             return
         if self.current_action == "zones":
             with self._own_changes():
@@ -389,17 +437,24 @@ class PPEPlugin:
                 set_layer_visible(self.layers.get("votes"), False)
             self.dock.set_applied(result)
             if self.dock.batch and self.dock.batch.get("open"):
-                self.dock.batch_mask_written(result)     # a batch image: stay where the user is
+                self.dock.batch_mask_written(result)  # a batch image: stay where the user is
             else:
                 self.dock.tabs.setCurrentIndex(3)
-            self._message("Native PPE mask exported and loaded." + (" Left out: {}.".format(", ".join(result["left_out"])) if result.get("left_out") else ""), Qgis.Success)
+            self._message(
+                "Native PPE mask exported and loaded."
+                + (" Left out: {}.".format(", ".join(result["left_out"])) if result.get("left_out") else ""),
+                Qgis.MessageLevel.Success,
+            )
             return
 
         aligned, detail = validate_aligned([result.get("rgb_path"), result.get("vote_path")])
         if not aligned:
             self._job_failed("RGB and vote-raster alignment check failed: {}".format(detail))
             return
-        self.dock.append_log("Alignment verified: RGB and vote raster have identical CRS, extent, dimensions, origin, rotation, and pixel size.")
+        self.dock.append_log(
+            "Alignment verified: RGB and vote raster have identical CRS, extent, dimensions, origin, rotation, and"
+            " pixel size."
+        )
         curve = read_curve(result.get("curve_path"))
         with self._own_changes():
             self.layers = load_result_layers(self.iface, result, float(result.get("threshold", 0.5)))
@@ -415,7 +470,7 @@ class PPEPlugin:
                 "True colour is not possible ({} missing). The image is shown as {}.".format(
                     ", ".join(missing) if missing else "red, green or blue", result.get("display_mode", "a single band")
                 ),
-                Qgis.Info,
+                Qgis.MessageLevel.Info,
             )
         checks = []
         if result.get("one_class_warning") == "soil":
@@ -425,22 +480,29 @@ class PPEPlugin:
         if result.get("weak_green_warning"):
             checks.append("plants are barely greener than soil")
         if result.get("weak_split_warning"):
-            checks.append("plants and ground do not separate clearly (separation {:.2f})".format(float(result.get("split_separability", 0.0))))
+            checks.append(
+                "plants and ground do not separate clearly (separation {:.2f})".format(
+                    float(result.get("split_separability", 0.0))
+                )
+            )
         if checks:
             self.iface.messageBar().pushMessage(
-                "Plant Pixel Extractor", "Mask generated, but check it closely: {}.".format("; ".join(checks)),
-                level=Qgis.Warning, duration=0)
+                "Plant Pixel Extractor",
+                "Mask generated, but check it closely: {}.".format("; ".join(checks)),
+                level=Qgis.MessageLevel.Warning,
+                duration=0,
+            )
         else:
-            self._message("PPE mask generated. Review the live threshold preview.", Qgis.Success)
+            self._message("PPE mask generated. Review the live threshold preview.", Qgis.MessageLevel.Success)
 
     def _import_ready(self, result):
         if str(self.current_action).startswith("batch"):
-            return                      # a batch does not put every image on the map while it runs
+            return  # a batch does not put every image on the map while it runs
         with self._own_changes():
             rgb = load_import_layer(self.iface, result)
         if rgb is None:
             self.dock.append_log("QGIS could not open the imported imagery source.")
-            self._message("Import succeeded, but QGIS could not display the imagery.", Qgis.Warning)
+            self._message("Import succeeded, but QGIS could not display the imagery.", Qgis.MessageLevel.Warning)
             return
         self.layers["rgb"] = rgb
         bands = result.get("rgb_bands", [])
@@ -452,11 +514,14 @@ class PPEPlugin:
         )
 
     def _job_failed(self, message):
-        message = str(message or "").strip() or "PPE stopped without an error message; the Log box on the Run tab has the details."
+        message = (
+            str(message or "").strip()
+            or "PPE stopped without an error message; the Log box on the Run tab has the details."
+        )
         if self.dock is not None:
             self.dock.set_running(False, self.current_action)
             self.dock.show_error(message)
-        self._message(message, Qgis.Critical)
+        self._message(message, Qgis.MessageLevel.Critical)
 
     def _tuning(self):
         """A slider moved or a finding kind was ticked: the live preview is what the user is now
@@ -475,8 +540,14 @@ class PPEPlugin:
             return
         # left-out finding kinds drop out of the live preview too, at every threshold
         r = self.dock.result or {}
-        set_preview_source(votes, None, r.get("findings_path", ""), self.dock.clip_codes(), self.dock.add_codes(),
-                           (r.get("sparse_spots") or {}).get("vote_from"))
+        set_preview_source(
+            votes,
+            None,
+            r.get("findings_path", ""),
+            self.dock.clip_codes(),
+            self.dock.add_codes(),
+            (r.get("sparse_spots") or {}).get("vote_from"),
+        )
         if self.dock.zone_info:
             style_zoned_preview(votes, self.dock.zone_thresholds(), self.dock.zone_names())
         else:
@@ -484,6 +555,4 @@ class PPEPlugin:
         self.iface.mapCanvas().refresh()
 
     def _message(self, message, level):
-        self.iface.messageBar().pushMessage(
-            "Plant Pixel Extractor", message, level=level, duration=6
-        )
+        self.iface.messageBar().pushMessage("Plant Pixel Extractor", message, level=level, duration=6)

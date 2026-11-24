@@ -44,14 +44,14 @@ class PolygonDrawTool(QgsMapTool):
         self.canvas = canvas
         self.points = []
         self.done = False
-        self.band = QgsRubberBand(canvas, QgsWkbTypes.PolygonGeometry)
-        self.band.setColor(QColor(225, 25, 25, 50))          # red while drawing, red once drawn (layer_utils.AREA_RED)
+        self.band = QgsRubberBand(canvas, QgsWkbTypes.GeometryType.PolygonGeometry)
+        self.band.setColor(QColor(225, 25, 25, 50))  # red while drawing, red once drawn (layer_utils.AREA_RED)
         self.band.setStrokeColor(QColor(225, 25, 25))
         self.band.setWidth(2)
-        self.setCursor(Qt.CrossCursor)
+        self.setCursor(Qt.CursorShape.CrossCursor)
 
     def _redraw(self, moving=None):
-        self.band.reset(QgsWkbTypes.PolygonGeometry)
+        self.band.reset(QgsWkbTypes.GeometryType.PolygonGeometry)
         for point in self.points + ([moving] if moving is not None else []):
             self.band.addPoint(point, False)
         self.band.show()
@@ -63,21 +63,21 @@ class PolygonDrawTool(QgsMapTool):
             self._redraw(self.toMapCoordinates(event.pos()))
 
     def canvasReleaseEvent(self, event):  # noqa: N802 - Qt API
-        if event.button() == Qt.LeftButton:
+        if event.button() == Qt.MouseButton.LeftButton:
             self.points.append(QgsPointXY(self.toMapCoordinates(event.pos())))
             self._redraw()
-        elif event.button() == Qt.RightButton:
+        elif event.button() == Qt.MouseButton.RightButton:
             self._finish()
 
     def canvasDoubleClickEvent(self, event):  # noqa: N802 - Qt API
         self._finish()
 
     def keyPressEvent(self, event):  # noqa: N802 - Qt API
-        if event.key() == Qt.Key_Escape:
+        if event.key() == Qt.Key.Key_Escape:
             self._stop()
             self.done = True
             self.cancelled.emit()
-        elif event.key() in (Qt.Key_Backspace, Qt.Key_Delete) and self.points:
+        elif event.key() in (Qt.Key.Key_Backspace, Qt.Key.Key_Delete) and self.points:
             self.points.pop()
             self._redraw()
 
@@ -87,7 +87,7 @@ class PolygonDrawTool(QgsMapTool):
             if not unique or point != unique[-1]:
                 unique.append(point)
         if len(unique) < 3:
-            return                      # not a polygon yet; keep drawing
+            return  # not a polygon yet; keep drawing
         geometry = QgsGeometry.fromPolygonXY([unique + [unique[0]]])
         if not geometry.isGeosValid():
             geometry = geometry.makeValid()
@@ -97,7 +97,7 @@ class PolygonDrawTool(QgsMapTool):
 
     def _stop(self):
         self.points = []
-        self.band.reset(QgsWkbTypes.PolygonGeometry)
+        self.band.reset(QgsWkbTypes.GeometryType.PolygonGeometry)
 
     switched_away = False
 
@@ -107,9 +107,9 @@ class PolygonDrawTool(QgsMapTool):
         if not self.done:
             self._stop()
             self.done = True
-            self.switched_away = True       # QGIS is switching to the tool the user chose: keep it
+            self.switched_away = True  # QGIS is switching to the tool the user chose: keep it
             self.cancelled.emit()
-        self.band.reset(QgsWkbTypes.PolygonGeometry)
+        self.band.reset(QgsWkbTypes.GeometryType.PolygonGeometry)
         super().deactivate()
 
 
@@ -129,8 +129,11 @@ def show_crop_areas(areas, crs):
     drawn = [(name, geometry) for name, geometry in areas if geometry is not None and not geometry.isEmpty()]
     if not drawn:
         return None
-    layer = QgsVectorLayer("MultiPolygon?crs={}".format(crs.authid() or "EPSG:4326") if crs.authid() else "MultiPolygon",
-                           CROP_LAYER_NAME, "memory")
+    layer = QgsVectorLayer(
+        "MultiPolygon?crs={}".format(crs.authid() or "EPSG:4326") if crs.authid() else "MultiPolygon",
+        CROP_LAYER_NAME,
+        "memory",
+    )
     if not crs.authid():
         layer.setCrs(crs)
     provider = layer.dataProvider()
@@ -147,6 +150,7 @@ def show_crop_areas(areas, crs):
     layer.updateExtents()
     layer.setCustomProperty(ROLE_KEY, "crops")
     from .layer_utils import area_symbol
+
     layer.setRenderer(QgsSingleSymbolRenderer(area_symbol()))
     settings = QgsPalLayerSettings()
     settings.fieldName = "crop"

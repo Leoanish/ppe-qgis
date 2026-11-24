@@ -1,13 +1,16 @@
 """Training data (4.3): image tiles + PPE labels for a fast segmentation model, no hand labelling.
 
 Labels per pixel (the rule that trained the fast U-Net on PhenoBench to 93.9 IoU, hand labels 95.4):
-    1   plant  = every PPE vote says plant (vote 1.0), not 'unclear' (code 4), not a weed (codes 7, 8), groups of >= 30 pixels
+    1   plant  = every PPE vote says plant (vote 1.0), not 'unclear' (code 4), not a weed (codes 7, 8), groups of >=
+    30 pixels
     0   soil   = (almost) no vote says plant (vote <= 0.1), or 'unclear' (too dark to tell)
     255 unsure = everything else; models skip these pixels when they learn.
 Image tiles keep every original band with its original values and data type, as GeoTIFF
-(manifest.json gives value_scale per image: reflectance = value / value_scale). Train and validation tiles come from different images (or, for one image, different parts).
+(manifest.json gives value_scale per image: reflectance = value / value_scale). Train and validation tiles come from
+different images (or, for one image, different parts).
 Use tools/ppe_train.py to train, predict and check a model.
 """
+
 import json
 import os
 import time
@@ -23,7 +26,7 @@ PLANT_VOTE = 1.0
 SOIL_VOTE = 0.1
 MIN_PLANT_PX = 30
 UNCLEAR = 4
-WEEDS = (7, 8)          # 4.10.1: weeds of What PPE found are never plant: they become unsure (255)
+WEEDS = (7, 8)  # 4.10.1: weeds of What PPE found are never plant: they become unsure (255)
 
 README = """PPE training data
 =================
@@ -55,7 +58,7 @@ def label_array(vote, findings):
         b = mem.GetRasterBand(1)
         b.WriteArray(plant.astype(np.uint8))
         gdal.SieveFilter(b, None, b, MIN_PLANT_PX, 4)
-        plant &= b.ReadAsArray().astype(bool)          # specks dropped (sieve hole-filling undone by &)
+        plant &= b.ReadAsArray().astype(bool)  # specks dropped (sieve hole-filling undone by &)
     y[plant] = 1
     return y
 
@@ -63,7 +66,14 @@ def label_array(vote, findings):
 def _write_tile(path, arr, gt, wkt, x0, y0, dtype, nodata=None):
     bands = 1 if arr.ndim == 2 else arr.shape[0]
     h, w = arr.shape[-2:]
-    ds = gdal.GetDriverByName("GTiff").Create(path, w, h, bands, dtype, options=["COMPRESS=DEFLATE", "PREDICTOR=3" if dtype in (gdal.GDT_Float32, gdal.GDT_Float64) else "PREDICTOR=2"])
+    ds = gdal.GetDriverByName("GTiff").Create(
+        path,
+        w,
+        h,
+        bands,
+        dtype,
+        options=["COMPRESS=DEFLATE", "PREDICTOR=3" if dtype in (gdal.GDT_Float32, gdal.GDT_Float64) else "PREDICTOR=2"],
+    )
     ds.SetGeoTransform((gt[0] + x0 * gt[1] + y0 * gt[2], gt[1], gt[2], gt[3] + x0 * gt[4] + y0 * gt[5], gt[4], gt[5]))
     ds.SetProjection(wkt)
     for i in range(bands):
@@ -82,7 +92,10 @@ def items_from_batch(manifest_path):
         if e.get("status") != "done":
             continue
         r = load_batch_result(e["result_path"])
-        src = {"source_mode": e["source_mode"], ("stacked_path" if e["source_mode"] == "stacked" else "folder_path"): e["source"]}
+        src = {
+            "source_mode": e["source_mode"],
+            ("stacked_path" if e["source_mode"] == "stacked" else "folder_path"): e["source"],
+        }
         out.append({"name": e["name"], "source": src, "vote_path": r["vote_path"], "findings_path": r["findings_path"]})
     return out
 
@@ -119,7 +132,11 @@ def export_training_tiles(cfg, progress=None, log=None, cancelled=None):
         names = list(eng.sources)
         band_names = band_names or names
         if names != band_names:
-            log("{}: bands {} differ from the first image ({}); skipped.".format(it["name"], ", ".join(names), ", ".join(band_names)))
+            log(
+                "{}: bands {} differ from the first image ({}); skipped.".format(
+                    it["name"], ", ".join(names), ", ".join(band_names)
+                )
+            )
             continue
         vote_ds = safe_gdal_open(it["vote_path"])
         find_ds = safe_gdal_open(it["findings_path"])
@@ -137,7 +154,9 @@ def export_training_tiles(cfg, progress=None, log=None, cancelled=None):
         image_info.append({"name": it["name"], "value_scale": float(eng.scale) if int_type else 1.0})
         rows = list(range(0, H - tile + 1, tile))
         cols = list(range(0, W - tile + 1, tile))
-        split_row = rows[int(len(rows) * (1 - val_frac))] if (not val_names and len(items) < 3 and len(rows) >= 5) else None
+        split_row = (
+            rows[int(len(rows) * (1 - val_frac))] if (not val_names and len(items) < 3 and len(rows) >= 5) else None
+        )
         for ri, y0 in enumerate(rows):
             progress(int(100 * (k + ri / max(1, len(rows))) / len(items)), "{}: cutting tiles".format(it["name"]))
             vote = vote_ds.GetRasterBand(1).ReadAsArray(0, y0, W, tile).astype(np.float32)
@@ -147,13 +166,13 @@ def export_training_tiles(cfg, progress=None, log=None, cancelled=None):
             labels = label_array(vote, find_ds.GetRasterBand(1).ReadAsArray(0, y0, W, tile))
             img = None
             for x0 in cols:
-                lab = labels[:, x0:x0 + tile]
+                lab = labels[:, x0: x0 + tile]
                 if (lab != 255).mean() < min_lab:
                     continue
                 if img is None:
                     bands = eng._read_bands(names, y=y0, h=tile)
                     img = np.stack([bands[n] for n in names]).astype(np.float32)
-                im = img[:, :, x0:x0 + tile]
+                im = img[:, :, x0: x0 + tile]
                 if not np.isfinite(im).all(axis=0).mean() > 0.5:
                     continue
                 stem = "{}_{:05d}_{:05d}".format(it["name"], y0, x0)
@@ -173,12 +192,26 @@ def export_training_tiles(cfg, progress=None, log=None, cancelled=None):
     s = np.concatenate(samples, axis=1)
     ranges = [[float(np.nanpercentile(s[i], 1)), float(np.nanpercentile(s[i], 99))] for i in range(s.shape[0])]
     total = sum(counts.values())
-    manifest = {"created": datetime.now().isoformat(timespec="seconds"), "ppe_version": "native-" + PLUGIN_VERSION, "tile": tile,
-                "bands": band_names, "band_ranges_p1_p99": ranges, "labels": {"1": "plant", "0": "soil", "255": "unsure (ignore)"},
-                "label_rule": {"plant_vote": PLANT_VOTE, "soil_vote": SOIL_VOTE, "min_plant_px": MIN_PLANT_PX, "unclear_as_soil": True},
-                "pixel_shares": {k: round(v / total, 4) for k, v in counts.items()},
-                "train": sum(1 for t in tiles if t["split"] == "train"), "val": sum(1 for t in tiles if t["split"] == "val"),
-                "tiles": tiles, "images": image_info, "seconds": time.time() - started}
+    manifest = {
+        "created": datetime.now().isoformat(timespec="seconds"),
+        "ppe_version": "native-" + PLUGIN_VERSION,
+        "tile": tile,
+        "bands": band_names,
+        "band_ranges_p1_p99": ranges,
+        "labels": {"1": "plant", "0": "soil", "255": "unsure (ignore)"},
+        "label_rule": {
+            "plant_vote": PLANT_VOTE,
+            "soil_vote": SOIL_VOTE,
+            "min_plant_px": MIN_PLANT_PX,
+            "unclear_as_soil": True,
+        },
+        "pixel_shares": {k: round(v / total, 4) for k, v in counts.items()},
+        "train": sum(1 for t in tiles if t["split"] == "train"),
+        "val": sum(1 for t in tiles if t["split"] == "val"),
+        "tiles": tiles,
+        "images": image_info,
+        "seconds": time.time() - started,
+    }
     if manifest["val"] == 0:
         for t in tiles[::5]:
             t["split"] = "val"

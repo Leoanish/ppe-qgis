@@ -45,7 +45,7 @@ class ThresholdCurveWidget(QWidget):
 
     def paintEvent(self, _event):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.fillRect(self.rect(), QColor("#fbfdfc"))
         rect = self._plot_rect()
 
@@ -63,10 +63,12 @@ class ThresholdCurveWidget(QWidget):
             hi = self._to_pixel(float(self.suggestion["high"]), 0).x()
             painter.fillRect(QRectF(lo, rect.top(), max(2.0, hi - lo), rect.height()), QColor(22, 133, 91, 28))
             sx = self._to_pixel(float(self.suggestion["threshold"]), 0).x()
-            painter.setPen(QPen(QColor("#16855b"), 1.4, Qt.DashLine))
+            painter.setPen(QPen(QColor("#16855b"), 1.4, Qt.PenStyle.DashLine))
             painter.drawLine(QPointF(sx, rect.top()), QPointF(sx, rect.bottom()))
-            painter.drawText(QPointF(min(sx + 6, rect.right() - 105), rect.bottom() - 8),
-                             "suggested {:.2f}".format(float(self.suggestion["threshold"])))
+            painter.drawText(
+                QPointF(min(sx + 6, rect.right() - 105), rect.bottom() - 8),
+                "suggested {:.2f}".format(float(self.suggestion["threshold"])),
+            )
 
         if self.points:
             path = QPainterPath()
@@ -74,7 +76,9 @@ class ThresholdCurveWidget(QWidget):
             path.moveTo(first)
             for point in self.points[1:]:
                 path.lineTo(self._to_pixel(*point))
-            painter.setPen(QPen(QColor("#16855b"), 3.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            painter.setPen(
+                QPen(QColor("#16855b"), 3.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            )
             painter.drawPath(path)
 
             nearest = min(self.points, key=lambda point: abs(point[0] - self.threshold))
@@ -92,11 +96,15 @@ class ThresholdCurveWidget(QWidget):
         font = QFont(painter.font())
         font.setPointSize(9)
         painter.setFont(font)
-        painter.drawText(QRectF(rect.left(), rect.bottom() + 14, rect.width(), 24), Qt.AlignCenter, "Plant vote threshold")
+        painter.drawText(
+            QRectF(rect.left(), rect.bottom() + 14, rect.width(), 24),
+            Qt.AlignmentFlag.AlignCenter,
+            "Plant vote threshold",
+        )
         painter.save()
         painter.translate(18, rect.center().y())
         painter.rotate(-90)
-        painter.drawText(QRectF(-rect.height() / 2, -14, rect.height(), 24), Qt.AlignCenter, "Canopy (%)")
+        painter.drawText(QRectF(-rect.height() / 2, -14, rect.height(), 24), Qt.AlignmentFlag.AlignCenter, "Canopy (%)")
         painter.restore()
 
         xmin, xmax, ymin, ymax = self._ranges()
@@ -132,7 +140,7 @@ class ThresholdCurveDialog(QDialog):
         self.subtitle = subtitle
         self.curve = ThresholdCurveWidget(points, threshold, self)
         self.curve.threshold_selected.connect(self.threshold_selected)
-        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
         layout.addWidget(title)
         layout.addWidget(subtitle)
@@ -151,4 +159,7 @@ class ThresholdCurveDialog(QDialog):
     def set_suggestion(self, suggestion):
         self.curve.set_suggestion(suggestion)
         if suggestion:
-            self.subtitle.setText("Shaded: good range around the suggested threshold. Click anywhere on the curve to move the Review slider.")
+            self.subtitle.setText(
+                "Shaded: good range around the suggested threshold. Click anywhere on the curve to move the Review"
+                " slider."
+            )

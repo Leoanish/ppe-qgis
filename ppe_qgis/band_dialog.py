@@ -19,8 +19,14 @@ from qgis.PyQt.QtWidgets import (
     QWidget,
 )
 
-BAND_CHOICES = (("", "— not a band —"), ("blue", "Blue"), ("green", "Green"), ("red", "Red"),
-                ("re", "Red edge"), ("nir", "NIR"))
+BAND_CHOICES = (
+    ("", "— not a band —"),
+    ("blue", "Blue"),
+    ("green", "Green"),
+    ("red", "Red"),
+    ("re", "Red edge"),
+    ("nir", "NIR"),
+)
 BAND_NAMES = dict(BAND_CHOICES)
 
 # The dialog styles every part itself. It inherits the panel's dark text colour, so leaving the
@@ -67,34 +73,36 @@ class BandFilesDialog(QDialog):
         self.setMinimumWidth(640)
         self.rows = []
         layout = QVBoxLayout(self)
-        intro = QLabel("PPE found these raster files in <b>{}</b>. Tick the files that are bands of the image and check "
-                       "the band of each; PPE imports only the ticked files. Files PPE does not recognise, thermal "
-                       "files and stacked files start unticked.".format(os.path.basename(folder.rstrip("/\\")) or folder))
+        intro = QLabel(
+            "PPE found these raster files in <b>{}</b>. Tick the files that are bands of the image and check "
+            "the band of each; PPE imports only the ticked files. Files PPE does not recognise, thermal "
+            "files and stacked files start unticked.".format(os.path.basename(folder.rstrip("/\\")) or folder)
+        )
         intro.setWordWrap(True)
         layout.addWidget(intro)
         table = QTableWidget(len(scan["files"]), 4)
         table.setHorizontalHeaderLabels(["Use", "File", "Band", "Note"])
         table.verticalHeader().setVisible(False)
-        table.setSelectionMode(QAbstractItemView.NoSelection)
-        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setAlternatingRowColors(True)
         # Full file names: columns take the width of their text and the table scrolls sideways
         # instead of cutting names short with "...".
         table.setWordWrap(False)
-        table.setTextElideMode(Qt.ElideNone)
-        table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
-        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        table.setTextElideMode(Qt.TextElideMode.ElideNone)
+        table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         header = table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         header.setStretchLastSection(True)
         for i, entry in enumerate(scan["files"]):
             holder = QWidget()
             line = QHBoxLayout(holder)
             line.setContentsMargins(6, 0, 6, 0)
-            line.setAlignment(Qt.AlignCenter)
+            line.setAlignment(Qt.AlignmentFlag.AlignCenter)
             check = QCheckBox()
             check.setChecked(bool(entry["use"]))
             line.addWidget(check)
@@ -120,24 +128,26 @@ class BandFilesDialog(QDialog):
             combo.currentIndexChanged.connect(lambda _index, r=row: self._band_changed(r))
         # Rows as tall as the band box, so the boxes do not overlap the next row.
         row_height = max([combo.sizeHint().height() for combo in (r["combo"] for r in self.rows)] + [28]) + 8
-        table.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
+        table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         table.verticalHeader().setDefaultSectionSize(row_height)
         for i in range(table.rowCount()):
             table.setRowHeight(i, row_height)
         layout.addWidget(table)
         self.table = table
         if scan.get("other_files"):
-            other = QLabel("{} other file(s) in the folder are not rasters (for example .aux.xml or plot files) and are "
-                           "not listed.".format(scan["other_files"]))
+            other = QLabel(
+                "{} other file(s) in the folder are not rasters (for example .aux.xml or plot files) and are "
+                "not listed.".format(scan["other_files"])
+            )
             other.setWordWrap(True)
             other.setStyleSheet("color: #5f6f68;")
             layout.addWidget(other)
         self.status = QLabel("")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
-        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        self.buttons.button(QDialogButtonBox.Ok).setText("Use the ticked files")
-        self.buttons.button(QDialogButtonBox.Ok).setProperty("ppePrimary", True)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Use the ticked files")
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setProperty("ppePrimary", True)
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
@@ -149,13 +159,16 @@ class BandFilesDialog(QDialog):
 
     def _band_changed(self, row):
         if row["combo"].currentData() and not row["check"].isChecked():
-            row["check"].setChecked(True)          # choosing a band means "use this file"
+            row["check"].setChecked(True)  # choosing a band means "use this file"
         self._validate()
 
     def chosen(self):
         """{band: path} of the ticked files."""
-        return {row["combo"].currentData(): row["entry"]["path"] for row in self.rows
-                if row["check"].isChecked() and row["combo"].currentData()}
+        return {
+            row["combo"].currentData(): row["entry"]["path"]
+            for row in self.rows
+            if row["check"].isChecked() and row["combo"].currentData()
+        }
 
     def _problem(self):
         ticked = [row for row in self.rows if row["check"].isChecked()]
@@ -171,12 +184,13 @@ class BandFilesDialog(QDialog):
         sizes = {row["entry"]["size"] for row in ticked}
         if len(sizes) > 1:
             return "The ticked files are not the same size ({}); band files must share one pixel grid.".format(
-                ", ".join("{} x {}".format(*s) for s in sorted(sizes)))
+                ", ".join("{} x {}".format(*s) for s in sorted(sizes))
+            )
         return ""
 
     def _validate(self, *_ignored):
         problem = self._problem()
-        ok = self.buttons.button(QDialogButtonBox.Ok)
+        ok = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
         ok.setEnabled(not problem)
         if problem:
             self.status.setText("⚠ " + problem)
@@ -184,6 +198,9 @@ class BandFilesDialog(QDialog):
         else:
             order = ("blue", "green", "red", "re", "nir")
             chosen = self.chosen()
-            self.status.setText("PPE will import {} file(s): {}.".format(
-                len(chosen), ", ".join(BAND_NAMES[b] for b in order if b in chosen)))
+            self.status.setText(
+                "PPE will import {} file(s): {}.".format(
+                    len(chosen), ", ".join(BAND_NAMES[b] for b in order if b in chosen)
+                )
+            )
             self.status.setStyleSheet("color: #17473a;")
