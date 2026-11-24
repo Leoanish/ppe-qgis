@@ -9,7 +9,7 @@ import numpy as np
 from osgeo import gdal, ogr
 
 from ppe_qgis.plant_count import (SPACING_MIN_GAPS, auto_split, count_plants, merge_points, plant_spacing, read_points,
-                                  summarize_points)
+                                  split_part, summarize_points)
 try:
     from test_v43 import tif
 except ImportError:  # run as tests.test_v47
@@ -64,7 +64,20 @@ class AutoSplitAndMerge(unittest.TestCase):
             xs = sorted((a[0] - 500000) / 0.01 for a in auto)       # one point near each true plant centre (x = 135, 155, 175)
             for got, want in zip(xs, (135, 155, 175)):
                 self.assertLess(abs(got - want), 4)
+            note = r["auto_split"]["note"]
+            self.assertIn("plant spacing in the row 20.", note)
+            self.assertIn("longer than 30.", note)                   # 1.5 x spacing
+            self.assertAlmostEqual(r["auto_split"]["split_longer_than_cm"], 1.5 * r["plant_spacing_cm"])
+            self.assertEqual(r["auto_split"]["patches"][0]["plants"], 3)
+            # one part of the split patch split again: only that part changes
+            pts = [a for a in auto]
+            mid = sorted(pts, key=lambda a: a[0])[1]
+            parts = split_part(r["points_path"], mid[0], mid[1], 2, [(a[0], a[1]) for a in pts], None)
+            self.assertEqual(len(parts), 2)
+            px = sorted((q[0] - 500000) / 0.01 for q in parts)
+            self.assertTrue(all(145 <= v <= 165 for v in px))          # both inside the middle plant's share
             with open(r["summary_path"]) as fh: head = fh.readline()
+            self.assertIn("split_longer_than_cm", head)
             self.assertIn("of_which_split_by_ppe", head); self.assertIn("plant_spacing_cm", head)
             # the same with the spacing typed in; and nothing without rows
             shutil.rmtree(os.path.join(tmp, "c"))

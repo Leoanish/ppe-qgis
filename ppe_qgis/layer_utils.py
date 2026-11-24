@@ -676,9 +676,56 @@ def show_plant_points(path, name="PPE · Plants"):
         QgsRendererCategory("added", dot("0,200,255"), "Added by you · counted"),
         QgsRendererCategory("weed?", dot("170,170,170", "220,0,0"), "Weed? (between rows) · NOT counted")])
     layer.setRenderer(renderer)
+    _label_split_points(layer)
     place_layer(layer, "plants")
+    show_only_image_and_points()
     layer.triggerRepaint()
     return layer
+
+
+# A split point's label: its part and how many the patch was split into ("2/3"); ids for check points.
+SPLIT_LABEL_EXPRESSION = (
+    "CASE WHEN \"status\" IN ('auto split', 'split') AND coalesce(\"split_of\", 0) > 0 THEN "
+    "to_string(array_find(array_sort(aggregate(@layer, 'array_agg', \"plant_id\", filter:=\"split_of\" = attribute(@parent, 'split_of'))), \"plant_id\") + 1)"
+    " || '/' || to_string(aggregate(@layer, 'count', \"plant_id\", filter:=\"split_of\" = attribute(@parent, 'split_of')))"
+    " WHEN \"status\" = 'check' THEN '#' || to_string(\"plant_id\") END")
+
+
+def _label_split_points(layer):
+    """Small labels: '2/3' next to every split point (part 2 of a patch split into 3), '#12' next to check
+    points, so the user sees what was split into how many while exploring. Also a map tip."""
+    from qgis.core import QgsPalLayerSettings, QgsTextBufferSettings, QgsTextFormat, QgsVectorLayerSimpleLabeling
+    from qgis.PyQt.QtGui import QColor, QFont
+    if layer.fields().indexOf("split_of") < 0:
+        return
+    st = QgsPalLayerSettings(); st.isExpression = True; st.fieldName = SPLIT_LABEL_EXPRESSION
+    try:
+        st.placement = QgsPalLayerSettings.OverPoint
+    except AttributeError:
+        pass
+    st.xOffset = 2.2; st.yOffset = -1.6
+    fmt = QgsTextFormat(); fmt.setFont(QFont("Arial")); fmt.setSize(8); fmt.setColor(QColor(0, 0, 0))
+    buf = QgsTextBufferSettings(); buf.setEnabled(True); buf.setSize(0.8); buf.setColor(QColor(255, 255, 255)); fmt.setBuffer(buf)
+    st.setFormat(fmt)
+    layer.setLabeling(QgsVectorLayerSimpleLabeling(st)); layer.setLabelsEnabled(True)
+    layer.setMapTipTemplate(
+        "<b>Plant [% \"plant_id\" %]</b>: [% \"status\" %]<br>"
+        "[% CASE WHEN coalesce(\"split_of\", 0) > 0 THEN 'part of patch ' || \"split_of\" || ', split into ' || "
+        "aggregate(@layer, 'count', \"plant_id\", filter:=\"split_of\" = attribute(@parent, 'split_of')) || ' plants' END %]")
+
+
+# Shown with the plant points: the image, the points and the areas; everything else is unticked
+# (the user can tick it again).
+POINTS_VIEW_ROLES = ("plants", "rgb", "count_area", "plots", "label_area")
+
+
+def show_only_image_and_points():
+    for node, role in _ppe_nodes():
+        if role not in POINTS_VIEW_ROLES and node.itemVisibilityChecked():
+            node.setItemVisibilityChecked(False)
+    group = QgsProject.instance().layerTreeRoot().findGroup(GROUP_NAME)
+    if group is not None:
+        group.setItemVisibilityChecked(any(n.itemVisibilityChecked() for n in group.children()))
 
 
 def show_label_points(path, name="PPE · Label points"):

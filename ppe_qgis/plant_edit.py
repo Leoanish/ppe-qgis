@@ -79,11 +79,45 @@ class PlantEditTool(QgsMapTool):
         from qgis.PyQt.QtWidgets import QInputDialog
         if f["status"] == STATUS_WEED:
             self.changed.emit("This point is a possible weed (not counted): switch it to plant first."); return
+        group = self._siblings(f)
+        if len(group) > 1:
+            by = "PPE (plant spacing)" if f["status"] == STATUS_AUTO else "you"
+            n, ok = QInputDialog.getInt(self.canvas().window(), "Split this part",
+                                        "This point is one of {} plants that {} split this patch into.\n"
+                                        "How many plants do you see in THIS part?\n(⊕ Merge makes the whole patch one plant again.)".format(len(group), by),
+                                        2, 2, 50, 1)
+            if not ok: return
+            self._split_part(f, n, group)
+            return
         n, ok = QInputDialog.getInt(self.canvas().window(), "Split into plants",
                                     "How many plants do you see in this group?\nPPE puts one point on each of them (on the thickest parts of the patch).",
                                     2, 2, 50, 1)
         if not ok: return
         self._split_into(f, n)
+
+    def _split_part(self, f, n, group):
+        """Split one part of an already split patch; its other points stay."""
+        from .plant_count import split_part
+        path = self.layer.source().split("|")[0]; p = f.geometry().asPoint()
+        area = sum(self._area(g) or 0.0 for g in group)
+        parts = split_part(path, p.x(), p.y(), n, [(g.geometry().asPoint().x(), g.geometry().asPoint().y()) for g in group], area or None)
+        if len(parts) < 2:
+            self.changed.emit("Could not find {} separate plants in this part. Use + Add plant instead.".format(n)); return
+        fields = self.layer.fields(); prov = self.layer.dataProvider()
+        next_id = max([x["plant_id"] for x in self.layer.getFeatures() if x["plant_id"] is not None] or [0]) + 1
+        new = []
+        for k, (x, y, a) in enumerate(parts):
+            g = QgsFeature(fields); g.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(x, y)))
+            g["plant_id"] = next_id + k; g["status"] = STATUS_SPLIT; g["split_of"] = f["split_of"]
+            if fields.indexOf("on_row") >= 0: g["on_row"] = f["on_row"] if f["on_row"] is not None else 1
+            if fields.indexOf("area_cm2") >= 0: g["area_cm2"] = a
+            new.append(g)
+        old = [QgsFeature(f)]
+        ok, out = prov.addFeatures(new)
+        if not ok: self.changed.emit("Could not write the new points."); return
+        prov.deleteFeatures([f.id()])
+        self.undo.append(("split", (old, [o.id() for o in out])))
+        self._changed("Part split into {} plants; the patch now has {} plants.".format(len(parts), len(group) - 1 + len(parts)))
 
     def _siblings(self, f):
         """The points split from the same group as f (f included), or [f]."""
@@ -120,7 +154,7 @@ class PlantEditTool(QgsMapTool):
     def _split_into(self, f, n):
         from .plant_count import split_group
         path = self.layer.source().split("|")[0]; p = f.geometry().asPoint()
-        group = self._siblings(f)          # splitting a split point again: the whole group is split anew
+        group = self._siblings(f)          # (called with a single point; a split patch is split anew as a whole)
         area = sum(self._area(g) or 0.0 for g in group) if len(group) > 1 else self._area(f)
         try:
             parts = split_group(path, p.x(), p.y(), n, area)

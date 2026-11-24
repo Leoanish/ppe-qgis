@@ -329,9 +329,10 @@ def summarize_points(points_path, log=None):
     with open(path, "w", newline="") as fh:
         w = csv.writer(fh); w.writerow(["plants_counted", "of_which_plant", "of_which_check_counted_as_one", "of_which_split_by_ppe", "of_which_split_by_user",
                                         "of_which_added_by_user", "weeds_not_counted", "median_plant_cm2", "smallest_plant_cm2", "plant_spacing_cm",
-                                        "plants_per_m2", "note"])
+                                        "split_longer_than_cm", "plants_per_m2", "note"])
         w.writerow([plants, n[STATUS_PLANT], n[STATUS_CHECK], n["auto split"], n["split"], n[STATUS_ADDED], n[STATUS_WEED], _r(summary["median_plant_cm2"]),
-                    _r(summary["min_plant_cm2"]), _r(info.get("plant_spacing_cm"), 1), _r(summary["plants_per_m2"], 3), EARLY_NOTE])
+                    _r(summary["min_plant_cm2"]), _r(info.get("plant_spacing_cm"), 1),
+                    _r(1.5 * info["plant_spacing_cm"] if info.get("plant_spacing_cm") else None, 1), _r(summary["plants_per_m2"], 3), EARLY_NOTE])
     summary["summary_path"] = path
     if info.get("aoi_path") and os.path.isfile(info["aoi_path"]):
         xs = np.array([p[0] for p in counted]); ys = np.array([p[1] for p in counted]); big = np.array([p[2] == STATUS_CHECK for p in counted])
@@ -602,6 +603,7 @@ def auto_split(points_path, plant_spacing_cm=None, log=None):
         length = float(np.percentile(u, 98) - np.percentile(u, 2))
         n = int(round(length / s_px))
         if n < 2: continue
+        res.setdefault("patches", []).append({"plant_id": int(f["plant_id"]), "length_cm": round(length * pixel_cm, 1), "plants": n})
         parts = _split_window(g, n)
         if len(parts) < 2: continue
         lay.DeleteFeature(f["fid"])
@@ -613,13 +615,42 @@ def auto_split(points_path, plant_spacing_cm=None, log=None):
             nf.SetField("split_of", int(f["plant_id"])); lay.CreateFeature(nf)
         res["groups_split"] += 1; res["points_added"] += len(parts) - 1
     out = None
-    res["note"] = "{} touching group{} split by the plant spacing ({:.1f} cm, {}): {} more plant{}; check them on the map".format(
-        res["groups_split"], "" if res["groups_split"] == 1 else "s", res["plant_spacing_cm"], res["spacing_from"],
-        res["points_added"], "" if res["points_added"] == 1 else "s")
+    res["split_longer_than_cm"] = 1.5 * res["plant_spacing_cm"]
+    res["note"] = split_note(res)
     log(res["note"] + ".")
     info["auto_split"] = res; info["plant_spacing_cm"] = res["plant_spacing_cm"]
     with open(info_path, "w", encoding="utf-8") as fh: json.dump(info, fh, indent=1)
     return res
+
+
+def split_note(res):
+    """Plain words: the plant spacing, the length above which a patch is split, and what was split."""
+    s = res["plant_spacing_cm"]
+    text = ("plant spacing in the row {:.1f} cm ({}). A patch longer than {:.1f} cm along the row (1.5 x spacing) is split, "
+            "one plant per {:.1f} cm: up to {:.1f} cm = 2 plants, up to {:.1f} cm = 3 plants, and so on. ").format(
+        s, res["spacing_from"], 1.5 * s, s, 2.5 * s, 3.5 * s)
+    if not res["groups_split"]:
+        return text + "No patch was that long, so nothing was split"
+    parts = ", ".join("{} cm into {}".format(p["length_cm"], p["plants"]) for p in res.get("patches", [])[:6])
+    return text + "{} patch{} split ({}{}): {} more plant{}; check them on the map".format(
+        res["groups_split"], "" if res["groups_split"] == 1 else "es", parts, ", ..." if len(res.get("patches", [])) > 6 else "",
+        res["points_added"], "" if res["points_added"] == 1 else "s")
+
+
+def split_part(points_path, x, y, n, siblings, area_cm2=None):
+    """Split ONE part of a patch that was already split (by PPE or by the user) into n plants: the patch's
+    pixels are shared out to the nearest of its points (`siblings`, map coordinates, the clicked point
+    among them) and only the clicked point's share is split. `area_cm2` is the whole patch's area."""
+    g = group_at(points_path, x, y, area_cm2)
+    if g is None or n < 2: return []
+    m, x0, y0, gt, pixel_cm, info = g
+    yy, xx = np.nonzero(m)
+    if len(xx) < n: return []
+    sib = np.array([((a - gt[0]) / gt[1] - x0 - 0.5, (b - gt[3]) / gt[5] - y0 - 0.5) for a, b in siblings], float)
+    me = int(np.argmin((sib[:, 0] - ((x - gt[0]) / gt[1] - x0 - 0.5)) ** 2 + (sib[:, 1] - ((y - gt[3]) / gt[5] - y0 - 0.5)) ** 2))
+    near = np.argmin((xx[:, None] - sib[None, :, 0]) ** 2 + (yy[:, None] - sib[None, :, 1]) ** 2, axis=1)
+    sub = np.zeros_like(m); sub[yy[near == me], xx[near == me]] = True
+    return _split_window((sub, x0, y0, gt, pixel_cm, info), n)
 
 
 def merge_points(points):

@@ -942,7 +942,7 @@ class PPEDockWidget(QDockWidget):
         self._plant_edit_buttons(mode)
         self.plant_edit_status.setText({"add": "Click on the map where a plant was missed.", "remove": "Click on a point to remove it.",
                                         "switch": "Click on a point to switch it between plant and weed.",
-                                        "split": "Click a point of touching plants (orange 'check'), then type how many plants you see.",
+                                        "split": "Click a point of touching plants (orange 'check', or a split point: then only its part is split), then type how many plants you see.",
                                         "merge": "Click a point split by PPE or by you to make its group one plant again, or click two points to merge them."}[mode] + " Esc or Done to stop.")
 
     def _plant_edit_buttons(self, mode):
@@ -1031,6 +1031,8 @@ class PPEDockWidget(QDockWidget):
             text = self._count_line(result)
             auto = result.get("auto_split") or {}
             if auto.get("note"): text += "\n" + auto["note"][0].upper() + auto["note"][1:] + "."
+            if result.get("split_by_ppe"):
+                text += "\nOn the map, '2/3' next to a point means part 2 of a patch split into 3."
             if result.get("flagged_big"):
                 text += "\nOrange 'check' points count as one plant each but may be several touching plants: ✂ Split them below."
             if rows and rows.get("rows"): text += "\nCrop rows found {:.0f} cm apart.".format(rows.get("spacing_cm", 0))
@@ -2259,7 +2261,7 @@ class PPEDockWidget(QDockWidget):
         self.hsi_max_wavelength.setValue(self.settings.value(prefix + "hsi_max_wavelength", 0.0, type=float))
         self.hsi_interval.setValue(self.settings.value(prefix + "hsi_interval", 0.0, type=float))
         self.export_path.setText("")
-        self._apply_goal(self.settings.value(prefix + "goal", "mask", type=str))
+        self._apply_goal("mask")           # PPE always opens on the Plant mask goal; the user changes it when needed
 
     def _save_settings(self):
         prefix = "ppe_qgis/"
