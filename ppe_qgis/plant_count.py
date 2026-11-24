@@ -522,13 +522,24 @@ def _ensure_split_field(path):
     ds = None
 
 
-def plant_spacing(px, py, angle_deg, row_spacing_px, tile_px):
-    """In-row plant spacing (pixels) from plant centres in pixel coordinates: plants are grouped into rows
-    per 4 m tile (by the gaps across the rows), the gaps between neighbours along each row are measured,
-    and gaps that span missing plants are divided by the number of steps. Returns (spacing, gaps used) or
-    (None, gaps) when there are fewer than SPACING_MIN_GAPS gaps."""
+def confident_range(areas):
+    """The size range of a normal single plant in THIS image: median area x/÷ exp(2 sigma), sigma from the
+    spread of the log areas (MAD), kept within x0.4 - x2.5 of the median. A uniform stand gets a tight range,
+    an uneven one a wider range. Returns (median, low, high) or None with fewer than 3 plants."""
+    a = np.array([v for v in areas if v is not None and v > 0], float)
+    if len(a) < 3: return None
+    med = float(np.median(a)); la = np.log(a)
+    sig = max(0.15, 1.4826 * float(np.median(np.abs(la - np.median(la)))))
+    return med, max(0.4 * med, med * math.exp(-2 * sig)), min(2.5 * med, med * math.exp(2 * sig))
+
+
+def spacing_gaps(px, py, angle_deg, row_spacing_px, tile_px, use=None):
+    """Gaps (pixels) between neighbouring plants along each row: plant centres in pixel coordinates are
+    grouped into rows per 4 m tile (by the gaps across the rows) and sorted along the row; a gap is kept
+    only when both neighbours are in `use` (all when None)."""
     px = np.asarray(px, float); py = np.asarray(py, float)
-    if len(px) < 3: return None, 0
+    use = np.ones(len(px), bool) if use is None else np.asarray(use, bool)
+    if len(px) < 2: return []
     t = math.radians(angle_deg); d = px * math.cos(t) + py * math.sin(t); u = -px * math.sin(t) + py * math.cos(t)
     gaps = []
     tid = np.floor(px / tile_px) * 1000003 + np.floor(py / tile_px)
@@ -538,13 +549,25 @@ def plant_spacing(px, py, angle_deg, row_spacing_px, tile_px):
         o = sel[np.argsort(d[sel])]; start = 0
         for i in range(1, len(o) + 1):
             if i == len(o) or d[o[i]] - d[o[i - 1]] > 0.5 * row_spacing_px:
-                row = np.sort(u[o[start:i]])
-                if len(row) > 1: gaps.extend(np.diff(row).tolist())
+                r = o[start:i]; r = r[np.argsort(u[r])]
+                gaps += [float(u[b] - u[a]) for a, b in zip(r[:-1], r[1:]) if use[a] and use[b] and u[b] > u[a]]
                 start = i
-    g = np.array([v for v in gaps if v > 0])
-    if len(g) < SPACING_MIN_GAPS: return None, len(g)
-    s0 = float(np.median(g)); steps = np.maximum(1, np.round(g / s0))
-    return float(np.median(g / steps)), len(g)
+    return gaps
+
+
+def spacing_from_gaps(gaps):
+    """The plant spacing from gaps: the median gap, after dividing gaps over missing plants by their number
+    of steps. None with fewer than SPACING_MIN_GAPS gaps."""
+    g = np.array([v for v in gaps if v > 0], float)
+    if len(g) < SPACING_MIN_GAPS: return None
+    s0 = float(np.median(g)); return float(np.median(g / np.maximum(1, np.round(g / s0))))
+
+
+def plant_spacing(px, py, angle_deg, row_spacing_px, tile_px, use=None):
+    """In-row plant spacing (pixels). Returns (spacing, gaps used) or (None, gaps) when there are fewer
+    than SPACING_MIN_GAPS gaps."""
+    g = spacing_gaps(px, py, angle_deg, row_spacing_px, tile_px, use)
+    return spacing_from_gaps(g), len(g)
 
 
 def _read_features(path):
@@ -578,15 +601,29 @@ def auto_split(points_path, plant_spacing_cm=None, log=None):
     if plant_spacing_cm:
         s_px = float(plant_spacing_cm) / pixel_cm; res["spacing_from"] = "given"
     else:
-        pl = [f for f in feats if f.get("status") == STATUS_PLANT]
-        s_px, n_gaps = plant_spacing([(f["x"] - gt[0]) / gt[1] for f in pl], [(f["y"] - gt[3]) / gt[5] for f in pl], a0,
-                                     float(rows["spacing_cm"]) / pixel_cm, ROW_TILE_CM / pixel_cm)
+        # 4.7 (confident plants): the spacing is measured only between neighbouring CONFIDENT plants, single
+        # plants of normal size for this image (`confident_range`); leaf pieces, plants cut at the image edge
+        # and oversized plants make false gaps. On PhenoBench this moved the measured spacing from 15.7 to
+        # 20.6 cm (true 21.2) on the latest date and cut the wrong plants in check patches from 32 to 22.
+        row_pts = [f for f in feats if f.get("status") != STATUS_WEED]
+        area_key = "area_cm2" if any(f.get("area_cm2") is not None for f in feats) else "area_px"
+        rng = confident_range([f.get(area_key) for f in row_pts if f.get("status") == STATUS_PLANT])
+        use = [f.get("status") == STATUS_PLANT and rng is not None and f.get(area_key) is not None and rng[1] <= f[area_key] <= rng[2]
+               for f in row_pts]
+        res["confident_plants"] = int(sum(use))
+        if rng is not None:
+            k = 1.0 if area_key == "area_cm2" else pixel_cm ** 2
+            res["confident_range_cm2"] = [round(rng[1] * k, 1), round(rng[2] * k, 1)]
+        s_px, n_gaps = plant_spacing([(f["x"] - gt[0]) / gt[1] for f in row_pts], [(f["y"] - gt[3]) / gt[5] for f in row_pts], a0,
+                                     float(rows["spacing_cm"]) / pixel_cm, ROW_TILE_CM / pixel_cm, use)
         if s_px is None:
-            res["note"] = "too few plants in the rows to measure the plant spacing ({} gaps, {} needed); type the spacing to split touching plants".format(n_gaps, SPACING_MIN_GAPS)
+            res["note"] = ("too few confident plants in the rows to measure the plant spacing ({} gaps between them, {} needed); "
+                           "type the spacing to split touching plants").format(n_gaps, SPACING_MIN_GAPS)
             info["auto_split"] = res
             with open(info_path, "w", encoding="utf-8") as fh: json.dump(info, fh, indent=1)
             return res
-        res["spacing_from"] = "measured from {} gaps".format(n_gaps)
+        res["spacing_from"] = "measured from {} gaps between {} confident plants, single plants of {}-{} cm2".format(
+            n_gaps, res["confident_plants"], *[int(round(v)) for v in res.get("confident_range_cm2", [0, 0])])
     res["plant_spacing_cm"] = s_px * pixel_cm
     checks = [f for f in feats if f.get("status") == STATUS_CHECK]
     _ensure_split_field(points_path)

@@ -8,8 +8,8 @@ import unittest
 import numpy as np
 from osgeo import gdal, ogr
 
-from ppe_qgis.plant_count import (SPACING_MIN_GAPS, auto_split, count_plants, merge_points, plant_spacing, read_points,
-                                  split_part, summarize_points)
+from ppe_qgis.plant_count import (SPACING_MIN_GAPS, auto_split, confident_range, count_plants, merge_points, plant_spacing,
+                                  read_points, split_part, summarize_points)
 try:
     from test_v43 import tif
 except ImportError:  # run as tests.test_v47
@@ -44,6 +44,27 @@ class PlantSpacing(unittest.TestCase):
             self.assertGreaterEqual(gaps, SPACING_MIN_GAPS)
         s, gaps = plant_spacing(px[:6], py[:6], 90.0, 45, 400)
         self.assertIsNone(s)
+
+
+    def test_confident_plants_only(self):
+        """Leaf pieces next to plants make false short gaps: with all plants the spacing comes out short, with
+        confident plants (normal size for the image) it is right."""
+        px, py, area = [], [], []
+        for d in (0, 45, 90):
+            for i, u in enumerate(np.arange(0, 400, 20.0)):
+                px.append(u); py.append(d); area.append(50.0 + (i % 5))
+                if i % 2 == 0: px.append(u + 6); py.append(d); area.append(6.0)      # a leaf counted on its own
+        px = np.array(px) + 1000; py = np.array(py) + 1000; area = np.array(area)
+        s_all, _ = plant_spacing(px, py, 90.0, 45, 4000)
+        med, lo, hi = confident_range(area)
+        use = (area >= lo) & (area <= hi)
+        s_conf, gaps = plant_spacing(px, py, 90.0, 45, 4000, use)
+        self.assertLess(s_all, 17)
+        self.assertAlmostEqual(s_conf, 20.0, places=6)
+        self.assertGreaterEqual(gaps, SPACING_MIN_GAPS)
+        self.assertFalse(any(use[area < 10]))
+        tight = confident_range([50, 51, 49, 50, 52]); wide = confident_range([20, 35, 50, 80, 120])
+        self.assertLess(tight[2] - tight[1], wide[2] - wide[1])                       # follows the image's spread
 
 
 class AutoSplitAndMerge(unittest.TestCase):
