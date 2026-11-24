@@ -662,10 +662,15 @@ def _bilinear_interp_block(grid, y, h, width, grid_h, grid_w, height, x_cache=No
 # switches the checks off: the NIR-brightness rules are dropped and NDVI, a ratio, decides instead.
 # The vote is never changed; the user leaves kinds out of the mask (or adds code 6) and can undo it.
 FINDING_NAMES = {1: "plant parts that are not green", 2: "leaf edges over soil", 3: "shaded leaves", 4: "unclear",
-                 5: "dry or yellowing plant parts", 6: "faint plants in sparse spots"}
-FINDING_FILE_NAMES = {1: "plant_parts", 2: "leaf_edges", 3: "shaded", 4: "unclear", 5: "dry", 6: "sparse"}
+                 5: "dry or yellowing plant parts", 6: "faint plants in sparse spots",
+                 7: "weeds between the rows", 8: "weeds inside the rows"}
+FINDING_FILE_NAMES = {1: "plant_parts", 2: "leaf_edges", 3: "shaded", 4: "unclear", 5: "dry", 6: "sparse",
+                      7: "weeds_between_rows", 8: "weeds_in_rows"}
 FINDING_COLUMNS = {1: "plant_parts_pct", 2: "leaf_edges_pct", 3: "shaded_leaves_pct", 4: "unclear_pct", 5: "dry_parts_pct",
-                   6: "sparse_faint_pct"}
+                   6: "sparse_faint_pct", 7: "weeds_between_rows_pct", 8: "weeds_in_rows_pct"}
+#   7, 8  weeds between / inside the crop rows (4.10.0): the plant counter runs behind the scenes at the
+#         suggested threshold (rows, plant spacing, weed? plants); their pixels get these codes. The user
+#         reviews them piece by piece (weed <-> crop) and leaves them out of the mask.
 ADD_CODES = (6,)                 # kinds PPE finds below the threshold on purpose (faint plants); since 4.6.5 every kind can be added or left out
 FINDING_CODES = tuple(sorted(FINDING_NAMES))
 LEVEL_SURE = 0.9                 # vote at or above: green plant; at or below 1 - this: ground
@@ -2062,6 +2067,17 @@ class NativePPEEngine:
             else:
                 self.log_cb("Faint plants in sparse spots: {:.1f}% of the {:.0f} m squares have under {:.0f}% plant at {:.2f}; {:,} pixels there reach {:.2f} ({:.2f}% of the image). They can be added to the mask.".format(
                     sparse_spots["squares_pct"], SPARSE_BLOCK_M, SPARSE_COVER_MAX, start_threshold, sparse_spots["pixels"], sparse_spots["lower_threshold"], sparse_spots["pixels_pct"]))
+        weeds = {}
+        if cfg.get("weeds", True) and area_m2:
+            self.progress(92, "Looking for weeds between and inside the crop rows")
+            try:
+                from .plant_count import mark_weeds
+                weeds = mark_weeds(vote_path, findings_path, start_threshold, run_dir, keep_dir=os.path.join(run_dir, "ppe_weeds"),
+                                   cfg={"row_spacing_cm": cfg["row_spacing_cm"]} if cfg.get("row_spacing_cm") else None)
+                self.log_cb("Weeds: {}.".format(weeds.get("note", "none found")) +
+                            (" Review them on the What PPE found card." if weeds.get("between") or weeds.get("in_row") else ""))
+            except Exception as error:            # weeds are extra information: a failure must not stop the run
+                weeds = {"note": "weeds not checked ({})".format(error)}; self.log_cb("Weeds: not checked ({}).".format(error))
         labels = {}
         if cfg.get("confident_labels", True):
             labels = write_confident_labels(vote_path, os.path.join(run_dir, "ppe_confident_labels.tif"))
@@ -2069,7 +2085,7 @@ class NativePPEEngine:
                 labels["plant_pct"], labels["soil_pct"], labels["unlabelled_pct"]))
         findings_hist = findings_histograms(findings_path, vote_path)
         pale_pct, pale_lost_pct = self._log_findings(findings_hist if finding_fit else None)
-        result = dict(imported, vote_path=vote_path, curve_path=curve_path, threshold=start_threshold, suggestion=suggestion or {}, suggestion_note="" if suggestion else no_suggestion_reason, selected_layers=chosen, chosen_layers=chosen, layer_details=layer_details, n_voters=n_masks, n_method_masks=n_masks, canopy_regime="classic", adaptation_mode="adaptive" if adaptive else "global", half_mixture=half_mixture, spread_ranking=[{"layer": name, "group": group, "spread": spread} for spread, name, group in leaders], mixed_class_vote=.5, bright_guard=bool(guard), bright_rejection_path=rejection_path, bright_rejected_pct=rejected_pct, shadow_guard=bool(shadow_guard), shadow_rejection_path=shadow_rejection_path, shadow_rejected_pct=shadow_rejected_pct, biofilm_guard=bool(algae_guard), algae_guard_fit=algae_guard or {}, biofilm_rejection_path=biofilm_rejection_path, biofilm_rejected_pct=biofilm_rejected_pct, colour_guard=bool(colour_guard), colour_rejected_pct=colour_rejected_pct, weak_green_warning=bool(colour_guard and colour_guard["plant_excess"] < WEAK_GREEN), single_class="", one_class_warning=one_class or "", pale_plant_path=pale_path, pale_plant_pct=pale_pct, pale_plant_lost_pct=pale_lost_pct, pale_plant_fit=pale_fit or {}, findings_path=findings_path, findings_hist=findings_hist, findings_judged=bool(finding_fit), sparse_spots=sparse_spots, findings_fit={k: v for k, v in (finding_fit or {}).items() if k != "pale"}, findings_not_checked=dict(findings_not_checked), findings_note=findings_note, split_separability=split_sep, weak_split_warning=weak_split, confident_labels=labels, confident_labels_path=labels.get("path", ""), ppe_version="native-4.5.3", processing_threads=self.thread_count, output_dir=cfg["output_dir"], timings={"total": time.time()-started})
+        result = dict(imported, vote_path=vote_path, curve_path=curve_path, threshold=start_threshold, suggestion=suggestion or {}, suggestion_note="" if suggestion else no_suggestion_reason, selected_layers=chosen, chosen_layers=chosen, layer_details=layer_details, n_voters=n_masks, n_method_masks=n_masks, canopy_regime="classic", adaptation_mode="adaptive" if adaptive else "global", half_mixture=half_mixture, spread_ranking=[{"layer": name, "group": group, "spread": spread} for spread, name, group in leaders], mixed_class_vote=.5, bright_guard=bool(guard), bright_rejection_path=rejection_path, bright_rejected_pct=rejected_pct, shadow_guard=bool(shadow_guard), shadow_rejection_path=shadow_rejection_path, shadow_rejected_pct=shadow_rejected_pct, biofilm_guard=bool(algae_guard), algae_guard_fit=algae_guard or {}, biofilm_rejection_path=biofilm_rejection_path, biofilm_rejected_pct=biofilm_rejected_pct, colour_guard=bool(colour_guard), colour_rejected_pct=colour_rejected_pct, weak_green_warning=bool(colour_guard and colour_guard["plant_excess"] < WEAK_GREEN), single_class="", one_class_warning=one_class or "", pale_plant_path=pale_path, pale_plant_pct=pale_pct, pale_plant_lost_pct=pale_lost_pct, pale_plant_fit=pale_fit or {}, findings_path=findings_path, findings_hist=findings_hist, findings_judged=bool(finding_fit), sparse_spots=sparse_spots, weeds=weeds, findings_fit={k: v for k, v in (finding_fit or {}).items() if k != "pale"}, findings_not_checked=dict(findings_not_checked), findings_note=findings_note, split_separability=split_sep, weak_split_warning=weak_split, confident_labels=labels, confident_labels_path=labels.get("path", ""), ppe_version="native-4.5.3", processing_threads=self.thread_count, output_dir=cfg["output_dir"], timings={"total": time.time()-started})
         with open(os.path.join(run_dir, "run_summary.json"), "w", encoding="utf-8") as handle: json.dump(result, handle, indent=2)
         self.progress(100, "Plant vote raster and threshold curve are ready"); return result
 

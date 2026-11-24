@@ -526,7 +526,8 @@ def replace_preview_layer(path, layers):
 
 
 PREVIEW_BASE_KEY = "ppe/preview_base"
-_FINDING_FILE_NAMES = {1: "plant_parts", 2: "leaf_edges", 3: "shaded", 4: "unclear", 5: "dry", 6: "sparse"}
+_FINDING_FILE_NAMES = {1: "plant_parts", 2: "leaf_edges", 3: "shaded", 4: "unclear", 5: "dry", 6: "sparse",
+                       7: "weeds_between_rows", 8: "weeds_in_rows"}
 _ADD_CODES = (6,)   # kept for older callers; since 4.6.5 every kind can be added
 
 
@@ -607,8 +608,9 @@ def _raise_role(role):
 PALE_LAYER_NAME = "PPE · What PPE found"
 FINDING_COLOURS = ((1, (255, 176, 0), "Plant parts that are not green"), (2, (90, 205, 255), "Leaf edges over soil"),
                    (3, (40, 80, 230), "Shaded leaves"), (4, (240, 50, 90), "Unclear"),
-                   (5, (150, 90, 40), "Dry or yellowing plant parts"), (6, (150, 230, 60), "Faint plants in sparse spots"))
-FINDING_COLOUR_NAMES = {1: "amber", 2: "light blue", 3: "blue", 4: "red", 5: "brown", 6: "light green"}
+                   (5, (150, 90, 40), "Dry or yellowing plant parts"), (6, (150, 230, 60), "Faint plants in sparse spots"),
+                   (7, (160, 70, 255), "Weeds between the rows"), (8, (255, 255, 255), "Weeds inside the rows"))
+FINDING_COLOUR_NAMES = {1: "amber", 2: "light blue", 3: "blue", 4: "red", 5: "brown", 6: "light green", 7: "violet", 8: "white"}
 
 
 def _pale_group(create=True):
@@ -909,3 +911,13 @@ def show_crop_only_mask(path):
     for l in project.mapLayers().values():
         if l.customProperty(ROLE_KEY, "") == "mask": set_layer_visible(l, False)
     return layer
+
+
+def reload_findings_layers():
+    """After a weed piece was reviewed: the What PPE found layers and the live preview read the findings file again."""
+    for layer in QgsProject.instance().mapLayers().values():
+        if layer.customProperty(ROLE_KEY, "") in ("pale", "votes"):
+            try:
+                layer.dataProvider().reloadData(); layer.triggerRepaint()
+            except (AttributeError, RuntimeError):
+                pass

@@ -2495,7 +2495,13 @@ class PPEDockWidget(QDockWidget):
         6: ("✚", "Faint plants in sparse spots", "Where the canopy is thin (under 25 % plant in 3 m squares at the suggested threshold), "
             "small and pale plants get fewer votes. These are the pixels a threshold 0.20 lower adds there. On a field with a "
             "reference mask, adding them matched it better in the thin parts and over the whole field."),
+        7: ("✕", "Weeds between the rows", "Plants between the crop rows, smaller than a typical crop plant. PPE found the rows "
+            "and the plants behind the scenes, as the plant counter does. Check them with Review weeds on the map, then press "
+            "− to take them out of the mask."),
+        8: ("✕", "Weeds inside the rows", "Small plants crowding a crop plant in the row (closer than half the plant spacing "
+            "and smaller than it). Some can be crop: check them with Review weeds on the map before you press −."),
     }
+    WEED_CODES = (7, 8)
     ADD_CODES = (6,)            # kinds PPE finds below the threshold on purpose; their share is what adding brings in
     # 4.6.5: every kind has both buttons, − Leave out of the mask and + Add to the mask
 
@@ -2528,9 +2534,20 @@ class PPEDockWidget(QDockWidget):
                 b.clicked.connect(lambda on, code=code, state=state: self._finding_choice(code, state if on else None))
                 buttons_row.addWidget(b, 1)
             if code in self.ADD_CODES: minus.setVisible(False)     # faint plants sit below the threshold: nothing to leave out
+            if code in self.WEED_CODES: plus.setVisible(False)     # weeds are already in the mask: nothing to add
             line.addWidget(title); line.addWidget(note); line.addLayout(buttons_row)
             body.addWidget(holder); holder.setVisible(False)
             self.finding_rows[code] = {"holder": holder, "title": title, "note": note, "minus": minus, "plus": plus}
+            if code == max(self.WEED_CODES):        # 4.10.0: review the weeds piece by piece
+                self.weed_review_box = QWidget(); wl = QVBoxLayout(self.weed_review_box); wl.setContentsMargins(0, 0, 0, 0); wl.setSpacing(4)
+                self.weed_review_button = QPushButton("✎  Review weeds on the map (click a plant: weed ↔ crop)")
+                self.weed_review_button.setCheckable(True); self.weed_review_button.setProperty("secondary", True)
+                self.weed_review_button.setToolTip("Click any plant piece on the map: a weed becomes crop again, a crop plant becomes a weed. "
+                                                   "Click again to undo. Esc or this button to stop.")
+                self.weed_review_button.toggled.connect(self._weed_review)
+                self.weed_review_status = QLabel(""); self.weed_review_status.setObjectName("paleText"); self.weed_review_status.setWordWrap(True)
+                wl.addWidget(self.weed_review_button); wl.addWidget(self.weed_review_status)
+                body.addWidget(self.weed_review_box); self.weed_review_box.setVisible(False)
         self.clip_status = QLabel(""); self.clip_status.setObjectName("paleText"); self.clip_status.setWordWrap(True); self.clip_status.setVisible(False)
         body.addWidget(self.clip_status)
         # which checks could not run on this image, and why (a weak NIR band, missing bands, ...)
@@ -2707,8 +2724,52 @@ class PPEDockWidget(QDockWidget):
         self.clip_status.setText("\n".join(lines))
         self.clip_status.setVisible(bool(lines)); self.put_back_button.setVisible(bool(lines))
 
+    def _weeds_found(self):
+        w = (self.result or {}).get("weeds") or {}
+        return bool(w.get("rows_found") and w.get("groups_path") and os.path.isfile(w["groups_path"]))
+
+    def _weed_review(self, on):
+        """Turn the weed review tool on or off (the map tool lives on the canvas)."""
+        canvas = self.iface.mapCanvas() if self.iface is not None else None
+        if not on:
+            tool = getattr(self, "_weed_tool", None); self._weed_tool = None
+            if canvas is not None and tool is not None and canvas.mapTool() is tool:
+                prev = getattr(self, "_weed_prev_tool", None)
+                if prev is not None: canvas.setMapTool(prev)
+                else: canvas.unsetMapTool(tool)
+            return
+        r = self.result or {}
+        if not self._weeds_found() or canvas is None:
+            self.weed_review_button.blockSignals(True); self.weed_review_button.setChecked(False); self.weed_review_button.blockSignals(False)
+            self.weed_review_status.setText("No weeds to review: PPE found no clear crop rows in this image."); return
+        from .plant_edit import WeedReviewTool
+        self._weed_prev_tool = canvas.mapTool()
+        tool = WeedReviewTool(canvas, r["weeds"], r["findings_path"], r["vote_path"])
+        tool.reviewed.connect(self._weed_reviewed); tool.done.connect(lambda: self.weed_review_button.setChecked(False))
+        self._weed_tool = tool; canvas.setMapTool(tool); canvas.setFocus()
+        self.weed_review_status.setText("Click a plant on the map: weed ↔ crop. Show them on the map first to see the weeds in colour.")
+
+    def _weed_reviewed(self, r):
+        """A piece was switched: the card's shares, the live preview and the found layers follow at once."""
+        self.weed_review_status.setText(r.get("message", ""))
+        if r.get("state") is None: return
+        hist = (self.result or {}).get("findings_hist")
+        if hist:
+            for code, levels in r["hist_delta"].items():
+                while code >= len(hist): hist.append([0] * len(hist[0]))
+                for lv, n in levels.items(): hist[code][lv] += n
+        rev = self.result.setdefault("weeds_reviewed", {"to_crop": 0, "to_weed": 0})
+        rev["to_crop" if r["state"] == "crop" else "to_weed"] += 1
+        self.weed_review_status.setText("{} Reviewed so far: {} weeds put back as crop, {} plants marked weed.".format(
+            r["message"], rev["to_crop"], rev["to_weed"]))
+        from .layer_utils import reload_findings_layers
+        reload_findings_layers()
+        self._update_pale_card(); self._update_clip_status()
+        if self.result.get("vote_path"): self.crop_preview_changed.emit()
+
     def _update_pale_card(self):
         """The 'What PPE found' card: one short note per kind of pixel worth pointing out."""
+        if hasattr(self, "weed_review_box"): self.weed_review_box.setVisible(self._weeds_found())
         shares = self.finding_shares_now()
         if not shares:
             self.pale_frame.setVisible(False); return
@@ -2719,6 +2780,7 @@ class PPEDockWidget(QDockWidget):
         for code, row in self.finding_rows.items():
             share = shares.get(code, 0.0)
             visible = share >= self.FINDING_SHOW or self.finding_state(code) is not None
+            if code in self.WEED_CODES and self._weeds_found(): visible = True     # always listed once rows were found
             row["holder"].setVisible(visible)
             if visible:
                 mark, name, note = self.FINDING_TEXT[code]
@@ -2727,6 +2789,7 @@ class PPEDockWidget(QDockWidget):
                 row["title"].setText('<span style="color:#{:02x}{:02x}{:02x}; font-size:15px;">■</span>&nbsp;{}&nbsp;&nbsp;{} — {}'.format(
                     rgb[0], rgb[1], rgb[2], mark, name,
                     "adds {:.1f} % more plant".format(share) if code in self.ADD_CODES else
+                    "{:.2f} % of the plant".format(share) if code in self.WEED_CODES else
                     "{:.1f} % of the plant · + would add {:.1f} %".format(share, below.get(code, 0.0))))
                 if self.zone_info:
                     note = note + " + Add is not available with crop areas: lower that crop's slider instead."

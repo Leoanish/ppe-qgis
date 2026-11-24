@@ -216,3 +216,25 @@ class CropOnlyMask(unittest.TestCase):
             with self.assertRaises(ValueError): crop_only_mask(r["points_path"])
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+class WeedReview(unittest.TestCase):
+    def test_click_switches_a_piece_and_back_and_edges_are_never_marked(self):
+        from ppe_qgis.plant_count import mark_weeds, toggle_weed_piece, WEED_IN_ROW_CODE
+        tmp = tempfile.mkdtemp()
+        try:
+            m, _ = rows_field(row_weeds=((224, 45), (284, 135), (3, 90)))    # the third weed touches the image edge
+            vote = tif(os.path.join(tmp, "vote.tif"), m.astype(np.float32), gdal.GDT_Float32)
+            find = tif(os.path.join(tmp, "f.tif"), np.where(m == 1, 2, 0).astype(np.uint8), gdal.GDT_Byte, nodata=255)  # all leaf edges
+            w = mark_weeds(vote, find, 0.5, tmp, cfg={"min_plant_cm2": 0.05, "join_cm": 0}, keep_dir=os.path.join(tmp, "w"))
+            f0 = gdal.Open(find).ReadAsArray()
+            self.assertEqual(f0[45, 224], WEED_IN_ROW_CODE); self.assertNotIn(f0[90, 3], (7, 8))
+            gt = gdal.Open(find).GetGeoTransform(); xy = lambda c, r: (gt[0] + (c + 0.5) * gt[1], gt[3] + (r + 0.5) * gt[5])
+            r = toggle_weed_piece(w, find, vote, *xy(224, 45)); self.assertEqual(r["state"], "crop")
+            self.assertEqual(gdal.Open(find).ReadAsArray()[45, 224], 2)               # its code from before is back
+            r = toggle_weed_piece(w, find, vote, *xy(215, 45)); self.assertEqual(r["state"], "weed")   # a crop plant marked weed
+            self.assertEqual(gdal.Open(find).ReadAsArray()[45, 215], WEED_IN_ROW_CODE)
+            self.assertEqual(sum(sum(d.values()) for d in r["hist_delta"].values()), 0)   # pixels only move between codes
+            self.assertIsNone(toggle_weed_piece(w, find, vote, *xy(100, 10))["state"])    # soil: nothing there
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)

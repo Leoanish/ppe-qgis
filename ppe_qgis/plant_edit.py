@@ -237,3 +237,34 @@ class LabelEditTool(PlantEditTool):
         elif kind == "remove": prov.addFeatures([data])
         else: prov.changeAttributeValues({data[0]: {fields.indexOf("label"): data[1][0], fields.indexOf("status"): data[1][1]}})
         self._changed("Last change undone."); return True
+
+
+# ---- reviewing weeds of What PPE found (4.10.0) -------------------------------------------------
+class WeedReviewTool(QgsMapTool):
+    """Click a plant piece: it switches between weed (What PPE found, codes 7/8) and crop. Emits reviewed(result)
+    after every click (see plant_count.toggle_weed_piece); Esc emits done(). A second click on a piece undoes it."""
+    reviewed = pyqtSignal(dict)
+    done = pyqtSignal()
+
+    def __init__(self, canvas, weeds, findings_path, vote_path):
+        super().__init__(canvas)
+        from osgeo import gdal
+        from qgis.core import QgsCoordinateReferenceSystem
+        self.weeds, self.findings_path, self.vote_path = weeds, findings_path, vote_path
+        ds = gdal.Open(weeds["groups_path"]); self.crs = QgsCoordinateReferenceSystem.fromWkt(ds.GetProjection() if ds else ""); ds = None
+        self.setCursor(Qt.CrossCursor)
+
+    def canvasReleaseEvent(self, event):
+        if event.button() != Qt.LeftButton: return
+        from .plant_count import toggle_weed_piece
+        p = self.toMapCoordinates(event.pos())
+        if self.crs.isValid():
+            p = QgsCoordinateTransform(self.canvas().mapSettings().destinationCrs(), self.crs, QgsProject.instance()).transform(p)
+        try:
+            r = toggle_weed_piece(self.weeds, self.findings_path, self.vote_path, p.x(), p.y())
+        except Exception as exc:
+            r = {"state": None, "message": "Could not change it: {}".format(exc)}
+        self.reviewed.emit(r)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape: self.done.emit()

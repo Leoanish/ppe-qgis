@@ -819,10 +819,12 @@ def flag_row_weeds(points_path, log=None, smaller_than_neighbour=True, close=ROW
 WEED_BETWEEN_CODE, WEED_IN_ROW_CODE = 7, 8
 
 
-def mark_weeds(vote_path, findings_path, threshold, work_dir, log=None, progress=None, cfg=None):
-    """Mark weed pixels in the findings raster (codes 7 and 8) from a count at `threshold`. Returns a summary."""
+def mark_weeds(vote_path, findings_path, threshold, work_dir, log=None, progress=None, cfg=None, keep_dir=None):
+    """Mark weed pixels in the findings raster (codes 7 and 8) from a count at `threshold`. Returns a summary.
+    With keep_dir the count (pieces, points) and a copy of the findings before the weeds are kept there,
+    so single pieces can be switched weed <-> crop later (toggle_weed_piece)."""
     import shutil
-    log = log or (lambda m: None); cfg = dict(cfg or {}); tmp = os.path.join(work_dir, "_ppe_weeds_tmp")
+    log = log or (lambda m: None); cfg = dict(cfg or {}); tmp = keep_dir or os.path.join(work_dir, "_ppe_weeds_tmp")
     shutil.rmtree(tmp, ignore_errors=True); os.makedirs(tmp)
     res = {"threshold": float(threshold), "between": 0, "in_row": 0, "pixels_between": 0, "pixels_in_row": 0, "pixels_pct": 0.0}
     try:
@@ -857,8 +859,23 @@ def mark_weeds(vote_path, findings_path, threshold, work_dir, log=None, progress
             if not inrow and not ((f.get(ak) or 0) < typical): res["kept_big"] = res.get("kept_big", 0) + 1; continue
             code[gid[pid - 1]] = WEED_IN_ROW_CODE if inrow else WEED_BETWEEN_CODE
             res["in_row" if inrow else "between"] += 1
+        if keep_dir:
+            gdal.GetDriverByName("GTiff").CreateCopy(os.path.join(tmp, "findings_before_weeds.tif"), safe_gdal_open(findings_path),
+                                                     options=["TILED=YES", "COMPRESS=DEFLATE", "BIGTIFF=IF_SAFER"])
+            res.update(groups_path=os.path.join(tmp, "groups.tif"), points_path=c["points_path"], ids_path=os.path.join(tmp, "ppe_group_ids.npy"),
+                       before_path=os.path.join(tmp, "findings_before_weeds.tif"), cut=cut)
         g_ds = safe_gdal_open(os.path.join(tmp, "groups.tif")); f_ds = gdal.Open(findings_path, gdal.GA_Update)
         m_ds = safe_gdal_open(mpath)
+        # A piece cut by the edge of the image or of the field (no data) cannot be judged: cut short it looks
+        # small and off the row. Such pieces are never marked (IH: all 17 first marks were at the field edge).
+        edge = np.zeros(len(code), bool)
+        for y in range(0, H, 512):
+            y0, y1 = max(0, y - 1), min(H, y + 513); h = min(512, H - y)
+            g = g_ds.GetRasterBand(1).ReadAsArray(0, y0, W, y1 - y0); nd = m_ds.GetRasterBand(1).ReadAsArray(0, y0, W, y1 - y0) == 255
+            nd = np.pad(nd, 1, constant_values=True)                    # outside the image counts as no data
+            near = nd[:-2, 1:-1] | nd[2:, 1:-1] | nd[1:-1, :-2] | nd[1:-1, 2:] | nd[1:-1, 1:-1]
+            hit = np.unique(g[near & (g > 0)]); edge[hit[hit < len(code)]] = True
+        res["at_edge_not_marked"] = int((edge & (code > 0)).sum()); code[edge] = 0
         for y in range(0, H, 512):
             h = min(512, H - y); g = g_ds.GetRasterBand(1).ReadAsArray(0, y, W, h)
             w = code[np.clip(g, 0, len(code) - 1)] * (m_ds.GetRasterBand(1).ReadAsArray(0, y, W, h) == 1)
@@ -867,13 +884,19 @@ def mark_weeds(vote_path, findings_path, threshold, work_dir, log=None, progress
             f_ds.GetRasterBand(1).WriteArray(f, 0, y)
             res["pixels_between"] += int((f == WEED_BETWEEN_CODE).sum()); res["pixels_in_row"] += int((f == WEED_IN_ROW_CODE).sum())
         f_ds.FlushCache(); f_ds = None; g_ds = None; m_ds = None
+        res["between"] = int((code == WEED_BETWEEN_CODE).sum()); res["in_row"] = int((code == WEED_IN_ROW_CODE).sum())
         res["pixels_pct"] = 100.0 * (res["pixels_between"] + res["pixels_in_row"]) / max(1, valid_all)
         res["note"] = ("{} weed{} between the rows and {} small plant{} crowding a crop plant inside the rows ({:.2f}% of the image) at {:.2f}"
                        ).format(res["between"], "" if res["between"] == 1 else "s", res["in_row"], "" if res["in_row"] == 1 else "s",
                                 res["pixels_pct"], float(threshold))
         return res
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        if keep_dir:
+            for name in ("mask.tif", "ppe_count_summary.csv"):
+                try: os.remove(os.path.join(tmp, name))
+                except OSError: pass
+        else:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 COUNTED = (STATUS_PLANT, STATUS_CHECK, STATUS_ADDED, "split", "auto split")
@@ -926,3 +949,51 @@ def crop_only_mask(points_path, leave_out_uncounted=False, log=None):
     res["note"] = "Crop-only mask: {:,} pieces left out ({:,} pixels, {:.1f} % of the plant): the weeds{} as the points are now".format(
         res["pieces_left_out"], removed, res["left_out_pct"], " and the pieces too small to count" if leave_out_uncounted else "")
     log(res["note"] + "."); return res
+
+
+def toggle_weed_piece(weeds, findings_path, vote_path, x, y, levels=1200):
+    """Review one plant piece of 'What PPE found': the piece under map point (x, y) switches between weed
+    (code 7 between the rows, 8 inside them) and crop (its codes from before the weeds are put back).
+    `weeds` is the run's weeds summary (paths from mark_weeds with keep_dir). Returns
+    {"state": "weed"|"crop"|None, "pixels": n, "code": c, "hist_delta": {code: {level: change}}, "message": text}."""
+    g_ds = safe_gdal_open(weeds["groups_path"]); gt = g_ds.GetGeoTransform(); W, H = g_ds.RasterXSize, g_ds.RasterYSize
+    col = int(math.floor((x - gt[0]) / gt[1])); row = int(math.floor((y - gt[3]) / gt[5]))
+    if not (0 <= col < W and 0 <= row < H): return {"state": None, "message": "Outside the image."}
+    gid = int(g_ds.GetRasterBand(1).ReadAsArray(col, row, 1, 1)[0, 0])
+    if gid <= 0: return {"state": None, "message": "No plant piece here: click on the plant itself."}
+    half = 128
+    while True:                       # a window around the click that holds the whole piece
+        c0, r0 = max(0, col - half), max(0, row - half); c1, r1 = min(W, col + half), min(H, row + half)
+        g = g_ds.GetRasterBand(1).ReadAsArray(c0, r0, c1 - c0, r1 - r0); on = g == gid
+        touches = (on[0].any() and r0 > 0) or (on[-1].any() and r1 < H) or (on[:, 0].any() and c0 > 0) or (on[:, -1].any() and c1 < W)
+        if not touches: break
+        half *= 2
+    v_ds = safe_gdal_open(vote_path); v = v_ds.GetRasterBand(1).ReadAsArray(c0, r0, c1 - c0, r1 - r0); v_ds = None
+    f_ds = gdal.Open(findings_path, gdal.GA_Update); f = f_ds.GetRasterBand(1).ReadAsArray(c0, r0, c1 - c0, r1 - r0)
+    piece = on & np.isfinite(v) & (v >= float(weeds.get("cut", 0.0))) & (v <= 1) & (f != 255)
+    if not piece.any(): f_ds = None; return {"state": None, "message": "This piece is below the threshold PPE looked for weeds at."}
+    old = f[piece].astype(np.intp)
+    if np.isin(old, (WEED_BETWEEN_CODE, WEED_IN_ROW_CODE)).any():      # weed -> crop: the codes from before
+        b_ds = safe_gdal_open(weeds["before_path"]); before = b_ds.GetRasterBand(1).ReadAsArray(c0, r0, c1 - c0, r1 - r0); b_ds = None
+        new = before[piece].astype(np.intp); new[np.isin(new, (WEED_BETWEEN_CODE, WEED_IN_ROW_CODE))] = 0; state = "crop"
+    else:                                                              # crop -> weed: between or inside the rows
+        code = WEED_IN_ROW_CODE
+        try:
+            ids = np.load(weeds["ids_path"]); k = np.nonzero(ids == gid)[0]
+            if len(k):
+                for p in _read_features(weeds["points_path"]):
+                    if int(p.get("plant_id") or 0) == int(k[0]) + 1:
+                        code = WEED_IN_ROW_CODE if (p.get("on_row") is None or int(p.get("on_row"))) else WEED_BETWEEN_CODE; break
+        except (OSError, ValueError, KeyError):
+            pass
+        new = np.full(old.shape, code, np.intp); state = "weed"
+    out = f.copy(); out[piece] = new.astype(np.uint8); f_ds.GetRasterBand(1).WriteArray(out, c0, r0); f_ds.FlushCache(); f_ds = None
+    q = np.rint(v[piece].astype(np.float64) * levels).astype(np.intp); delta = {}
+    for codes, sign in ((old, -1), (new, 1)):
+        for c in np.unique(codes):
+            lv, n = np.unique(q[codes == c], return_counts=True)
+            d = delta.setdefault(int(c), {})
+            for a, b in zip(lv.tolist(), n.tolist()): d[a] = d.get(a, 0) + sign * b
+    name = "weed" if state == "weed" else "crop"
+    return {"state": state, "pixels": int(piece.sum()), "code": int(new[0]), "hist_delta": delta,
+            "message": "Piece of {:,} pixels marked {}.".format(int(piece.sum()), name)}

@@ -184,6 +184,24 @@ It needs a NIR band. On camera RGB images plant and soil differ too little in co
 
 With crop rows found, the plant counter measures the plant spacing along the rows from confident plants only (`confident_range`: median area x/÷ exp(2 sigma) of the image's single plants, sigma from the MAD of log areas, within x0.4-x2.5; gaps kept only between two neighbouring confident plants, `spacing_gaps`; gaps over a missing plant divided by the number of steps; at least 20 gaps) or takes the spacing the user types, and splits every *check* patch into round(length along the row / spacing) plants, status *auto split* (green, orange ring), field `split_of` = the original point (`plant_count.auto_split`). A patch shorter than 1.5 spacings stays *check*. On PhenoBench (61 check patches, spacing pooled per date) the spacing from all plants was 19.2 / 17.7 / 16.3 cm and from confident plants 20.7 / 19.5 / 20.6 cm (true 22.0 / 20.2 / 21.2); wrong plants in check patches 52 (not split) / 27 (all plants) / 22 (confident); crop plants with exactly one point over all 541 plants 56.4 / 61.2 / 61.6 %; from a single 1 m image the spacing was too rough to help, hence the 20-gap minimum. *⊕ Merge* makes a split patch one plant again (or two clicked points one plant); *✂ Split* on a split point splits only its part (`split_part`). The panel states the spacing, the split length (1.5 × spacing) and each split patch's length; split points are labelled 'part/total' (`SPLIT_LABEL_EXPRESSION`), check points '#id'. Showing the plant points unticks the other PPE layers (`show_only_image_and_points`). PPE opens on the Plant mask goal. The summary has `of_which_split_by_ppe`, `plant_spacing_cm` and `split_longer_than_cm`.
 
+## 4.10.0: weeds in What PPE found, reviewed on the map
+
+After every run PPE runs the plant counter behind the scenes at the suggested threshold (crop rows, plant
+spacing, weeds) and lists two new kinds on the What PPE found card:
+
+- **Weeds between the rows** (violet): plants between the rows, smaller than a typical crop plant;
+- **Weeds inside the rows** (white): small plants closer than half the plant spacing to a bigger crop plant.
+
+**Review weeds on the map** turns on a click tool: click any plant piece to switch it between weed and crop
+(click again to undo). The card's percentages, the live preview and the map layers follow at once. Then
+press **− Leave out** on the weed kinds and **Finalize mask**. Pieces cut by the edge of the image or of the
+field are never marked: cut short, crop plants look small and off the row.
+
+Unchecked, PPE's weed marks did not make the PhenoBench masks cleaner (crop IoU 68.3 → 68.0); checked
+plant by plant, the weed share of the mask fell from 14.0 to 6.5 % and crop IoU rose to 73.6 (table below).
+The run takes about 3 s longer on a 34 megapixel field (IH: 13.3 → 16.5 s). Files: `ppe_weeds/` in the run
+folder (the pieces, the points and the findings before the weeds).
+
 ## 4.9.0: crop-only plant mask from the reviewed count
 
 The plant counter marks possible weeds (weed?, between the rows or crowding a crop plant in the row). Check
