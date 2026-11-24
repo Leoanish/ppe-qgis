@@ -907,7 +907,7 @@ def classify_findings(bands, ok, fit, ndvi_halo, offset, vote=None):
         soilish = np.isfinite(ndvi_halo) & (ndvi_halo < fit["ndvi_plant"])
         near_soil = _near(soilish, fit["soil_radius_px"])[offset:offset + h]
         r = fit["canopy_radius_px"]
-        plantish = (np.isfinite(ndvi_halo) & (ndvi_halo >= fit["ndvi_canopy"])).astype(np.float64)
+        plantish = (np.isfinite(ndvi_halo) & (ndvi_halo >= fit["ndvi_canopy"])).astype(np.int32)   # integer sums: same cover, half the memory
         m = np.pad(plantish, r, mode="edge"); c = np.pad(m.cumsum(0).cumsum(1), ((1, 0), (1, 0))); k = 2 * r + 1; hh, ww = plantish.shape
         cover = ((c[k:k + hh, k:k + ww] - c[0:hh, k:k + ww] - c[k:k + hh, 0:ww] + c[0:hh, 0:ww]) / float(k * k))[offset:offset + h]
         parts = pale & ~near_soil & (cover >= FINDING_CLEAR_CANOPY)
@@ -1624,10 +1624,11 @@ class NativePPEEngine:
         else:
             ds = self.datasets[name]
         band = ds.GetRasterBand(self.sources[name][1])
-        a = band.ReadAsArray(x, y, w, h, buf_xsize=bx, buf_ysize=by).astype(np.float32)
+        a = band.ReadAsArray(x, y, w, h, buf_xsize=bx, buf_ysize=by).astype(np.float32, copy=False)
         nd = band.GetNoDataValue()
         if nd is not None: a[a == nd] = np.nan
-        return a/self.scale
+        a /= self.scale                # in place: one copy of the block, not two (same values)
+        return a
 
     def _read_bands(self, names, x=0, y=0, w=None, h=None, bx=None, by=None):
         """Several bands at once (4.3). Bands stored in one file are read in a single call, so a
@@ -1648,12 +1649,12 @@ class NativePPEEngine:
             else:
                 ds = self.datasets[group[0]]
             idx = [self.sources[n][1] for n in group]
-            a = ds.ReadAsArray(x, y, w, h, buf_xsize=bx, buf_ysize=by, band_list=idx).astype(np.float32)
+            a = ds.ReadAsArray(x, y, w, h, buf_xsize=bx, buf_ysize=by, band_list=idx).astype(np.float32, copy=False)
             if a.ndim == 2: a = a[None]
             for k, n in enumerate(group):
                 v = a[k]; nd = ds.GetRasterBand(idx[k]).GetNoDataValue()
                 if nd is not None: v[v == nd] = np.nan
-                out[n] = v / self.scale
+                v /= self.scale; out[n] = v
         return out
 
     def _sample_bands(self, n):
@@ -1691,12 +1692,24 @@ class NativePPEEngine:
         """Display stretch of each channel from the fitting sample (see display_stretch)."""
         return display_stretch(channel_names, sampled)
 
+    BLOCK_MEMORY_MAX = 1.0e9          # bytes of row blocks in memory at once, at most (QGIS keeps the rest)
+
+    def _block_budget(self):
+        return min(0.25 * physical_memory_bytes(), float(os.environ.get("PPE_BLOCK_MEMORY", self.BLOCK_MEMORY_MAX)))
+
+    def _block_rows(self):
+        """Rows per block: 512, or fewer for a wide image or many threads, so that every worker
+        thread (plus one waiting block) fits in the memory budget. Same results for any block size."""
+        per_row = float(self.width) * 4.0 * (len(self.sources) + 12)
+        rows = int(self._block_budget() // max(per_row * (min(self.thread_count, 8) + 1), 1.0))
+        return int(max(64, min(512, rows)))
+
     def _block_workers(self, block_rows, n_blocks):
         """How many row blocks to process at once: no more than the CPU threads PPE may use, and
         few enough that the blocks in memory stay within a quarter of the computer's RAM, so a
         small laptop runs safely (just with fewer workers) and QGIS keeps room to draw."""
         per_block = float(block_rows) * self.width * 4.0 * (len(self.sources) + 12)   # bands + votes, indices, guards (measured ~10)
-        budget = 0.25 * physical_memory_bytes()
+        budget = self._block_budget()
         by_memory = int(budget // max(per_block, 1.0)) - 1        # one more block waits in the queue
         return max(1, min(self.thread_count, n_blocks, by_memory, 8))
 
@@ -1921,7 +1934,7 @@ class NativePPEEngine:
         findings_out = self._create_output(findings_path, gdal.GDT_Byte, 255)
         pale_path = findings_path                      # code 1 = plant parts (the 3.9/4.0 pale-plant layer)
         rejected_count = shadow_rejected_count = biofilm_rejected_count = colour_rejected_count = valid_count = 0
-        block_rows = 512
+        block_rows = self._block_rows()
 
         # Step 3: every layer x method result is one equal vote.
         columns = {name: _interp_columns(offsets[name], self.width, grid_w) for name in offsets}
@@ -1935,13 +1948,19 @@ class NativePPEEngine:
                 if name in columns:
                     x = x - _interp_rows(columns[name], y, h, grid_h, self.height)
                 for method, param in methods:
-                    if isinstance(param, tuple):
+                    # Votes are 0, 0.5 or 1, added in float32 without float64 temporaries (same sums, exactly).
+                    if isinstance(param, tuple) and param[1] >= param[0]:
+                        vote = np.add(x > param[0], x > param[1], dtype=np.float32); vote *= 0.5
+                    elif isinstance(param, tuple):
                         vote = np.where(x > param[1], 1.0, np.where(x > param[0], 0.5, 0.0)).astype(np.float32)
                     else:
                         vote = (x >= param).astype(np.float32)
-                    if polarity < 0: vote = 1.0 - vote
+                    if polarity < 0:
+                        np.subtract(1.0, vote, out=vote)
                     total += vote; wsum += 1.0
-            result = total/max(wsum, 1e-12)
+                    del vote
+                del x
+            total /= max(wsum, 1e-12); result = total
             masks = {}
             if guard:
                 masks["bright"] = self._bright_guard_mask(raw, guard) & ok
@@ -1963,7 +1982,14 @@ class NativePPEEngine:
                 r = max(finding_fit["soil_radius_px"], finding_fit["canopy_radius_px"]); top = max(0, y - r); bottom = min(self.height, y + h + r)
                 ndvi_h = None
                 if "nir" in self.sources and "red" in self.sources:
-                    nir_h = self._read_band("nir", y=top, h=bottom - top); red_h = self._read_band("red", y=top, h=bottom - top)
+                    # The block's own rows are already read: only the halo rows above and below are read again.
+                    def halo(name):
+                        parts = []
+                        if y > top: parts.append(self._read_band(name, y=top, h=y - top))
+                        parts.append(raw[name])
+                        if bottom > y + h: parts.append(self._read_band(name, y=y + h, h=bottom - y - h))
+                        return np.concatenate(parts, axis=0) if len(parts) > 1 else raw[name]
+                    nir_h = halo("nir"); red_h = halo("red")
                     with np.errstate(divide="ignore", invalid="ignore"):
                         ndvi_h = (nir_h - red_h) / (nir_h + red_h)
                 findings = classify_findings(raw, ok, finding_fit, ndvi_h, y - top, result)

@@ -159,3 +159,22 @@ class AutoSplitAndMerge(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WeedPixels(unittest.TestCase):
+    def test_mark_weeds_puts_weed_pixels_in_the_findings(self):
+        from ppe_qgis.plant_count import mark_weeds, WEED_IN_ROW_CODE
+        tmp = tempfile.mkdtemp()
+        try:
+            m, _ = rows_field(row_weeds=((224, 45), (284, 135)))
+            vote = tif(os.path.join(tmp, "vote.tif"), m.astype(np.float32), gdal.GDT_Float32)
+            find = tif(os.path.join(tmp, "f.tif"), np.zeros(m.shape, np.uint8), gdal.GDT_Byte, nodata=255)
+            r = mark_weeds(vote, find, 0.5, tmp, cfg={"min_plant_cm2": 0.05, "join_cm": 0})
+            self.assertEqual(r["in_row"], 2)
+            f = gdal.Open(find).ReadAsArray()
+            self.assertEqual(int((f == WEED_IN_ROW_CODE).sum()), int(((f == WEED_IN_ROW_CODE) & (m == 1)).sum()))
+            self.assertEqual(f[45, 224], WEED_IN_ROW_CODE); self.assertEqual(f[135, 284], WEED_IN_ROW_CODE)
+            self.assertEqual(f[45, 215], 0)                               # the crop plant next to it stays
+            self.assertFalse(os.path.exists(os.path.join(tmp, "_ppe_weeds_tmp")))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)

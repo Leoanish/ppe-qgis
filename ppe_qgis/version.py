@@ -1,0 +1,1 @@
+PLUGIN_VERSION = "4.8.1"
