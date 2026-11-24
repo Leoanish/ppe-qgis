@@ -224,7 +224,9 @@ def count_plants(cfg, progress=None, log=None):
     """
     progress = progress or (lambda p, m: None); log = log or (lambda m: None); started = time.time()
     out_dir = cfg["output_dir"]; os.makedirs(out_dir, exist_ok=True)
-    area_used = bool(cfg.get("area_wkts") or cfg.get("area_path"))
+    area_used = bool(cfg.get("area_wkts") or cfg.get("area_path")); source_mask = cfg["mask_path"]
+    if cfg.get("keep_groups", True) and not cfg.get("groups_path"):      # 4.9.0: for the crop-only mask
+        cfg = dict(cfg, groups_path=os.path.join(out_dir, "ppe_plant_groups.tif"))
     if area_used:                       # 4.6.4: count only inside the area (the mask outside it becomes no data)
         progress(2, "Cutting the mask to the area")
         cfg = dict(cfg, mask_path=_mask_in_area(cfg, out_dir))
@@ -290,7 +292,7 @@ def count_plants(cfg, progress=None, log=None):
         for y in range(0, ds.RasterYSize, 2048):
             valid += int((band.ReadAsArray(0, y, ds.RasterXSize, min(2048, ds.RasterYSize - y)) != 255).sum())
         field_m2 = valid * pixel_m2
-    info = {"mask_path": cfg["mask_path"], "field_m2": field_m2, "median_plant_cm2": (median * to_cm2) if to_cm2 else None,
+    info = {"mask_path": cfg["mask_path"], "source_mask_path": source_mask, "groups_path": cfg.get("groups_path") or "", "field_m2": field_m2, "median_plant_cm2": (median * to_cm2) if to_cm2 else None,
             "min_plant_cm2": min_cm2 if pixel_m2 else None, "join_cm": join_cm, "rows": rows_info,
             "no_core_left_out": no_core if core is not None else None,
             "aoi_path": cfg.get("aoi_path") or "", "aoi_layer": cfg.get("aoi_layer") or "", "aoi_id_field": cfg.get("aoi_id_field") or "",
@@ -872,3 +874,55 @@ def mark_weeds(vote_path, findings_path, threshold, work_dir, log=None, progress
         return res
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+COUNTED = (STATUS_PLANT, STATUS_CHECK, STATUS_ADDED, "split", "auto split")
+
+
+def crop_only_mask(points_path, leave_out_uncounted=False, log=None):
+    """4.9.0: the plant mask without the pixels of the weeds, as the points are now (after the user's review).
+    A plant piece of the count is left out when it had a point and none of its points is counted any more:
+    every point on it is weed? (PPE's or switched by the user) or was removed. A piece with any counted
+    point (plant, check, split, added) stays whole. With leave_out_uncounted, pieces the count never took
+    as plants (smaller than the smallest plant, or with no pixel every vote calls plant) are left out too.
+    Writes <mask>_crop_only.tif next to the points and returns what was done."""
+    log = log or (lambda m: None); out_dir = os.path.dirname(points_path)
+    with open(os.path.join(out_dir, "ppe_count_info.json"), encoding="utf-8") as fh: info = json.load(fh)
+    gpath = info.get("groups_path") or ""; ids_path = os.path.join(out_dir, "ppe_group_ids.npy")
+    if not gpath or not os.path.isfile(gpath) or not os.path.isfile(ids_path):
+        raise ValueError("This count has no plant pieces saved (it was made with an older PPE). Count the plants again, then make the crop-only mask.")
+    src_path = info.get("source_mask_path") or info["mask_path"]
+    g_ds = safe_gdal_open(gpath); m_ds = safe_gdal_open(src_path)
+    if m_ds is None: raise ValueError("The plant mask of this count is missing: {}".format(src_path))
+    W, H = g_ds.RasterXSize, g_ds.RasterYSize; gt = g_ds.GetGeoTransform()
+    if (m_ds.RasterXSize, m_ds.RasterYSize) != (W, H): raise ValueError("The plant mask does not match the counted pieces. Count the plants again.")
+    gid = np.load(ids_path); n_g = int(gid.max()) + 1 if len(gid) else 1
+    had = np.zeros(n_g, bool); had[gid] = True          # pieces the count made a point for
+    counted = np.zeros(n_g, bool); feats = _read_features(points_path)
+    for f in feats:
+        if f.get("status") not in COUNTED: continue
+        pid = int(f.get("plant_id") or 0); k = 0
+        if 1 <= pid <= len(gid) and f.get("status") != STATUS_ADDED: k = int(gid[pid - 1])
+        else:                                            # split and added points: the piece under the point
+            c = int((f["x"] - gt[0]) / gt[1]); r = int((f["y"] - gt[3]) / gt[5])
+            if 0 <= c < W and 0 <= r < H: k = int(g_ds.GetRasterBand(1).ReadAsArray(c, r, 1, 1)[0, 0])
+        if 0 < k < n_g: counted[k] = True
+    drop = had & ~counted
+    if leave_out_uncounted: drop |= ~had
+    drop[0] = False
+    stem = os.path.splitext(os.path.basename(src_path))[0]
+    out_path = os.path.join(out_dir, stem + ("_crop_only_strict" if leave_out_uncounted else "_crop_only") + ".tif")
+    out = gdal.GetDriverByName("GTiff").Create(out_path, W, H, 1, gdal.GDT_Byte, ["TILED=YES", "COMPRESS=DEFLATE", "BIGTIFF=IF_SAFER"])
+    out.SetGeoTransform(m_ds.GetGeoTransform()); out.SetProjection(m_ds.GetProjection()); out.GetRasterBand(1).SetNoDataValue(255)
+    before = removed = 0
+    for y in range(0, H, 512):
+        h = min(512, H - y); m = m_ds.GetRasterBand(1).ReadAsArray(0, y, W, h); g = g_ds.GetRasterBand(1).ReadAsArray(0, y, W, h)
+        plant = m == 1; cut = plant & drop[np.clip(g, 0, n_g - 1)]
+        before += int(plant.sum()); removed += int(cut.sum())
+        m = m.copy(); m[cut] = 0; out.GetRasterBand(1).WriteArray(m, 0, y)
+    out.FlushCache(); out = None
+    res = {"mask_path": out_path, "pieces_left_out": int(drop[1:].sum()), "pixels_left_out": removed, "plant_pixels_before": before,
+           "left_out_pct": 100.0 * removed / max(1, before), "leave_out_uncounted": bool(leave_out_uncounted)}
+    res["note"] = "Crop-only mask: {:,} pieces left out ({:,} pixels, {:.1f} % of the plant): the weeds{} as the points are now".format(
+        res["pieces_left_out"], removed, res["left_out_pct"], " and the pieces too small to count" if leave_out_uncounted else "")
+    log(res["note"] + "."); return res

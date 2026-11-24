@@ -184,6 +184,26 @@ It needs a NIR band. On camera RGB images plant and soil differ too little in co
 
 With crop rows found, the plant counter measures the plant spacing along the rows from confident plants only (`confident_range`: median area x/÷ exp(2 sigma) of the image's single plants, sigma from the MAD of log areas, within x0.4-x2.5; gaps kept only between two neighbouring confident plants, `spacing_gaps`; gaps over a missing plant divided by the number of steps; at least 20 gaps) or takes the spacing the user types, and splits every *check* patch into round(length along the row / spacing) plants, status *auto split* (green, orange ring), field `split_of` = the original point (`plant_count.auto_split`). A patch shorter than 1.5 spacings stays *check*. On PhenoBench (61 check patches, spacing pooled per date) the spacing from all plants was 19.2 / 17.7 / 16.3 cm and from confident plants 20.7 / 19.5 / 20.6 cm (true 22.0 / 20.2 / 21.2); wrong plants in check patches 52 (not split) / 27 (all plants) / 22 (confident); crop plants with exactly one point over all 541 plants 56.4 / 61.2 / 61.6 %; from a single 1 m image the spacing was too rough to help, hence the 20-gap minimum. *⊕ Merge* makes a split patch one plant again (or two clicked points one plant); *✂ Split* on a split point splits only its part (`split_part`). The panel states the spacing, the split length (1.5 × spacing) and each split patch's length; split points are labelled 'part/total' (`SPLIT_LABEL_EXPRESSION`), check points '#id'. Showing the plant points unticks the other PPE layers (`show_only_image_and_points`). PPE opens on the Plant mask goal. The summary has `of_which_split_by_ppe`, `plant_spacing_cm` and `split_longer_than_cm`.
 
+## 4.9.0: crop-only plant mask from the reviewed count
+
+The plant counter marks possible weeds (weed?, between the rows or crowding a crop plant in the row). Check
+them on the map: switch any that are crop back to plant (Plant ↔ weed), and switch crop points that sit on
+weeds to weed. Then press **Make crop-only mask (leave out the weeds)** in the Count tab. PPE writes
+`<mask>_crop_only.tif` next to the points: the plant mask without every plant piece whose points are all
+weed? or that you removed. A piece that still has a counted point stays whole, so a weed touching a crop
+plant stays in. The count now also saves `ppe_plant_groups.tif` (which pixels belong to which plant piece).
+
+PhenoBench, 79 images with crop and weed outlines (mask at threshold 0.70):
+
+| Mask | Weed share of the mask | Crop kept | Crop IoU |
+|---|---|---|---|
+| PPE mask | 14.0 % | 95.0 % | 68.3 |
+| Crop-only, PPE's weed? points not checked | 13.2 % | 92.8 % | 67.7 |
+| Crop-only, points checked | 6.5 % | 93.5 % | 73.6 |
+
+The check matters: PPE's own weed? points alone remove about as much crop as weed. Turning them into
+mask kinds without a check was tested too and did not help (crop IoU 68.3 → 68.0), so it is not used.
+
 ## 4.8.1: faster and lighter, same results
 
 Same outputs as 4.8.0 (checked bit for bit on three fields), with less time and memory:

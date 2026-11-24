@@ -108,7 +108,7 @@ def canopy_at(points, threshold):
 
 # Where PPE's layers go in the Layers panel. The results are layers of their own at the top level;
 # only the working layers sit in the "Plant Pixel Extractor" group. From top to bottom:
-TOP_ORDER = ("labels", "label_buffers", "label_area", "plants", "count_area", "plots", "pale", "mask", "__group__", "rgb")
+TOP_ORDER = ("labels", "label_buffers", "label_area", "plants", "count_area", "plots", "pale", "crop_mask", "mask", "__group__", "rgb")
 GROUP_ORDER = ("crops", "votes")
 
 
@@ -887,3 +887,25 @@ def label_buffer_layer():
         if layer.customProperty(ROLE_KEY, "") == "label_buffers":
             return layer
     return None
+
+
+CROP_MASK_NAME = "PPE · Crop-only plant mask"
+
+
+def remove_crop_only_mask():
+    """Take the crop-only mask off the map (before its file is written again: Windows keeps open files locked)."""
+    project = QgsProject.instance()
+    old = [l.id() for l in project.mapLayers().values() if l.customProperty(ROLE_KEY, "") == "crop_mask"]
+    if old: project.removeMapLayers(old)
+
+
+def show_crop_only_mask(path):
+    """4.9.0: the crop-only mask (the plant mask without the weeds of the reviewed count) on the map,
+    in the mask colour, replacing an older one; the plant mask itself is unticked so the change is seen."""
+    project = QgsProject.instance(); remove_crop_only_mask()
+    layer = _add_raster(path, CROP_MASK_NAME, "crop_mask", None, True)
+    if layer is None: return None
+    style_plant_mask(layer)
+    for l in project.mapLayers().values():
+        if l.customProperty(ROLE_KEY, "") == "mask": set_layer_visible(l, False)
+    return layer

@@ -178,3 +178,41 @@ class WeedPixels(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(tmp, "_ppe_weeds_tmp")))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+class CropOnlyMask(unittest.TestCase):
+    def test_reviewed_points_make_the_crop_only_mask(self):
+        from ppe_qgis.plant_count import crop_only_mask
+        tmp = tempfile.mkdtemp()
+        try:
+            m, _ = rows_field(row_weeds=((224, 45), (284, 135)))
+            mask = tif(os.path.join(tmp, "mask.tif"), m, gdal.GDT_Byte, nodata=255)
+            r = count_plants({"mask_path": mask, "output_dir": os.path.join(tmp, "c"), "min_plant_cm2": 0.05, "join_cm": 0, "find_rows": True})
+            c = crop_only_mask(r["points_path"]); out = gdal.Open(c["mask_path"]).ReadAsArray()
+            self.assertEqual(out[45, 224], 0); self.assertEqual(out[135, 284], 0)      # the two weeds are out
+            self.assertEqual(out[45, 215], 1); self.assertEqual(int((out == 1).sum()), int((m == 1).sum()) - c["pixels_left_out"])
+            self.assertEqual(c["pieces_left_out"], 2)
+            gt = gdal.Open(mask).GetGeoTransform(); removed = None
+            ds = ogr.Open(r["points_path"], 1); L = ds.GetLayer()       # the review: one weed is crop after all, one crop point is removed
+            for f in list(L):
+                g = f.GetGeometryRef(); col = int((g.GetX() - gt[0]) / gt[1]); row = int((g.GetY() - gt[3]) / gt[5])
+                if col == 224: f.SetField("status", "plant"); L.SetFeature(f)
+                elif removed is None and f.GetField("status") == "plant" and col < 100: L.DeleteFeature(f.GetFID()); removed = (row, col)
+            ds = None
+            c2 = crop_only_mask(r["points_path"]); out2 = gdal.Open(c2["mask_path"]).ReadAsArray()
+            self.assertEqual(out2[45, 224], 1)                       # switched back to plant: kept
+            self.assertEqual(out2[135, 284], 0)                      # still weed?: out
+            self.assertEqual(out2[removed], 0)                       # point removed: its piece is out
+            self.assertEqual(c2["pieces_left_out"], 2)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_older_count_without_pieces_says_so(self):
+        from ppe_qgis.plant_count import crop_only_mask
+        tmp = tempfile.mkdtemp()
+        try:
+            m, _ = rows_field(); mask = tif(os.path.join(tmp, "mask.tif"), m, gdal.GDT_Byte, nodata=255)
+            r = count_plants({"mask_path": mask, "output_dir": os.path.join(tmp, "c"), "min_plant_cm2": 0.05, "join_cm": 0, "keep_groups": False})
+            with self.assertRaises(ValueError): crop_only_mask(r["points_path"])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)

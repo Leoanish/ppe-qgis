@@ -917,6 +917,17 @@ class PPEDockWidget(QDockWidget):
         row.addWidget(self.plant_undo_button, 1); row.addWidget(self.plant_done_button, 1); fb.addLayout(row)
         self.plant_edit_status = QLabel("Count the plants first.")
         self.plant_edit_status.setObjectName("findingTitle"); self.plant_edit_status.setWordWrap(True); fb.addWidget(self.plant_edit_status)
+        # 4.9.0: a plant mask without the weeds, as the points are after your review
+        self.crop_mask_button = QPushButton("Make crop-only mask (leave out the weeds)")
+        self.crop_mask_button.setProperty("secondary", True); self.crop_mask_button.setEnabled(False)
+        self.crop_mask_button.setToolTip("Writes a copy of the plant mask without every plant piece whose points are all weed? "
+                                         "(PPE's or switched by you) or that you removed. Pieces with a counted point stay whole.")
+        fb.addWidget(self.crop_mask_button)
+        self.crop_mask_status = QLabel("Check the weed? points first (switch any that are crop with Plant ↔ weed, and crop points on "
+                                       "weeds to weed). On PhenoBench, after such a check, weeds fell from 14.0 to 6.5 percent of the "
+                                       "mask and crop IoU rose from 68.3 to 73.6; without the check it did not help (67.7).")
+        self.crop_mask_status.setWordWrap(True); self.crop_mask_status.setObjectName("ppeHint"); fb.addWidget(self.crop_mask_status)
+        self.crop_mask_button.clicked.connect(self._crop_only_mask)
         layout.addWidget(fix)
         self.plant_add_button.clicked.connect(lambda: self._plant_edit("add"))
         self.plant_remove_button.clicked.connect(lambda: self._plant_edit("remove"))
@@ -995,9 +1006,27 @@ class PPEDockWidget(QDockWidget):
             r["plants"], " + ".join(parts), " · {:.2f} per m²".format(r["plants_per_m2"]) if r.get("plants_per_m2") else "", r.get("weeds_not_counted", 0),
             " ({} of them inside the rows)".format(r["weeds_in_row"]) if r.get("weeds_in_row") else "")
 
+    def _crop_only_mask(self):
+        from .plant_edit import plants_layer
+        from .plant_count import crop_only_mask
+        from .layer_utils import show_crop_only_mask, remove_crop_only_mask
+        layer = plants_layer()
+        if layer is None:
+            self.crop_mask_status.setText("Count the plants first."); return
+        if getattr(self, "_plant_tool", None) is not None: self._plant_edit_done()
+        remove_crop_only_mask()
+        try:
+            r = crop_only_mask(layer.source().split("|")[0])
+        except Exception as exc:
+            self.crop_mask_status.setText("Could not make the crop-only mask: {}".format(exc)); return
+        show_crop_only_mask(r["mask_path"])
+        self.crop_mask_status.setText("✔ {}. Saved as {}. Fix more points and press the button again to update it.".format(
+            r["note"], os.path.basename(r["mask_path"])))
+
     def plants_shown(self):
         """The plant points are on the map: correcting is possible."""
-        for b in (self.plant_add_button, self.plant_remove_button, self.plant_switch_button, self.plant_split_button, self.plant_merge_button): b.setEnabled(True)
+        for b in (self.plant_add_button, self.plant_remove_button, self.plant_switch_button, self.plant_split_button, self.plant_merge_button,
+                  self.crop_mask_button): b.setEnabled(True)
         self.plant_edit_status.setText("Check the points on the map; correct any with the buttons above.")
 
     def _count_settings(self):
