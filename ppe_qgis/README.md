@@ -184,6 +184,22 @@ It needs a NIR band. On camera RGB images plant and soil differ too little in co
 
 With crop rows found, the plant counter measures the plant spacing along the rows from confident plants only (`confident_range`: median area x/÷ exp(2 sigma) of the image's single plants, sigma from the MAD of log areas, within x0.4-x2.5; gaps kept only between two neighbouring confident plants, `spacing_gaps`; gaps over a missing plant divided by the number of steps; at least 20 gaps) or takes the spacing the user types, and splits every *check* patch into round(length along the row / spacing) plants, status *auto split* (green, orange ring), field `split_of` = the original point (`plant_count.auto_split`). A patch shorter than 1.5 spacings stays *check*. On PhenoBench (61 check patches, spacing pooled per date) the spacing from all plants was 19.2 / 17.7 / 16.3 cm and from confident plants 20.7 / 19.5 / 20.6 cm (true 22.0 / 20.2 / 21.2); wrong plants in check patches 52 (not split) / 27 (all plants) / 22 (confident); crop plants with exactly one point over all 541 plants 56.4 / 61.2 / 61.6 %; from a single 1 m image the spacing was too rough to help, hence the 20-gap minimum. *⊕ Merge* makes a split patch one plant again (or two clicked points one plant); *✂ Split* on a split point splits only its part (`split_part`). The panel states the spacing, the split length (1.5 × spacing) and each split patch's length; split points are labelled 'part/total' (`SPLIT_LABEL_EXPRESSION`), check points '#id'. Showing the plant points unticks the other PPE layers (`show_only_image_and_points`). PPE opens on the Plant mask goal. The summary has `of_which_split_by_ppe`, `plant_spacing_cm` and `split_longer_than_cm`.
 
+## 4.11.1: faster, same results
+
+Every output checked identical (bit for bit) on IH and Midville. Times on a 2-thread test machine:
+
+| Step | 4.11.0 | 4.11.1 |
+|---|---|---|
+| Fitting sample, IH (5 bands, compressed, 34 MP) | 6.2 s | 1.0 s |
+| Full run, IH | 18.0 s | 13.2 s |
+| Full run, Midville (separate band files) | 19.5 s | 11.5 s |
+| Crop-row search | 2.4 s | 1.2 s (and less with more CPU threads) |
+
+- The fitting sample of a compressed image without overviews is read in full-resolution strips on several
+  threads; exactly the pixels GDAL's own thinned read picks (GDAL unpacks those on one thread only).
+- Each block of the vote pass and the rows around it that the findings need are read in one go.
+- The crop-row search (plant counter and the weeds of What PPE found) uses all CPU threads.
+
 ## 4.11.0: weeds are never labelled as plant
 
 - **Create labels** never puts a plant point or a plant buffer on a weed of What PPE found. With **Label weeds as

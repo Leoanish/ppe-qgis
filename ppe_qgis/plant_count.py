@@ -193,20 +193,38 @@ def _tiles(x, y, tile):
 
 def _fold(sx, sy, tid, nt, angles, spacings):
     """Row strength for every direction x spacing: inside each tile, plant pixels folded by the spacing
-    pile up at one phase when direction and spacing are right; strength = share-weighted mean over tiles."""
+    pile up at one phase when direction and spacing are right; strength = share-weighted mean over tiles.
+    4.11.1: the directions are spread over the CPU cores (NumPy's trigonometry runs outside Python's lock);
+    each direction is computed exactly as before, so the result is the same."""
     out = np.empty((len(angles), len(spacings)))
     n = len(sx)
     ns = len(spacings)
     idx = (np.asarray(tid, np.int64)[:, None] * ns + np.arange(ns)[None, :]).ravel()   # tile x spacing bin of each value
-    for k, a in enumerate(angles):
-        t = math.radians(a)
+
+    def one(k):
+        t = math.radians(angles[k])
         d = sx * math.cos(t) + sy * math.sin(t)
         ph = 2 * math.pi * d[:, None] / spacings[None, :]
         # bincount adds in the same order as np.add.at did: the same sums, about a third faster
         re = np.bincount(idx, np.cos(ph).ravel(), nt * ns).reshape(nt, ns)
         im = np.bincount(idx, np.sin(ph).ravel(), nt * ns).reshape(nt, ns)
         out[k] = np.hypot(re, im).sum(axis=0) / n
+
+    workers = min(len(angles), _cpu_threads())
+    if workers > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(one, range(len(angles))))
+    else:
+        for k in range(len(angles)):
+            one(k)
     return out
+
+
+def _cpu_threads():
+    """Threads for the row search: the CPU threads less one (QGIS keeps one), at most 8."""
+    n = os.cpu_count() or 1
+    return max(1, min(8, n - 1 if n > 2 else n))
 
 
 def _rows(px, py, weight, pixel_cm, spacing_cm=None, sample=None):
