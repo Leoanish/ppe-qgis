@@ -6,6 +6,14 @@ PPE separates plant pixels from soil in drone orthomosaics, with no training dat
 
 **How it works, in one paragraph.** PPE ranks the vegetation indices the image allows by how well they spread plant from soil. It splits the three best with four automatic thresholds (Otsu, CDF knee, k-means and multi-Otsu), and the twelve results vote. A pixel's vote is the share of those twelve that call it plant. Guards then remove shadows, algae on wet soil and grey objects. You choose the vote threshold with a live slider; for images with a NIR band PPE suggests one.
 
+**New in 4.11.1** (all changes since the last published version):
+
+- **Weeds in What PPE found**: after every run PPE lists weeds between and inside the crop rows. Click any plant on the map to mark it weed or crop, then leave the weeds out for a clean plant-only mask ([section 7](#7-what-ppe-found-tassels-leaf-edges-shade-dry-leaves-sparse-spots-weeds)).
+- **Crop-only mask** from the checked plant count ([section 12](#12-goal-plant-counter-count-plants)).
+- **Weeds are never labelled as plant** in Create labels and Training data; weeds can be a label class of their own ([section 14](#14-goal-create-labels-plant-and-soil-points-for-your-own-model)).
+- **Plant counter for crop rows**: plant spacing, automatic split of touching plants, Merge and Split tools.
+- **Faster and lighter** (same results), and **ready for QGIS 4**: works on QGIS 3.28 to 4.x.
+
 The screenshots below are from a real run in QGIS 3.34 on a five-band multispectral image of a corn and soybean field (9371 × 10056 pixels). Red numbers in each picture match the numbered notes under it.
 
 ---
@@ -18,7 +26,7 @@ The screenshots below are from a real run in QGIS 3.34 on a five-band multispect
 4. [Tab 2 Run: build the plant vote](#4-tab-2-run-build-the-plant-vote)
 5. [Tab 3 Review: choose the threshold](#5-tab-3-review-choose-the-threshold)
 6. [Several crops in one image (optional)](#6-several-crops-in-one-image-optional)
-7. [What PPE found: tassels, leaf edges, shade, dry leaves, sparse spots](#7-what-ppe-found-tassels-leaf-edges-shade-dry-leaves-sparse-spots)
+7. [What PPE found: tassels, leaf edges, shade, dry leaves, sparse spots, weeds](#7-what-ppe-found-tassels-leaf-edges-shade-dry-leaves-sparse-spots-weeds)
 8. [Finalize the mask](#8-finalize-the-mask)
 9. [Tab 4 Export: plant-only rasters](#9-tab-4-export-plant-only-rasters)
 10. [Tab 5 Plots: canopy and statistics per plot](#10-tab-5-plots-canopy-and-statistics-per-plot)
@@ -34,7 +42,7 @@ The screenshots below are from a real run in QGIS 3.34 on a five-band multispect
 
 ## 1. Install
 
-You need **QGIS 3.28 or newer** (Windows, macOS or Linux).
+You need **QGIS 3.28 or newer, including QGIS 4** (Windows, macOS or Linux).
 
 **From the QGIS plugin repository** (once approved): **Plugins → Manage and Install Plugins → All**, search for **Plant Pixel Extractor**, click **Install Plugin**.
 
@@ -134,9 +142,9 @@ Different crops, or the same crop at a different stage, can need different thres
 
 Only the threshold differs between areas; the vote itself is the same, so a crop slider at the main slider's value gives exactly the usual mask.
 
-## 7. What PPE found: tassels, leaf edges, shade, dry leaves, sparse spots
+## 7. What PPE found: tassels, leaf edges, shade, dry leaves, sparse spots, weeds
 
-After each run PPE sorts out six kinds of pixel worth a look: five you can leave out of the mask, and one you can add to it. Nothing is tied to a particular field or crop: every reference (the green leaves' NDVI, colour, brightness and near-infrared light, and the bare soil's) is measured on the image itself, from the pixels nearly all the voters agree on. Each check runs whenever the image has the bands it needs, and the card says which could not run and why.
+After each run PPE sorts out eight kinds of pixel worth a look: seven you can leave out of the mask, and one you can add to it. Nothing is tied to a particular field or crop: every reference (the green leaves' NDVI, colour, brightness and near-infrared light, and the bare soil's) is measured on the image itself, from the pixels nearly all the voters agree on. Each check runs whenever the image has the bands it needs, and the card says which could not run and why.
 
 | Kind | What it is |
 |---|---|
@@ -146,6 +154,8 @@ After each run PPE sorts out six kinds of pixel worth a look: five you can leave
 | ? **Unclear** | as dark, but no more near-infrared light than soil: could be deep shade on a leaf or on soil |
 | ❧ **Dry or yellowing plant parts** | inside the canopy (no bare soil close by), red about as bright as green and a lower NDVI than green leaves, but more near-infrared light than sunlit soil: leaves drying or turning yellow-brown. Only pixels that can be in a mask are marked |
 | ✚ **Faint plants in sparse spots** | where the canopy is thin (under 25 % plant in 3 m squares at the suggested threshold), the pixels a threshold 0.20 lower would add there: small, pale plants that get fewer votes. These are **added** to the mask when you tick them |
+| ✕ **Weeds between the rows** (violet) | plants between the crop rows, smaller than a typical crop plant. PPE finds the rows and the plants behind the scenes, as the plant counter does |
+| ✕ **Weeds inside the rows** (white) | small plants closer than half the plant spacing to a bigger crop plant in the row |
 
 ![What PPE found](docs/images/10_what_ppe_found.jpg)
 
@@ -183,6 +193,8 @@ Which checks run depends only on the bands: plant parts, leaf edges and dry part
 3. **Finalize mask** writes them into the mask (for example `ppe_plant_mask_0.80_with_sparse.tif`) and reports the pixels added.
 
 The same **+ Add** works for every other kind: for example, add shaded leaves that a high threshold dropped, or leaf edges you count as plant. On Kritis, leaving out leaf edges and adding shaded leaves at 0.45 took 954,588 leaf-edge pixels out and put 465 shaded-leaf pixels in (canopy 83.2 % → 81.7 %).
+
+**Weeds: review them, then leave them out.** Press **✎ Review weeds on the map** and click any plant: a weed becomes crop again, a crop plant becomes a weed (click again to undo). The card, the live preview and the map follow at once. Then press **− Leave out** on the weed kinds and **Finalize mask**. Plants cut by the edge of the image or field are never marked, and a piece bigger than 3 × a typical plant (crop joined to a weed) cannot be marked as a weed as a whole. Checking matters: on 79 PhenoBench images, PPE's weed marks left out without a check did not make the mask cleaner (crop overlap 68.3 → 68.0), while with every plant checked the weeds fell from 14.0 to 6.5 % of the mask and the crop overlap rose to 73.6.
 
 On Tifton, compared with a reference mask over 354 cells of 3 m × 3 m, adding them at the suggested threshold raised the pixel match (IoU) from 91.3 to 91.9 %, cut the canopy error per cell from 3.4 to 2.9 points, and raised the agreement of the plant NDVI mean from R² 0.83 to 0.92 and of the median from 0.86 to 0.93. In the thin patches alone the match rose from 78 to 87 %. Bringing back faint pixels along the crop rows was also tried and did less, so rows are not used. It is not available with crop areas: lower that crop's slider instead.
 
@@ -300,6 +312,8 @@ The panel says the same after every change, for example *Counted: 214 plants = 1
 
 Each click is saved in `ppe_plants.gpkg` at once, and the count, plants per m², `ppe_count_summary.csv` and the counts per plot are updated.
 
+**Crop-only mask.** Once the points are checked, **Make crop-only mask (leave out the weeds)** writes `<mask>_crop_only.tif` next to the points and shows it as **PPE · Crop-only plant mask**: the plant mask without every plant piece whose points are all *weed?* or that you removed. A piece that still has a counted point stays whole. Press it again after more fixes to update it.
+
 ## 13. Goal Training data: tiles and labels for a model
 
 Choose **Training data for a model** at the top. After a run (no need to finalize: the labels do not depend on the slider), tab 4 **Train data** cuts the image and PPE's labels into tiles:
@@ -319,6 +333,8 @@ python ppe_train.py check   ppe_model.pt new_flight.tif <PPE run folder of new_f
 python ppe_train.py update  ppe_model.pt <new training data> <old training data>
 ```
 
+Weeds PPE found (What PPE found, after your review) are labelled unsure (255), never plant.
+
 **Keeping the model up to date.** Fields change through the season, so a model trained early drifts later. For each new flight, run PPE and then `check`: it compares the model with PPE's sure pixels, against how well it agreed on its own validation tiles. If it misses plants PPE is sure of, or calls PPE's sure soil plant, update it with the new images **plus** old ones. Updating with new images only makes it forget the old ones. In a test on PhenoBench, a model trained on seedlings and updated with late images alone fell from 87 to 77 % overlap on seedlings; updated with new and old images it kept 85 % and reached 96 % on the late images.
 
 On PhenoBench (143 training images, 37 unseen test images), the model trained in 2 minutes on PPE's labels alone reached 93.6 % overlap with hand labels on the test images; the same model trained on the hand labels reached 95.4 %.
@@ -329,14 +345,18 @@ For anyone who wants to train their own machine-learning model, which needs labe
 
 **1 Points.** Only *clear* pixels can become a point:
 
-- **plant**: in the finalized mask, every vote sure (at least 0.9), nothing found by PPE there (pale or dry plant parts, leaf edges, shade, unclear, faint sparse spots), and not on the edge of the plant;
+- **plant**: in the finalized mask, every vote sure (at least 0.9), nothing found by PPE there (pale or dry plant parts, leaf edges, shade, unclear, faint sparse spots, **weeds**), and not on the edge of the plant. So a weed PPE found is never a plant label;
 - **soil**: outside the mask, at most a tenth of the votes say plant, nothing found by PPE there, and not on the edge of the soil.
+
+- **weed** (optional, **Label weeds as a third class**, on by default): weeds of What PPE found where every vote is sure; about a tenth of the points, on top. Untick it for a plant/soil model: weeds then get no label at all.
+
+**Use the finalized mask on the map (with your weed review)**: when you finalized a mask in the Plant mask goal, the points come from it and from the weeds you reviewed there, instead of a new run. On the 12 weediest PhenoBench images, plant points on weeds fell from 34 to 18 % after reviewing the weeds (76 clicks); the weed points PPE placed were on weeds 81 % of the time.
 
 Pixels near the threshold, flagged plant parts and no-data are never used. Where the points go is chosen by **conditioned Latin hypercube sampling** (cLHS), separately for plant and for soil, over every band, NDVI and the position in the field. So the points cover the whole range of the image and the whole field, not just the easiest pixels. In a test, cLHS left half as many value ranges empty as random sampling did. 500 points take about 15 seconds on a 1.5 cm, 5-band field.
 
 **Area (optional, in step 1).** **Draw area** lets you click an outline on the map (right-click to finish; draw several to add them together), or choose a polygon file such as the field boundary or the plots. Points and buffers then stay inside it, so field edges, headlands, roads or weedy corners never give labels.
 
-**2 Check the points.** They appear as **PPE · Label points**: green for plant, orange for soil. Zoom in and fix any point that is wrong with **Plant ↔ soil**, **Remove**, **＋ Plant** or **＋ Soil**. Each click is saved and **Undo last** steps back. Points you changed or added get a white ring.
+**2 Check the points.** They appear as **PPE · Label points**: green for plant, orange for soil, violet for weed. Zoom in and fix any point that is wrong with **Plant ↔ soil**, **Weed ↔ plant**, **Remove**, **＋ Plant**, **＋ Soil** or **＋ Weed**. Each click is saved and **Undo last** steps back. Points you changed or added get a white ring.
 
 **Buffer (in step 1).** The slider (0 to 50 cm in 0.5 cm steps) grows each point into a disc. Once the points exist, the buffers are on the map as **PPE · Label buffers**: every pixel that gets a label is filled, green for plant and orange for soil. They follow the slider while you drag it (on Kritis, 500 points, each step took 0.04 s), so you see exactly which pixels will be labelled. When the points are created, PPE works out once, for every pixel a buffer can reach within 50 cm, how far it is from its point along the buffer's path; the slider then only changes which of those pixels are coloured. After you fix points (switch, add, remove), the buffers are rebuilt in the background a moment later. **Export** writes exactly the pixels shown. A buffer grows out from its point, through pixels of the point's own class only, and stays in one piece: a plant buffer follows the leaf and stops at its edge, a soil buffer stops before the canopy, and it never jumps to other leaves inside the disc. **Buffer takes in** chooses which pixels count as its class: *Sure pixels only* (default: every vote agrees and PPE found nothing unusual; most accurate, but leaves gaps where PPE is unsure) or *All pixels of its class* (every pixel of PPE's mask class, 1 pixel away from the other class; fuller). Against hand-checked points the sure pixels were right 88 to 98 % of the time and all pixels 77 to 94 %; the gap is largest on blurry images (IH: 10 cm buffers filled 53 % of the disc with sure pixels, 83 % with all pixels). As you move the slider, the panel shows how many pixels will be labelled. **Pixels per point** (optional) keeps only the nearest pixels, so one big leaf cannot dominate. A point you switched to the other class keeps only its own pixel, because PPE's mask disagrees with you there.
 
@@ -344,7 +364,7 @@ Pixels near the threshold, flagged plant parts and no-data are never used. Where
 
 - `ppe_labels.gpkg`: the points, with your label, PPE's label, status (proposed, changed, added) and band values;
 - `ppe_label_buffers.gpkg`: one polygon per point (shown as **PPE · Label buffers**);
-- `ppe_label_raster.tif`: 1 plant, 0 soil, 255 no label, aligned with the image;
+- `ppe_label_raster.tif`: 1 plant, 0 soil, 2 weed, 255 no label, aligned with the image;
 - `ppe_label_pixels.csv`: every labelled pixel with its point, label, position, band values and NDVI, ready for a model;
 - `ppe_labels_area.gpkg`: the area, when one was used.
 
