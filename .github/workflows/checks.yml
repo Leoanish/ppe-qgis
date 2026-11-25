@@ -1,0 +1,21 @@
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    container: qgis/qgis:release-3_34
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - name: Code style (flake8, the same check as plugins.qgis.org)
+        run: |
+          python3 -m pip install --quiet --break-system-packages flake8 || python3 -m pip install --quiet flake8
+          python3 -m flake8 --max-line-length=120 ppe_qgis
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests -v

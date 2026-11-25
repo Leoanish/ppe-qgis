@@ -3,6 +3,7 @@
 import logging
 import json
 import os
+import time
 from statistics import median
 
 from qgis.PyQt.QtCore import QEvent, QObject, QSettings, QStandardPaths, Qt, QTimer, pyqtSignal
@@ -239,6 +240,13 @@ class PPEDockWidget(QDockWidget):
         )
         goal_row.addWidget(goal_label)
         goal_row.addWidget(self.goal, 1)
+        # 4.12.0: help for the tab on screen, in the user guide
+        self.help_button = QPushButton("?")
+        self.help_button.setObjectName("helpButton")
+        self.help_button.setFixedWidth(30)
+        self.help_button.setToolTip("Open the user guide at this step")
+        self.help_button.clicked.connect(self._open_help)
+        goal_row.addWidget(self.help_button)
         header_layout.addLayout(goal_row)
         root.addWidget(header)
 
@@ -555,32 +563,51 @@ class PPEDockWidget(QDockWidget):
         output_form.addRow(cache_help)
         layout.addWidget(self._collapsible("Folders", output_box))
 
+        self.quick_run_button = QPushButton("▶  Run PPE now")
+        self.quick_run_button.setProperty("primary", True)
+        self.quick_run_button.setToolTip("Go to Run and start PPE on this image")
         self.continue_button = QPushButton("Continue  →")
-        self.continue_button.setProperty("primary", True)
-        layout.addWidget(self.continue_button)
+        self.continue_button.setProperty("secondary", True)
+        image_actions = QHBoxLayout()
+        image_actions.setSpacing(6)
+        image_actions.addWidget(self.quick_run_button, 2)
+        image_actions.addWidget(self.continue_button, 1)
+        layout.addLayout(image_actions)
         layout.addStretch()
         return self._scroll_tab(page)
 
     def _generate_tab(self):
         page, layout = self._page()
 
-        title = QLabel("Build the plant vote")
+        title = QLabel("Find the plants")
         title.setObjectName("sectionTitle")
         detail = QLabel(
-            "PPE ranks vegetation indices by how widely their values spread over the field and keeps the top three, one"
-            " per spectral group. Each is split into soil and plant by Otsu, CDF, k-means and multi-Otsu, and the"
-            " results are combined into a vote from 0 (soil) to 1 (plant)."
+            "Press Run PPE. PPE finds plant and soil in the whole image on its own, with nothing to set, and gives "
+            "every pixel a plant vote from 0 (soil) to 1 (plant). You choose the final mask in the next step."
         )
         detail.setWordWrap(True)
         detail.setObjectName("ppeHint")
         layout.addWidget(title)
         layout.addWidget(detail)
 
+        how = QWidget()
+        how_layout = QVBoxLayout(how)
+        how_layout.setContentsMargins(0, 0, 0, 0)
+        how_text = QLabel(
+            "PPE ranks vegetation indices by how widely their values spread over the field and keeps the top three, one"
+            " per spectral group. Each is split into soil and plant by Otsu, CDF, k-means and multi-Otsu, and the"
+            " results are combined into a vote from 0 (soil) to 1 (plant). Guards then return pixels that are clearly"
+            " soil, shadow or bright background to soil."
+        )
+        how_text.setWordWrap(True)
+        how_text.setObjectName("ppeHint")
         flow = QLabel("Top 3 layers  →  4 methods  →  vote  →  guards")
         flow.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self._note(flow, "accent"))
+        how_layout.addWidget(how_text)
+        how_layout.addWidget(self._note(flow, "accent"))
+        layout.addWidget(self._collapsible("How it works", how))
 
-        self.generate_button = QPushButton("Run")
+        self.generate_button = QPushButton("Run PPE")
         self.generate_button.setProperty("primary", True)
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.setProperty("danger", True)
@@ -657,7 +684,7 @@ class PPEDockWidget(QDockWidget):
             label = QLabel(caption)
             label.setObjectName("statCaption")
             grid.addWidget(label, 0, column)
-        self.threshold_value = QLabel("0.50")
+        self.threshold_value = QLabel("—")  # a value once PPE has run
         self.threshold_value.setObjectName("statValue")
         self.canopy_value = QLabel("—")
         self.canopy_value.setObjectName("statValue")
@@ -985,11 +1012,36 @@ class PPEDockWidget(QDockWidget):
         elif current is not None:
             self.tabs.setCurrentIndex(3)  # was on the old goal's own step: go to this goal's
         self._goal = goal
+        if hasattr(self, "quick_run_button"):  # Create labels has its own one-click step
+            self.quick_run_button.setVisible("run" in self.GOAL_TABS[goal])
         index = self.goal.findData(goal)
         if index >= 0 and self.goal.currentIndex() != index:
             self.goal.blockSignals(True)
             self.goal.setCurrentIndex(index)
             self.goal.blockSignals(False)
+
+    GUIDE_URL = "https://github.com/Leoanish/ppe-qgis#"
+    HELP_ANCHORS = {
+        "image": "3-tab-1-image-choose-the-image",
+        "run": "4-tab-2-run-build-the-plant-vote",
+        "review": "5-tab-3-review-choose-the-threshold",
+        "export": "9-tab-4-export-plant-only-rasters",
+        "plots": "10-tab-5-plots-canopy-and-statistics-per-plot",
+        "batch": "11-tab-6-batch-many-images-at-once",
+        "count": "12-goal-plant-counter-count-plants",
+        "training": "13-goal-training-data-tiles-and-labels-for-a-model",
+        "labels": "14-goal-create-labels-plant-and-soil-points-for-your-own-model",
+    }
+
+    def _quick_run(self):
+        if not self.generate_button.isEnabled():
+            return
+        self.show_tab("run")
+        self.generate_button.click()
+
+    def _open_help(self):
+        key = next((k for k, page in self._pages.items() if page[0] is self.tabs.currentWidget()), "image")
+        QDesktopServices.openUrl(QUrl(self.GUIDE_URL + self.HELP_ANCHORS.get(key, "")))
 
     def show_tab(self, key):
         """Go to a page by name (when the goal shows it)."""
@@ -2834,6 +2886,7 @@ class PPEDockWidget(QDockWidget):
             lambda: self.show_tab(self.GOAL_TABS.get(getattr(self, "_goal", "mask"), ("image", "run"))[1])
         )
         self.review_button.clicked.connect(lambda: self.show_tab("review"))
+        self.quick_run_button.clicked.connect(self._quick_run)
         self.goal.currentIndexChanged.connect(self._goal_changed)
         self.generate_button.clicked.connect(self._emit_generate)
         self.cancel_button.clicked.connect(self.cancel_requested)
@@ -3231,7 +3284,7 @@ class PPEDockWidget(QDockWidget):
         self.threshold_slider.setValue(50)
         self.threshold_slider.blockSignals(False)
         self.threshold_slider.setEnabled(False)
-        self.threshold_value.setText("0.50")
+        self.threshold_value.setText("—")
         self.canopy_value.setText("—")
         self.suggestion_label.setText("Run PPE to get a suggested threshold for this image.")
         self.suggestion_button.setVisible(False)
@@ -4785,6 +4838,9 @@ class PPEDockWidget(QDockWidget):
         self._busy = bool(running)
         if running:
             self._action = action
+            bar = self._bar_for(action)
+            bar.setProperty("ppeStart", None)  # a new job: the time-left estimate starts again
+            bar.setProperty("ppeLast", 0)
         self.generate_button.setEnabled(not running)
         self.apply_button.setEnabled(not running and bool(self.result))
         self.cancel_button.setVisible(running and not str(action).startswith("batch"))
@@ -4848,7 +4904,26 @@ class PPEDockWidget(QDockWidget):
     def set_progress(self, percent, message):
         bar = self._bar_for(getattr(self, "_action", "run"))
         bar.setValue(percent)
-        bar.setFormat("{}% · {}".format(percent, message))
+        bar.setFormat("{}% · {}{}".format(percent, message, self._time_left(bar, percent)))
+
+    def _time_left(self, bar, percent):
+        """' · about 40 s left', from the pace so far (4.12.0); nothing until the pace is known."""
+        now = time.monotonic()
+        start = bar.property("ppeStart")
+        if start is None or percent <= 1 or percent < (bar.property("ppeLast") or 0):
+            bar.setProperty("ppeStart", now)
+            bar.setProperty("ppeLast", percent)
+            return ""
+        bar.setProperty("ppeLast", percent)
+        elapsed = now - float(start)
+        if percent < 5 or elapsed < 3 or percent >= 100:
+            return ""
+        left = elapsed * (100 - percent) / percent
+        if left < 5:
+            return " · almost done"
+        if left < 90:
+            return " · about {:.0f} s left".format(5 * round(left / 5))
+        return " · about {:.0f} min left".format(max(2, round(left / 60)))
 
     def append_log(self, message):
         if message:
@@ -5306,7 +5381,10 @@ class PPEDockWidget(QDockWidget):
                 margin: -7px 0px;
                 border-radius: 9px;
             }
-            QSlider::handle:horizontal:disabled { border-color: #b7c7bf; }
+            QSlider::handle:horizontal:disabled { border-color: #c9d3ce; background: #f1f4f2; }
+            QSlider::sub-page:horizontal:disabled { background: #c9d3ce; }
+            QSlider::groove:horizontal:disabled { background: #e6ebe8; }
+            QPushButton#helpButton { padding: 2px 0px; font-weight: 700; border-radius: 15px; min-height: 26px; }
 
             QScrollBar:vertical { background: transparent; width: 8px; margin: 0px; }
             QScrollBar::handle:vertical { background: #c4d2ca; border-radius: 4px; min-height: 30px; }

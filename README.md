@@ -1,5 +1,7 @@
 # Plant Pixel Extractor (PPE) for QGIS
 
+[![checks](https://github.com/Leoanish/ppe-qgis/actions/workflows/checks.yml/badge.svg)](https://github.com/Leoanish/ppe-qgis/actions/workflows/checks.yml)
+
 PPE separates plant pixels from soil in drone orthomosaics, with no training data. It works with RGB cameras, multispectral sensors (MicaSense, Parrot Sequoia, DJI and others) and hyperspectral cubes. It runs inside QGIS using only the GDAL and NumPy that ship with QGIS, so there is nothing else to install.
 
 **What you get:** a plant mask you can check on the map before it is written, canopy cover for the whole field, for each crop and for each plot, plant-only bands and vegetation indices, and statistics of the plant pixels in every plot. Two more goals use the same mask: a **plant count** you can correct on the map (early season, per image and per plot) and **training data** for a fast plant/soil model, with no hand labelling.
@@ -61,7 +63,7 @@ When you update to a newer version, quit QGIS and open it again afterwards, so t
 ![PPE opened beside the map](docs/images/01_open_ppe.jpg)
 
 1. Click the **leaf button** in the toolbar, or choose **Raster → Plant Pixel Extractor**. The PPE panel opens on the right; you can drag it wider or float it.
-2. Choose the **Goal** at the top: *Plant mask* (the default), *Plant counter*, *Training data for a model* or *Create labels*. The tabs are used from left to right. Tabs 1 to 3 (Image, Run, Review) are the same for every goal; tab 4 is the goal's own step (Export, Count or Train data), and Batch is last. *Create labels* is simpler still: just tab 1 Image and tab 2 Labels. Changing the goal also tidies the map: the layers of the other goals are hidden (not deleted) and this goal's layers come back as you left them. The image stays, and your own layers are never touched. Finalize leads straight to tab 4. PPE remembers the goal.
+2. Choose the **Goal** at the top: *Plant mask* (the default), *Plant counter*, *Training data for a model* or *Create labels*. The tabs are used from left to right. Tabs 1 to 3 (Image, Run, Review) are the same for every goal; tab 4 is the goal's own step (Export, Count or Train data), and Batch is last. *Create labels* is simpler still: just tab 1 Image and tab 2 Labels. Changing the goal also tidies the map: the layers of the other goals are hidden (not deleted) and this goal's layers come back as you left them. The image stays, and your own layers are never touched. Finalize leads straight to tab 4. PPE remembers the goal. The **?** button next to the goal opens this guide at the step you are on.
 3. **Imagery source**: how your image is stored. Choose one of the following:
    - *Stacked GeoTIFF*: one file holding every band;
    - *Folder containing bands*: one file per band in a folder;
@@ -101,11 +103,13 @@ When you update to a newer version, quit QGIS and open it again afterwards, so t
 
 ![Run tab](docs/images/05_run_tab.jpg)
 
-1. **Run**. PPE reads the image, ranks the indices, runs the four thresholds on the top three and builds the vote. It works in the background, so QGIS stays usable.
+1. **Run PPE** (or **▶ Run PPE now** straight from tab 1). PPE reads the image, ranks the indices, runs the four thresholds on the top three and builds the vote; *How it works* on the tab explains the method. It works in the background, so QGIS stays usable.
 
 ![Running](docs/images/05b_running.jpg)
 
-1. The progress bar names the current step. **Cancel** stops the run. The 9371 × 10056 five-band field took about 20 seconds on a 2-core computer; PPE limits its memory use to a quarter of the RAM.
+1. The progress bar names the current step and the time left. **Cancel** stops the run. The 9371 × 10056 five-band field took about 20 seconds on a 2-core computer; PPE keeps its working memory under about 1 GB.
+
+After the run, PPE looks for weeds between and inside the rows in the background and builds map overviews, so the mask and the slider are ready at once and large images draw fast when zoomed out; the weed kinds join *What PPE found* a few seconds later.
 
 When the run finishes, PPE opens the Review tab.
 

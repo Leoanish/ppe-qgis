@@ -27,6 +27,7 @@ from .layer_utils import (
     zoom_to_layer,
     ROLE_KEY,
 )
+from .errors import friendly
 from .process_runner import describe_error, PPEPreviewRunner, PPEProcessRunner
 from .native_engine import load_batch_result
 
@@ -470,8 +471,7 @@ class PPEPlugin:
             return
         self.dock.set_results(result, curve)
         self.dock.tabs.setCurrentIndex(2)
-        if (result.get("weeds") or {}).get("pending"):
-            self._start_weeds(result)
+        self._start_weeds(result)  # weeds (when pending) and map overviews, in the background
         if not result.get("true_rgb", False):
             bands = result.get("source_bands", [])
             missing = [name for name in ("red", "green", "blue") if name not in bands]
@@ -511,6 +511,8 @@ class PPEPlugin:
             "run_dir": os.path.dirname(result["vote_path"]),
             "vote_path": result["vote_path"],
             "findings_path": result["findings_path"],
+            "rgb_path": result.get("rgb_path", ""),
+            "weeds": bool((result.get("weeds") or {}).get("pending")),
             "threshold": (result.get("weeds") or {}).get("threshold", result.get("threshold", 0.5)),
             "output_dir": result.get("output_dir") or os.path.dirname(os.path.dirname(result["vote_path"])),
         }
@@ -532,6 +534,16 @@ class PPEPlugin:
         r = (self.dock.result or {}) if self.dock else {}
         if not r.get("vote_path") or os.path.dirname(r["vote_path"]) != result.get("run_dir"):
             return  # the weeds of an image that is no longer on the panel
+        for key in ("votes", "rgb"):  # the new overviews (.ovr) are read from now on
+            layer = self.layers.get(key)
+            try:
+                if layer is not None and layer.isValid():
+                    layer.dataProvider().reloadData()
+                    layer.triggerRepaint()
+            except (AttributeError, RuntimeError):
+                pass
+        if result.get("weeds") is None:
+            return  # overviews only (no weeds were looked for)
         self.dock.set_weeds(result)
         self._refresh_preview()
         if self.dock.pale_shown():  # What PPE found layers on the map: show them from the new file
@@ -561,8 +573,7 @@ class PPEPlugin:
 
     def _job_failed(self, message):
         message = (
-            str(message or "").strip()
-            or "PPE stopped without an error message; the Log box on the Run tab has the details."
+            friendly(message) or "PPE stopped without an error message; the Log box on the Run tab has the details."
         )
         if self.dock is not None:
             self.dock.set_running(False, self.current_action)

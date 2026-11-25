@@ -1419,6 +1419,30 @@ def _interp_columns(grid, width, grid_w):
     return (1.0 - fx) * grid[:, x0] + fx * grid[:, x1]
 
 
+def build_overviews(path, resampling="AVERAGE", external=False):
+    """4.12.0: overviews (pyramids) so QGIS draws a large output fast when zoomed out. external=True writes a
+    separate .ovr file, safe while the image is open in QGIS. Small images get none. Never fails a job."""
+    try:
+        ds = gdal.Open(path, gdal.GA_ReadOnly if external else gdal.GA_Update)
+        if ds is None or ds.GetRasterBand(1).GetOverviewCount() > 0:
+            return False
+        levels, f = [], 2
+        while max(ds.RasterXSize, ds.RasterYSize) / f >= 256:
+            levels.append(f)
+            f *= 2
+        if not levels:
+            return False
+        gdal.SetConfigOption("COMPRESS_OVERVIEW", "DEFLATE")
+        try:
+            ds.BuildOverviews(resampling, levels)
+        finally:
+            gdal.SetConfigOption("COMPRESS_OVERVIEW", None)
+        ds = None
+        return True
+    except Exception:
+        return False
+
+
 def _strip_thinning(ds):
     """4.11.1: a thinned read (the fitting sample) of a compressed file without overviews is done in full-
     resolution strips on several threads (_thinned_read): the same pixels, up to 8 x faster (IH, 5 bands,
@@ -2414,6 +2438,12 @@ class NativePPEEngine:
 
         started = time.time()
         run_dir = cfg["run_dir"]
+        for path, how in ((cfg.get("vote_path"), "AVERAGE"), (cfg.get("rgb_path"), "AVERAGE")):
+            if path and os.path.isfile(path):  # separate .ovr files: the images stay open in QGIS meanwhile
+                build_overviews(path, how, external=True)
+        if not cfg.get("weeds", True):
+            self.progress(100, "Done")
+            return {"weeds": None, "run_dir": run_dir, "overviews": True}
         new_path = os.path.join(run_dir, "ppe_findings_with_weeds.tif")
         k = 1
         while os.path.exists(new_path):
@@ -3324,6 +3354,34 @@ class NativePPEEngine:
         outer = self.progress_cb
         n = len(items)
         self.log_cb("Batch: {} image(s) in {}.".format(n, cfg.get("batch_folder", "the list")))
+        # 4.12.0: the weeds of each image are found on a helper thread while the next image runs.
+        from concurrent.futures import ThreadPoolExecutor
+
+        weed_pool = ThreadPoolExecutor(max_workers=1) if cfg.get("weeds", True) else None
+        weed_jobs = []
+
+        def weeds_for(r, result_path):
+            helper = NativePPEEngine(log=lambda m: None)
+            w = helper.find_weeds(
+                {
+                    "run_dir": os.path.dirname(r["vote_path"]),
+                    "vote_path": r["vote_path"],
+                    "findings_path": r["findings_path"],
+                    "rgb_path": "",
+                    "threshold": (r.get("weeds") or {}).get("threshold", r.get("threshold", 0.5)),
+                    "row_spacing_cm": cfg.get("row_spacing_cm"),
+                }
+            )
+            r.update(
+                weeds=w["weeds"],
+                findings_path=w["findings_path"],
+                pale_plant_path=w["findings_path"],
+                findings_hist=w["findings_hist"],
+            )
+            with open(result_path, "w", encoding="utf-8") as f:
+                json.dump(_jsonable(r), f)
+            return {k: w["weeds"].get(k) for k in ("between", "in_row", "rows_found")}
+
         for i, item in enumerate(items):
             if self.cancelled():
                 raise Cancelled("Batch cancelled after {} of {} images; those are kept in ppe_batch.json.".format(i, n))
@@ -3347,6 +3405,7 @@ class NativePPEEngine:
                         **{k: v for k, v in item.items() if k != "name"},
                         output_dir=out_dir,
                         work_dir=os.path.join(work_root, name),
+                        weeds="background" if weed_pool else False,
                     )
                 )
                 os.makedirs(out_dir, exist_ok=True)
@@ -3375,6 +3434,8 @@ class NativePPEEngine:
                     layers=r.get("chosen_layers"),
                     seconds=time.time() - t0,
                 )
+                if weed_pool and (r.get("weeds") or {}).get("pending"):
+                    weed_jobs.append((name, entry, weed_pool.submit(weeds_for, r, result_path)))
                 self.log_cb(
                     "Batch {}/{}: {} done in {:.0f} s (threshold {:.2f}{}).".format(
                         i + 1,
@@ -3386,6 +3447,8 @@ class NativePPEEngine:
                     )
                 )
             except Cancelled:
+                if weed_pool:
+                    weed_pool.shutdown(wait=True, cancel_futures=True)
                 raise
             except Exception as exc:
                 entry.update(
@@ -3398,6 +3461,16 @@ class NativePPEEngine:
                 )
             manifest["items"].append(entry)
             manifest["seconds"] = time.time() - started
+            with open(manifest_path, "w", encoding="utf-8") as f:
+                json.dump(_jsonable(manifest), f, indent=1)
+        if weed_pool:
+            outer(99, "Finishing the weeds of the last images")
+            for name, entry, job in weed_jobs:
+                try:
+                    entry["weeds"] = job.result()
+                except Exception as exc:  # weeds are extra information: the image stays done
+                    self.log_cb("Batch: weeds of {} not checked ({}).".format(name, exc))
+            weed_pool.shutdown(wait=True)
             with open(manifest_path, "w", encoding="utf-8") as f:
                 json.dump(_jsonable(manifest), f, indent=1)
         self.progress_cb = outer
@@ -3558,6 +3631,7 @@ class NativePPEEngine:
             self.progress(int(100 * (y + h) / self.height), "Writing native-resolution plant mask")
         out.FlushCache()
         out = None
+        build_overviews(mask_path, "NEAREST")  # the finalized mask draws fast at every zoom
         result = {
             "mask_path": mask_path,
             "mask_qgis_path": mask_path,
