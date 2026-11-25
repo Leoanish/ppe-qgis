@@ -3,7 +3,7 @@ name=Plant Pixel Extractor
 qgisMinimumVersion=3.28
 qgisMaximumVersion=4.99
 description=Plant and soil segmentation for RGB, multispectral and hyperspectral drone imagery.
-version=4.11.1
+version=4.11.2
 author=Anish Bhattarai
 email=leoanish9@gmail.com
 about=Plant Pixel Extractor (PPE) separates plant pixels from soil in drone orthomosaics without training data. It ranks the vegetation indices the image allows by how well they spread plant from soil, splits the three best with four automatic thresholds (Otsu, CDF knee, k-means, multi-Otsu) and lets the twelve results vote. Guards remove shadows, algae on wet soil and grey objects. Works with RGB cameras, multispectral sensors (MicaSense, Sequoia, DJI and others, as one file, a folder or separate band files) and hyperspectral cubes; thermal bands are ignored. The image appears on the map as soon as it is chosen, a live slider previews the mask, and results export as rasters, per-band and per-index layers, and plot statistics for an AOI. A Batch tab runs a whole folder of images and lets you review each mask. Two more goals use the same mask: a plant counter (early season) that proposes one point per plant, finds the crop rows itself and marks plants between rows as possible weeds, which you then check and correct on the map with add, remove and plant or weed tools; after a run, weeds between and inside the crop rows are listed in What PPE found, you review them on the map with one click per plant, and leave them out for a clean crop-only mask; training data for a fast plant and soil model, image tiles with PPE labels and no hand labelling (the included tools/ppe_train.py trains, checks and updates the model outside QGIS and needs PyTorch); and create labels for your own machine-learning model: plant, soil and (optionally) weed points from clear pixels only, weeds never labelled as plant, spread over the whole range of the image by conditioned Latin hypercube sampling, optionally inside an area you draw, which you check on the map and grow into buffers that never cross into the other class. No extra installation: it uses the GDAL and NumPy that ship with QGIS. Works on QGIS 3.28 to 4.x; tested on QGIS 3.34 (Linux); feedback from Windows and macOS users is welcome.
@@ -16,7 +16,7 @@ tags=drone,raster,plant,canopy,multispectral,vegetation,segmentation,plant count
 repository=https://github.com/Leoanish/ppe-qgis
 tracker=https://github.com/Leoanish/ppe-qgis/issues
 homepage=https://github.com/Leoanish/ppe-qgis
-changelog=4.11.1 (all changes since 4.5.2):
+changelog=4.11.2 (all changes since 4.5.2):
     - New goal Create labels: plant and soil (and optional weed) points on clear pixels only, spread over the image by conditioned Latin hypercube sampling; optional area; check them on the map; grow them with a live buffer slider that follows the leaf or soil; export points, buffers, label raster and pixel table.
     - Plant counter for crop rows: finds the rows and the plant spacing (from confident single plants), splits touching plants by length divided by spacing, marks weeds between and inside the rows; Split, Merge, Plant or weed, Add and Remove tools; counting inside a drawn area; clear summary of what is counted.
     - Weeds in What PPE found: after every run, weeds between and inside the rows are listed; review them on the map with one click per plant (weed or crop) and leave them out for a clean plant-only mask. Every kind on the card now has Leave out and Add.
@@ -25,6 +25,8 @@ changelog=4.11.1 (all changes since 4.5.2):
     - Faster and lighter, same results: a run uses at most about 1 GB of memory, the image sample is read on all CPU cores, the crop-row search is multi-threaded. A full run on a 34 megapixel 5-band field takes 13 s instead of 18 s; the plant counter is about 40 percent faster.
     - Each image gets its own output folder; switching goals tidies the map; PPE always opens on the Plant mask goal.
     - Ready for QGIS 4 (Qt6) and still works on QGIS 3.28 and later.
+    - After Finalize mask the threshold is locked, so the plant counter, labels, training data and exports all use the finalized mask; Change threshold unlocks it.
+    - Weeds are found in the background after a run: the mask, the card and the slider are ready without waiting, and the weed kinds join the card a few seconds later.
     - Passes the plugins.qgis.org validator and security scan (Bandit, detect-secrets and Flake8: no findings).
     4.5.2: Plugin page description updated (batch, plant counter, training data). No change in how PPE works.
     4.5.1: Crop rows are found automatically: PPE finds the direction and spacing of the rows itself (15 to 150 cm, any crop) from the plant pixels, fitted separately in each 4 m patch so shifted plots still fit. Plants between rows are marked as possible weeds; where rows are not clear, nothing is marked. No spacing to type: the Count tab has one checkbox, Find crop rows. Found 91 cm on Tifton and Midville and 76 cm on IH corn; no rows on a closed canopy.

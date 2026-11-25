@@ -2405,6 +2405,53 @@ class NativePPEEngine:
         out = None
         return path
 
+    def find_weeds(self, cfg):
+        """4.11.2: the weeds of What PPE found for a finished run, as a job of its own (see run with
+        weeds="background"). The run's findings are copied and the weed codes written into the copy, so a mask
+        being finalized meanwhile keeps reading an unchanged file. cfg: run_dir, vote_path, findings_path,
+        threshold, row_spacing_cm (optional). Returns weeds, findings_path, findings_hist, run_dir."""
+        from .plant_count import mark_weeds
+
+        started = time.time()
+        run_dir = cfg["run_dir"]
+        new_path = os.path.join(run_dir, "ppe_findings_with_weeds.tif")
+        k = 1
+        while os.path.exists(new_path):
+            k += 1
+            new_path = os.path.join(run_dir, "ppe_findings_with_weeds_{}.tif".format(k))
+        gdal.GetDriverByName("GTiff").CreateCopy(
+            new_path,
+            safe_gdal_open(cfg["findings_path"]),
+            options=["TILED=YES", "COMPRESS=DEFLATE", "BIGTIFF=IF_SAFER"],
+        )
+        self.progress(10, "Looking for weeds between and inside the crop rows")
+        weeds = mark_weeds(
+            cfg["vote_path"],
+            new_path,
+            float(cfg["threshold"]),
+            run_dir,
+            progress=lambda p, m="": self.progress(10 + int(0.8 * p), m),
+            keep_dir=os.path.join(run_dir, "ppe_weeds"),
+            cfg={"row_spacing_cm": cfg["row_spacing_cm"]} if cfg.get("row_spacing_cm") else None,
+        )
+        self.progress(92, "Updating What PPE found")
+        hist = findings_histograms(new_path, cfg["vote_path"])
+        summary = os.path.join(run_dir, "run_summary.json")
+        try:
+            with open(summary, encoding="utf-8") as handle:
+                record = json.load(handle)
+            record.update(weeds=weeds, findings_path=new_path, pale_plant_path=new_path, findings_hist=hist)
+            with open(summary, "w", encoding="utf-8") as handle:
+                json.dump(record, handle, indent=2, default=str)
+        except (OSError, ValueError):
+            pass
+        self.log_cb(
+            "Weeds ({:.1f} s): {}.".format(time.time() - started, weeds.get("note", "none found"))
+            + (" Review them on the What PPE found card." if weeds.get("between") or weeds.get("in_row") else "")
+        )
+        self.progress(100, "Weeds found")
+        return {"weeds": weeds, "findings_path": new_path, "findings_hist": hist, "run_dir": run_dir}
+
     @_bigger_gdal_cache
     def run(self, cfg):
         started = time.time()
@@ -2635,9 +2682,7 @@ class NativePPEEngine:
             if colour_guard:
                 self.log_cb(
                     "Colour guard: soil colour R {:.3g} G {:.3g} B {:.3g}; plant pixels must be greener than"
-                    " soil.".format(
-                        *colour_guard["soil"]
-                    )
+                    " soil.".format(*colour_guard["soil"])
                 )
                 if colour_guard["plant_excess"] < WEAK_GREEN:
                     self.log_cb(
@@ -2873,7 +2918,11 @@ class NativePPEEngine:
                     )
                 )
         weeds = {}
-        if cfg.get("weeds", True) and area_m2:
+        if cfg.get("weeds", True) == "background" and area_m2:
+            # 4.11.2: the plugin finds the weeds in a second job after the run (find_weeds), so the mask, the
+            # card and the slider are ready without waiting for it; the weed kinds join the card when it ends.
+            weeds = {"pending": True, "threshold": float(start_threshold)}
+        elif cfg.get("weeds", True) and area_m2:
             self.progress(92, "Looking for weeds between and inside the crop rows")
             try:
                 from .plant_count import mark_weeds

@@ -78,6 +78,8 @@ class _Worker(QObject):
                 result = engine.prepare_crop_areas(self.config)
             elif action == "export_aoi":
                 result = engine.export_aoi_statistics(self.config)
+            elif action == "weeds":
+                result = engine.find_weeds(self.config)
             elif action == "count":
                 from . import plant_count
 

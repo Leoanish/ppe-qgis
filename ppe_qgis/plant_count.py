@@ -1274,10 +1274,8 @@ def mark_weeds(vote_path, findings_path, threshold, work_dir, log=None, progress
         if not _pixel_area_m2(v_ds):
             res["note"] = "the image is not in metres, so rows and plant sizes cannot be measured"
             return res
-        mpath = os.path.join(tmp, "mask.tif")
-        m_ds = gdal.GetDriverByName("GTiff").Create(
-            mpath, W, H, 1, gdal.GDT_Byte, ["TILED=YES", "COMPRESS=DEFLATE", "BIGTIFF=IF_SAFER"]
-        )
+        mpath = os.path.join(tmp, "mask.tif")  # a temporary file: not compressed, written and read back faster
+        m_ds = gdal.GetDriverByName("GTiff").Create(mpath, W, H, 1, gdal.GDT_Byte, ["TILED=YES", "BIGTIFF=IF_SAFER"])
         m_ds.SetGeoTransform(v_ds.GetGeoTransform())
         m_ds.SetProjection(v_ds.GetProjection())
         m_ds.GetRasterBand(1).SetNoDataValue(255)
@@ -1555,9 +1553,7 @@ def toggle_weed_piece(weeds, findings_path, vote_path, x, y, levels=1200):
                 "message": (
                     "This piece is {:.0f} times a typical plant: it is joined to crop plants, so it cannot be marked a "
                     "weed as a whole (that would take the crop out too). Leave it, or raise the threshold so"
-                    " it splits.".format(
-                        piece.sum() / big
-                    )
+                    " it splits.".format(piece.sum() / big)
                 ),
             }
         code = WEED_IN_ROW_CODE

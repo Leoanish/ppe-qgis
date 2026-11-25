@@ -665,6 +665,23 @@ class PPEDockWidget(QDockWidget):
         grid.addWidget(self.canopy_value, 1, 1)
         layout.addWidget(stats)
 
+        # 4.11.2: after Finalize the threshold is locked, so the counter, labels, training data and exports
+        # all use the finalized mask; "Change threshold" unlocks it.
+        self.lock_box = QFrame()
+        self.lock_box.setObjectName("card")
+        lb = QHBoxLayout(self.lock_box)
+        lb.setContentsMargins(10, 6, 10, 6)
+        self.lock_label = QLabel("")
+        self.lock_label.setWordWrap(True)
+        self.unlock_button = QPushButton("Change threshold")
+        self.unlock_button.setProperty("secondary", True)
+        self.unlock_button.clicked.connect(self._unlock_clicked)
+        lb.addWidget(self.lock_label, 1)
+        lb.addWidget(self.unlock_button)
+        self.lock_box.setVisible(False)
+        self._lock_saved = None
+        layout.addWidget(self.lock_box)
+
         self.threshold_slider = QSlider(Qt.Orientation.Horizontal)
         self.threshold_slider.setRange(15, 95)
         self.threshold_slider.setSingleStep(1)
@@ -1867,7 +1884,7 @@ class PPEDockWidget(QDockWidget):
         self.label_write_status.setText("")
         self.label_preview.setText("")
         use = {}
-        if self.label_use_result.isEnabled() and self.label_use_result.isChecked():
+        if self.label_use_result.isChecked() and (self.result or {}).get("mask_path"):
             r = self.result or {}
             use = {
                 "use_result": True,
@@ -1894,12 +1911,14 @@ class PPEDockWidget(QDockWidget):
             return
         r = self.result or {}
         ok = all(r.get(k) and os.path.isfile(r[k]) for k in ("mask_path", "vote_path"))
-        self.label_use_result.setEnabled(ok)
+        self.label_use_result.setEnabled(False)  # 4.11.2: a finalized mask is always used (no second threshold)
         self.label_use_result.setChecked(ok)
         self.label_use_result.setText(
-            "Use the finalized mask on the map ({}, with your weed review)".format(os.path.basename(r["mask_path"]))
+            "Uses the finalized mask ({}, threshold {:.2f}, with your weed review)".format(
+                os.path.basename(r["mask_path"]), float(r.get("applied_threshold") or r.get("threshold") or 0)
+            )
             if ok
-            else "Use the finalized mask on the map (finalize one in the Plant mask goal first)"
+            else "No finalized mask yet: PPE runs at its suggested threshold (or finalize one in the Plant mask goal)"
         )
 
     # ---- an area drawn on the map or a polygon file (labels 4.6, plant counter 4.6.4) --------------
@@ -3188,6 +3207,8 @@ class PPEDockWidget(QDockWidget):
         if self.curve_dialog is not None:
             self.curve_dialog.close()
             self.curve_dialog = None
+        if self._locked():
+            self._set_locked(False)
         self.result = {}
         self.curve_points = []
         self._update_label_source()
@@ -4063,6 +4084,90 @@ class PPEDockWidget(QDockWidget):
         w = (self.result or {}).get("weeds") or {}
         return bool(w.get("rows_found") and w.get("groups_path") and os.path.isfile(w["groups_path"]))
 
+    def _locked(self):
+        return getattr(self, "_lock_saved", None) is not None
+
+    def _lockables(self):
+        widgets = [self.threshold_slider, self.suggestion_button, self.apply_button]
+        for name in ("same_threshold", "add_crop_button", "weed_review_button", "field_stage"):
+            if hasattr(self, name):
+                widgets.append(getattr(self, name))
+        for row in (self.zone_info or {}).get("rows", []) if getattr(self, "zone_info", None) else []:
+            if row.get("slider") is not None:
+                widgets.append(row["slider"])
+        for row in getattr(self, "finding_rows", {}).values():
+            widgets += [row["minus"], row["plus"]]
+        return widgets
+
+    def _set_locked(self, on, threshold=None):
+        """Lock (after Finalize) or unlock everything on the Review tab that changes the mask."""
+        if on:
+            if self._locked():
+                self._set_locked(False)
+            if hasattr(self, "weed_review_button") and self.weed_review_button.isChecked():
+                self.weed_review_button.setChecked(False)
+            self._lock_saved = [(w, w.isEnabled()) for w in self._lockables()]
+            for w, _ in self._lock_saved:
+                w.setEnabled(False)
+            self.lock_label.setText(
+                "🔒 Mask finalized at {:.2f}. The threshold is locked, so the plant counter, labels, training data and "
+                "exports all use this mask.".format(float(threshold if threshold is not None else self.threshold()))
+            )
+            self.lock_box.setVisible(True)
+        else:
+            for w, was in self._lock_saved or []:
+                try:
+                    w.setEnabled(was)
+                except RuntimeError:  # a crop row was removed meanwhile
+                    pass
+            self._lock_saved = None
+            self.lock_box.setVisible(False)
+            r = self.result or {}
+            idle = not getattr(self, "_busy", False)
+            self.threshold_slider.setEnabled(bool(r.get("vote_path")))
+            self.apply_button.setEnabled(idle and bool(r))
+            self.suggestion_button.setEnabled(bool(r.get("suggestion")))
+            if hasattr(self, "add_crop_button"):
+                self.add_crop_button.setEnabled(idle and bool(r.get("vote_path")))
+            if hasattr(self, "weed_review_button"):
+                self.weed_review_button.setEnabled(self._weeds_found())
+        self._update_label_source()
+
+    def _unlock_clicked(self):
+        answer = QMessageBox.question(
+            self,
+            "Change threshold",
+            "Unlock the threshold to change the mask?\n\nThe finalized mask stays as it is until you press "
+            "Finalize mask again. Plant counts, labels and exports already made from it are not changed.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._set_locked(False)
+
+    def _weeds_pending(self):
+        return bool(((self.result or {}).get("weeds") or {}).get("pending"))
+
+    def set_weeds(self, result):
+        """4.11.2: the weeds found in the background after the run join What PPE found."""
+        r = self.result or {}
+        if result.get("findings_path"):
+            r.update(
+                findings_path=result["findings_path"],
+                pale_plant_path=result["findings_path"],
+                findings_hist=result.get("findings_hist") or r.get("findings_hist"),
+            )
+        r["weeds"] = result.get("weeds") or {}
+        if hasattr(self, "finding_rows"):
+            self._update_pale_card()
+            self._update_clip_status()
+        w = r["weeds"]
+        if hasattr(self, "weed_review_status") and not self._weeds_found():
+            self.weed_review_status.setText("No weeds marked: {}.".format(w.get("note", "no clear crop rows")))
+
+    def pale_shown(self):
+        return hasattr(self, "pale_button") and self.pale_button.isChecked()
+
     def _weed_review(self, on):
         """Turn the weed review tool on or off (the map tool lives on the canvas)."""
         canvas = self.iface.mapCanvas() if self.iface is not None else None
@@ -4126,7 +4231,14 @@ class PPEDockWidget(QDockWidget):
     def _update_pale_card(self):
         """The 'What PPE found' card: one short note per kind of pixel worth pointing out."""
         if hasattr(self, "weed_review_box"):
-            self.weed_review_box.setVisible(self._weeds_found())
+            pending = self._weeds_pending()
+            self.weed_review_box.setVisible(self._weeds_found() or pending)
+            self.weed_review_button.setEnabled(self._weeds_found() and not self._locked())
+            if pending:
+                self.weed_review_status.setText(
+                    "Looking for weeds between and inside the crop rows… (in the background; "
+                    "the weed kinds appear here in a few seconds)"
+                )
         shares = self.finding_shares_now()
         if not shares:
             self.pale_frame.setVisible(False)
@@ -4148,7 +4260,7 @@ class PPEDockWidget(QDockWidget):
                 # the square has the colour of this kind on the map (Show them on the map)
                 row["title"].setText(
                     '<span style="color:#{:02x}{:02x}{:02x}; font-size:15px;">■</span>&nbsp;{}&nbsp;&nbsp;{}'
-                    ' — {}'.format(
+                    " — {}".format(
                         rgb[0],
                         rgb[1],
                         rgb[2],
@@ -4662,7 +4774,9 @@ class PPEDockWidget(QDockWidget):
             return
         dialog = ThresholdCurveDialog(self.curve_points, self.threshold(), self)
         dialog.set_suggestion((self.result or {}).get("suggestion") or {})
-        dialog.threshold_selected.connect(lambda threshold: self.threshold_slider.setValue(round(threshold * 100)))
+        dialog.threshold_selected.connect(
+            lambda threshold: None if self._locked() else self.threshold_slider.setValue(round(threshold * 100))
+        )
         dialog.finished.connect(lambda _result: setattr(self, "curve_dialog", None))
         self.curve_dialog = dialog
         dialog.show()
@@ -4709,6 +4823,10 @@ class PPEDockWidget(QDockWidget):
             if action == "run":
                 self.run_summary.setText("PPE is processing the imagery in the background.")
 
+        if self._locked():  # a finalized mask stays locked whatever job ends (4.11.2)
+            for w in self._lockables():
+                w.setEnabled(False)
+
     def _bar_for(self, action):
         action = str(action)
         if action.startswith("batch"):
@@ -4746,6 +4864,8 @@ class PPEDockWidget(QDockWidget):
             self.batch_review_box.setVisible(False)
         self.pale_layer_removed()  # a new run removes the old findings layer
         self._close_pale_card()
+        if self._locked():
+            self._set_locked(False)  # a new run: the threshold is free again
         for code in self.finding_rows:
             self.set_finding_state(code, None)
         self.result = dict(result)
@@ -4863,7 +4983,7 @@ class PPEDockWidget(QDockWidget):
 
     def _use_suggestion(self):
         suggestion = (self.result or {}).get("suggestion") or {}
-        if suggestion:
+        if suggestion and not self._locked():
             self.threshold_slider.setValue(round(float(suggestion["threshold"]) * 100))
 
     def set_applied(self, result):
@@ -4881,7 +5001,7 @@ class PPEDockWidget(QDockWidget):
             self.result.pop(key, None)
         self.result.update(result)
         self.result["applied_threshold"] = result.get("threshold")
-        self._update_label_source()
+        self._set_locked(True, result.get("threshold"))
         if result.get("crops"):
             lines = ["Mask finalized · canopy {:.1f} % of the image".format(float(result.get("canopy_pct", 0.0)))]
             for crop in result["crops"]:

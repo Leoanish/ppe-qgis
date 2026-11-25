@@ -37,6 +37,8 @@ class PPEPlugin:
         self.action = None
         self.dock = None
         self.runner = PPEProcessRunner(iface.mainWindow())
+        self.weed_runner = PPEProcessRunner(iface.mainWindow())  # 4.11.2: weeds after a run, in the background
+        self._weeds_queued = None
         self.previewer = PPEPreviewRunner(iface.mainWindow())
         self.layers = {}
         self._removing = False  # True while PPE itself removes its layers
@@ -114,6 +116,10 @@ class PPEPlugin:
         self.runner.succeeded.connect(self._job_succeeded)
         self.runner.failed.connect(self._job_failed)
         self.runner.running_changed.connect(self._runner_state_changed)
+        self.weed_runner.log.connect(self.dock.append_log)
+        self.weed_runner.succeeded.connect(self._weeds_ready)
+        self.weed_runner.failed.connect(self._weeds_failed)
+        self.weed_runner.running_changed.connect(self._weed_runner_changed)
 
     # ---- keeping the map and the panel in step -----------------------------------------
     @contextmanager
@@ -225,6 +231,7 @@ class PPEPlugin:
 
     def _start_generate(self, config):
         self.current_action = "run"
+        config = dict(config, weeds="background")  # weeds are found after the run (see _start_weeds)
         self._clear_ppe_layers(
             keep=("rgb", "plots", "crops")
         )  # image, plot and crop outlines stay on the map while PPE works
@@ -463,6 +470,8 @@ class PPEPlugin:
             return
         self.dock.set_results(result, curve)
         self.dock.tabs.setCurrentIndex(2)
+        if (result.get("weeds") or {}).get("pending"):
+            self._start_weeds(result)
         if not result.get("true_rgb", False):
             bands = result.get("source_bands", [])
             missing = [name for name in ("red", "green", "blue") if name not in bands]
@@ -494,6 +503,43 @@ class PPEPlugin:
             )
         else:
             self._message("PPE mask generated. Review the live threshold preview.", Qgis.MessageLevel.Success)
+
+    # ---- weeds of What PPE found, in the background (4.11.2) ----------------------------------
+    def _start_weeds(self, result):
+        cfg = {
+            "action": "weeds",
+            "run_dir": os.path.dirname(result["vote_path"]),
+            "vote_path": result["vote_path"],
+            "findings_path": result["findings_path"],
+            "threshold": (result.get("weeds") or {}).get("threshold", result.get("threshold", 0.5)),
+            "output_dir": result.get("output_dir") or os.path.dirname(os.path.dirname(result["vote_path"])),
+        }
+        if self.weed_runner.is_running:  # an older image's weeds are still running: this one goes next
+            self.weed_runner.cancel()
+            self._weeds_queued = cfg
+            return
+        try:
+            self.weed_runner.start(cfg)
+        except Exception as exc:
+            self._weeds_failed(str(exc))
+
+    def _weed_runner_changed(self, running):
+        if not running and self._weeds_queued is not None:
+            cfg, self._weeds_queued = self._weeds_queued, None
+            self.weed_runner.start(cfg)
+
+    def _weeds_ready(self, result):
+        r = (self.dock.result or {}) if self.dock else {}
+        if not r.get("vote_path") or os.path.dirname(r["vote_path"]) != result.get("run_dir"):
+            return  # the weeds of an image that is no longer on the panel
+        self.dock.set_weeds(result)
+        self._refresh_preview()
+        if self.dock.pale_shown():  # What PPE found layers on the map: show them from the new file
+            self._pale_layer_toggled(True)
+
+    def _weeds_failed(self, message):
+        if self.dock is not None:
+            self.dock.set_weeds({"weeds": {"note": "weeds not checked ({})".format(str(message).splitlines()[0])}})
 
     def _import_ready(self, result):
         if str(self.current_action).startswith("batch"):
