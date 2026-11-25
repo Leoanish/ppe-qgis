@@ -187,3 +187,39 @@ class TestV4122(unittest.TestCase):
             self.assertLess(host.minimumSizeHint().width(), 360)
         finally:
             plugin.unload()
+
+
+class TestV4123(unittest.TestCase):
+    def test_label_fix_switches_the_whole_plant_and_its_points(self):
+        from ppe_qgis.label_points import piece_info, switch_piece
+        from ppe_qgis.plant_count import WEED_IN_ROW_CODE
+
+        tmp = tempfile.mkdtemp()
+        try:
+            m, _ = rows_field(row_weeds=((224, 45), (284, 135)))
+            vote = tif(os.path.join(tmp, "vote.tif"), m.astype(np.float32), gdal.GDT_Float32)
+            find = tif(os.path.join(tmp, "f.tif"), np.zeros_like(m, np.uint8), gdal.GDT_Byte, nodata=255)
+            w = mark_weeds(
+                vote, find, 0.5, tmp, cfg={"min_plant_cm2": 0.05, "join_cm": 0}, keep_dir=os.path.join(tmp, "w")
+            )
+            ds = gdal.Open(find)
+            self.assertEqual(ds.ReadAsArray()[45, 224], WEED_IN_ROW_CODE)
+            gt = ds.GetGeoTransform()
+            ds = None
+
+            def xy(c, r):
+                return gt[0] + (c + 0.5) * gt[1], gt[3] + (r + 0.5) * gt[5]
+
+            info = {"weeds": piece_info(w), "findings_path": find, "vote_path": vote}
+            others = [(7, *xy(224, 45), "weed"), (8, *xy(100, 10), "soil")]  # a second point on the same weed
+            res, same = switch_piece(info, *xy(224, 45), "plant", others)
+            self.assertEqual(res["state"], "crop")
+            self.assertEqual(same, [7])
+            ds = gdal.Open(find)
+            self.assertNotIn(ds.ReadAsArray()[45, 224], (7, 8))  # the plant is crop in What PPE found
+            ds = None
+            res, _ = switch_piece(info, *xy(224, 45), "weed", [])  # undo
+            self.assertEqual(res["state"], "weed")
+            self.assertIsNone(switch_piece({"weeds": None}, 0, 0, "plant")[0])  # labels without weed info
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)

@@ -1,6 +1,8 @@
 """Correct the plant count on the map (4.5): add a missed plant, remove a wrong point, or switch a point
 between plant and weed (weeds are not counted). Each click is written to ppe_plants.gpkg at once."""
 
+import logging
+
 from qgis.PyQt.QtCore import Qt, pyqtSignal
 from qgis.core import (
     QgsCoordinateTransform,
@@ -15,6 +17,7 @@ from qgis.gui import QgsMapTool
 
 from .layer_utils import ROLE_KEY
 
+_LOG_UNDO = logging.getLogger(__name__)
 STATUS_PLANT, STATUS_CHECK, STATUS_WEED, STATUS_ADDED, STATUS_SPLIT = "plant", "check", "weed?", "added", "split"
 STATUS_AUTO = "auto split"  # 4.7: split by PPE from the plant spacing
 PICK_PIXELS = 12  # a click picks the nearest point within this many screen pixels
@@ -315,6 +318,14 @@ def labels_layer():
 
 
 class LabelEditTool(PlantEditTool):
+    piece_switch = None  # 4.12.3: callable(x, y, new_label, other_points) -> (toggle result, ids of points on it)
+    on_piece_switched = None
+
+    def piece_switched(self, res):
+        """Called after the plant piece under a point was switched (the panel updates What PPE found)."""
+        if self.on_piece_switched is not None:
+            self.on_piece_switched(res)
+
     """Check the label points: mode 'switch' (plant <-> soil; a weed point becomes plant), 'weed' (4.10.1:
     weed <-> plant), 'remove', 'add_plant', 'add_soil' or 'add_weed'.
     A switched point gets status 'changed' (back to 'proposed' when switched back); an added point 'added'."""
@@ -351,10 +362,47 @@ class LabelEditTool(PlantEditTool):
                 new = "plant" if f["label"] == "weed" else "weed"
             else:
                 new = "soil" if f["label"] == "plant" else "plant"
-            status = "added" if f["status"] == "added" else ("proposed" if new == f["ppe_label"] else "changed")
-            prov.changeAttributeValues({f.id(): {fields.indexOf("label"): new, fields.indexOf("status"): status}})
-            self.undo.append(("switch", (f.id(), old)))
-            self._changed("Now {}.".format(new))
+            changes = {f.id(): (new, old)}
+            note, switched = "", False
+            piece = getattr(self, "piece_switch", None)
+            if piece is not None and {old[0], new} == {"weed", "plant"}:
+                # 4.12.3: the whole plant under the point follows, and every other point on it
+                pt = f.geometry().asPoint()
+                others = [
+                    (g.id(), g.geometry().asPoint().x(), g.geometry().asPoint().y(), g["label"])
+                    for g in self.layer.getFeatures()
+                    if g.id() != f.id()
+                ]
+                try:
+                    res, same = piece(pt.x(), pt.y(), new, others)
+                except Exception as exc:  # the points stay editable even if the piece cannot be switched
+                    res, same = {"state": None, "message": "The plant itself could not be switched: {}".format(exc)}, []
+                for g in self.layer.getFeatures():
+                    if g.id() in same:
+                        changes[g.id()] = (new, (g["label"], g["status"]))
+                if res and res.get("state"):
+                    switched = True
+                    note = " The whole plant is {} now{}.".format(
+                        "crop" if res["state"] == "crop" else "a weed",
+                        ", with {} more point{} on it".format(len(same), "" if len(same) == 1 else "s") if same else "",
+                    )
+                    self.piece_switched(res)
+                elif res and res.get("message"):
+                    note = " " + res["message"]
+            values = {}
+            for fid, (lab, (_old_lab, old_status)) in changes.items():
+                feat = self.layer.getFeature(fid)
+                st = "added" if old_status == "added" else ("proposed" if lab == feat["ppe_label"] else "changed")
+                values[fid] = {fields.indexOf("label"): lab, fields.indexOf("status"): st}
+            prov.changeAttributeValues(values)
+            if switched or len(changes) > 1:
+                pt = f.geometry().asPoint()
+                self.undo.append(
+                    ("piece", ([(fid, o) for fid, (_lab, o) in changes.items()], pt.x(), pt.y(), old[0], switched))
+                )
+            else:
+                self.undo.append(("switch", (f.id(), old)))
+            self._changed("Now {}.{}".format(new, note))
 
     def undo_last(self):
         if not self.undo:
@@ -366,6 +414,19 @@ class LabelEditTool(PlantEditTool):
             prov.deleteFeatures([data])
         elif kind == "remove":
             prov.addFeatures([data])
+        elif kind == "piece":  # 4.12.3: the plant goes back too
+            undo, x, y, back, switched = data
+            piece = getattr(self, "piece_switch", None)
+            if piece is not None and switched:
+                try:
+                    res, _same = piece(x, y, back, [])
+                    if res and res.get("state"):
+                        self.piece_switched(res)
+                except Exception:  # nosec B110 - the labels are restored below in any case
+                    _LOG_UNDO.debug("piece undo failed", exc_info=True)
+            prov.changeAttributeValues(
+                {fid: {fields.indexOf("label"): o[0], fields.indexOf("status"): o[1]} for fid, o in undo}
+            )
         else:
             prov.changeAttributeValues(
                 {data[0]: {fields.indexOf("label"): data[1][0], fields.indexOf("status"): data[1][1]}}

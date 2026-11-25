@@ -2079,7 +2079,9 @@ class PPEDockWidget(QDockWidget):
         self.label_weed_button = QPushButton("Weed ↔ plant")
         self.label_add_weed_button = QPushButton("＋ Weed")
         self.label_weed_button.setToolTip(
-            "Click on a point to switch it between weed and plant (a soil point becomes weed)."
+            "Click on a point to switch it between weed and plant (a soil point becomes weed). PPE's weeds are a "
+            "guess: a weed point on a crop plant switches the whole plant to crop, with its buffer and every "
+            "other point on it."
         )
         self.label_add_weed_button.setToolTip("Click on the map to add a weed point.")
         self.label_switch_button.setToolTip("Click on a point to switch it between plant and soil.")
@@ -2211,6 +2213,7 @@ class PPEDockWidget(QDockWidget):
                 "vote_path": r["vote_path"],
                 "findings_path": r.get("findings_path", ""),
                 "threshold": r.get("threshold"),
+                "weeds": r.get("weeds") if isinstance(r.get("weeds"), dict) else None,
             }
         self.labels_requested.emit(
             {
@@ -2430,7 +2433,8 @@ class PPEDockWidget(QDockWidget):
         self.label_progress.setValue(100)
         self.label_progress.setFormat("Complete")
         weeds = (
-            " and {} weed points from {:,} clear weed pixels".format(
+            " and {} weed points from {:,} clear weed pixels (PPE's weeds are a guess: check them; Weed ↔ plant on a "
+            "weed point that sits on a crop plant makes the whole plant crop)".format(
                 info["weed_points"], info.get("clear_weed_pixels", 0)
             )
             if info.get("weed_points")
@@ -2576,6 +2580,12 @@ class PPEDockWidget(QDockWidget):
             self._label_prev_tool = canvas.mapTool()
         tool = LabelEditTool(canvas, layer, mode)
         tool.undo = old.undo if old is not None else []
+        info = getattr(self, "_label_info", None) or {}
+        if info.get("weeds"):  # 4.12.3: a weed <-> plant fix switches the whole plant and the points on it
+            from .label_points import switch_piece
+
+            tool.piece_switch = lambda x, y, lab, pts: switch_piece(info, x, y, lab, pts)
+            tool.on_piece_switched = self._label_piece_switched
         tool.changed.connect(self._label_changed)
         tool.done.connect(self._label_edit_done)
         self._label_tool = tool
@@ -2591,7 +2601,8 @@ class PPEDockWidget(QDockWidget):
                 "remove": "Click on a point to remove it.",
                 "add_plant": "Click on the map to add a plant point.",
                 "add_soil": "Click on the map to add a soil point.",
-                "weed": "Click on a point to switch it between weed and plant.",
+                "weed": "Click on a point to switch it between weed and plant. PPE's weeds are a guess: the whole "
+                "plant under the point follows, with its buffer and every other point on it.",
                 "add_weed": "Click on the map to add a weed point.",
             }[mode]
             + " Esc or Done to stop."
@@ -2619,6 +2630,31 @@ class PPEDockWidget(QDockWidget):
             self.label_done_button.setEnabled(False)
         if tool is not None:
             self._label_changed("Checks saved.")
+
+    def _label_piece_switched(self, res):
+        """A label fix switched a whole plant between weed and crop in What PPE found."""
+        info = getattr(self, "_label_info", None) or {}
+        r = self.result or {}
+        if r.get("findings_path") and os.path.abspath(r["findings_path"]) == os.path.abspath(
+            info.get("findings_path") or ""
+        ):
+            if hasattr(self, "weed_review_status"):
+                self._weed_reviewed(res)  # the same findings as the mask on the map: its card and layers follow
+                return
+            hist = r.get("findings_hist")
+            for code, levels in (res.get("hist_delta") or {}).items() if hist else ():
+                while code >= len(hist):
+                    hist.append([0] * len(hist[0]))
+                for lv, n in levels.items():
+                    hist[code][lv] += n
+            from .layer_utils import reload_findings_layers
+
+            reload_findings_layers()
+            self._update_pale_card()
+        else:
+            from .layer_utils import reload_findings_layers
+
+            reload_findings_layers()
 
     def _label_changed(self, message):
         info = getattr(self, "_label_info", None)

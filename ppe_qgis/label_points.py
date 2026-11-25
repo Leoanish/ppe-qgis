@@ -442,6 +442,7 @@ def create_points(cfg, progress=lambda p, m: None, log=lambda m: None, cancelled
             if k in cfg
         },
         "max_buffer_cm": min(MAX_BUFFER_CM, MAX_BUFFER_PX * R.pixel_cm),
+        "weeds": piece_info(cfg.get("weeds")),  # 4.12.3: lets a weed <-> plant fix switch the whole plant
         "step_cm": STEP_CM,
         "buffer_pixels": hist,
         "seed": seed,
@@ -505,6 +506,7 @@ def run_and_create(cfg, progress=lambda p, m: None, log=lambda m: None, cancelle
             mask_path=a["mask_path"],
             vote_path=r["vote_path"],
             findings_path=r.get("findings_path", ""),
+            weeds=r.get("weeds"),
             output_dir=out,
         ),
         part(62, 100),
@@ -513,6 +515,56 @@ def run_and_create(cfg, progress=lambda p, m: None, log=lambda m: None, cancelle
     )
     info.update(threshold=threshold, canopy_pct=a.get("canopy_pct"), vote_path=r["vote_path"], mask_path=a["mask_path"])
     return info
+
+
+PIECE_KEYS = ("groups_path", "before_path", "ids_path", "points_path", "cut", "typical_px")
+
+
+def piece_info(weeds):
+    """The parts of a run's weeds summary that switching one plant piece needs (None without them)."""
+    if not isinstance(weeds, dict) or not weeds.get("groups_path") or not os.path.isfile(weeds["groups_path"]):
+        return None
+    return {k: weeds.get(k) for k in PIECE_KEYS}
+
+
+def switch_piece(info, x, y, to_label, points=()):
+    """4.12.3: a label point was switched between weed and plant. PPE's weeds are a guess, so the whole plant
+    piece under (x, y) follows in What PPE found: to 'plant' it becomes crop, to 'weed' a weed. Plant buffers,
+    weed buffers and new points then follow it too. points: (feature id, x, y, label) of the other label
+    points; returns the result of plant_count.toggle_weed_piece (or None) and the ids of the points on the
+    same piece whose label should follow."""
+    from .plant_count import toggle_weed_piece
+
+    weeds, fpath, vpath = info.get("weeds"), info.get("findings_path"), info.get("vote_path")
+    if not weeds or not fpath or not vpath or not os.path.isfile(fpath):
+        return None, []
+    g_ds = gdal.Open(weeds["groups_path"])
+    f_ds = gdal.Open(fpath)
+    if g_ds is None or f_ds is None:
+        return None, []
+    gt = g_ds.GetGeoTransform()
+    gb, fb = g_ds.GetRasterBand(1), f_ds.GetRasterBand(1)
+    W, H = g_ds.RasterXSize, g_ds.RasterYSize
+
+    def at(band, px, py):
+        c, r = int(math.floor((px - gt[0]) / gt[1])), int(math.floor((py - gt[3]) / gt[5]))
+        return int(band.ReadAsArray(c, r, 1, 1)[0, 0]) if 0 <= c < W and 0 <= r < H else 0
+
+    gid = at(gb, x, y)
+    if gid <= 0:
+        return None, []
+    is_weed = at(fb, x, y) in WEED_CODES
+    f_ds = None
+    if is_weed == (to_label == "weed"):
+        res = {"state": None, "message": ""}  # the piece is already what the point now says
+    else:
+        res = toggle_weed_piece(weeds, fpath, vpath, x, y)
+    same = [
+        fid for fid, px, py, lab in points if lab in ("weed", "plant") and lab != to_label and at(gb, px, py) == gid
+    ]
+    if res.get("state") is None and is_weed != (to_label == "weed"):
+        same = []  # the piece could not be switched (too big): only the clicked point changes
+    return res, same
 
 
 def _write_points(path, points, cols, R, cfg):
