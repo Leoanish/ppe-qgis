@@ -16,17 +16,16 @@ tags=drone,raster,plant,canopy,multispectral,vegetation,segmentation,plant count
 repository=https://github.com/Leoanish/ppe-qgis
 tracker=https://github.com/Leoanish/ppe-qgis/issues
 homepage=https://github.com/Leoanish/ppe-qgis
-changelog=4.12.3:
-    - Create labels: when PPE took a crop plant for a weed, Weed ↔ plant on its weed point now makes the whole plant crop in What PPE found, switches every other point on that plant and rebuilds its buffer, so no wrong weed labels are left (and the other way round). Undo puts the plant back.
-    4.12.2:
-    - The panel fits its width on every goal and tab: long options and labels wrap, button rows stack when the panel is narrow, no clipped controls and no sideways scrolling.
-    - Goal list: Plant mask, Plant counter, Create labels, Training data for a model.
-    - The background weed search shows above the tabs on every tab, with the seconds it has run, then what it found.
-    4.12.1:
-    - Plant count summary in short sections: counted, not counted (weeds between and inside the rows, spots with no sure plant), check first (long patches split into many plants), how PPE measured, files.
-    - The Review tab says when PPE is looking for weeds in the background and what it found; a message appears when they are ready.
-    - Faster splitting of long touching patches (same result); no CRS warning while counting.
-    4.12.0 (all changes since 4.5.2):
+changelog=4.12.3 (all changes since 4.11.1):
+    - Finalize locks the threshold, so the plant counter, labels, training data and exports all use the finalized mask; Change threshold unlocks it.
+    - Faster runs: weeds are found in the background after a run; the mask, the card and the slider are ready without waiting, and a line above the tabs shows the search (with its seconds) and what it found.
+    - Easier to use: Run PPE now from the Image tab, a plain-language Run tab, a help button that opens the guide at your step, time left on every progress bar, and plain error messages that say what to do next.
+    - The panel fits any width: long options and labels wrap, button rows stack when the panel is narrow, nothing is cut off and nothing scrolls sideways.
+    - Goal list in order of use: Plant mask, Plant counter, Create labels, Training data for a model.
+    - Plant count summary in short sections: counted, not counted (weeds between and inside the rows), check first (long patches split into many plants), how PPE measured, files.
+    - Create labels: if PPE took a crop plant for a weed, Weed ↔ plant on its point makes the whole plant crop, switches every other point on it and rebuilds its buffer, so no wrong weed labels remain. Undo puts it back.
+    - Large images draw fast when zoomed out (map overviews); Batch finds each image's weeds while the next image runs; long touching patches split much faster (same result).
+    4.11.1 (all changes since 4.5.2):
     - New goal Create labels: plant and soil (and optional weed) points on clear pixels only, spread over the image by conditioned Latin hypercube sampling; optional area; check them on the map; grow them with a live buffer slider that follows the leaf or soil; export points, buffers, label raster and pixel table.
     - Plant counter for crop rows: finds the rows and the plant spacing (from confident single plants), splits touching plants by length divided by spacing, marks weeds between and inside the rows; Split, Merge, Plant or weed, Add and Remove tools; counting inside a drawn area; clear summary of what is counted.
     - Weeds in What PPE found: after every run, weeds between and inside the rows are listed; review them on the map with one click per plant (weed or crop) and leave them out for a clean plant-only mask. Every kind on the card now has Leave out and Add.
@@ -35,10 +34,6 @@ changelog=4.12.3:
     - Faster and lighter, same results: a run uses at most about 1 GB of memory, the image sample is read on all CPU cores, the crop-row search is multi-threaded. A full run on a 34 megapixel 5-band field takes 13 s instead of 18 s; the plant counter is about 40 percent faster.
     - Each image gets its own output folder; switching goals tidies the map; PPE always opens on the Plant mask goal.
     - Ready for QGIS 4 (Qt6) and still works on QGIS 3.28 and later.
-    - After Finalize mask the threshold is locked, so the plant counter, labels, training data and exports all use the finalized mask; Change threshold unlocks it.
-    - Weeds are found in the background after a run: the mask, the card and the slider are ready without waiting, and the weed kinds join the card a few seconds later.
-    - Easier to use: Run PPE now straight from the Image tab, a plain-language Run tab, a help button that opens the user guide at the step you are on, the time left on every progress bar, and plain error messages that say what to do next.
-    - Large images draw fast when zoomed out (map overviews), and Batch finds each image's weeds while the next image runs.
     - Passes the plugins.qgis.org validator and security scan (Bandit, detect-secrets and Flake8: no findings).
     4.5.2: Plugin page description updated (batch, plant counter, training data). No change in how PPE works.
     4.5.1: Crop rows are found automatically: PPE finds the direction and spacing of the rows itself (15 to 150 cm, any crop) from the plant pixels, fitted separately in each 4 m patch so shifted plots still fit. Plants between rows are marked as possible weeds; where rows are not clear, nothing is marked. No spacing to type: the Count tab has one checkbox, Find crop rows. Found 91 cm on Tifton and Midville and 76 cm on IH corn; no rows on a closed canopy.
