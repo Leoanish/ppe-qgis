@@ -652,6 +652,12 @@ class PPEDockWidget(QDockWidget):
         help_text.setObjectName("ppeHint")
         layout.addWidget(title)
         layout.addWidget(help_text)
+        # 4.12.1: the weeds are found in the background after a run; this line says so, and what was found
+        self.weeds_status = QLabel("")
+        self.weeds_status.setWordWrap(True)
+        self.weeds_status.setVisible(False)
+        layout.addWidget(self._note(self.weeds_status, "accent"))
+        self.weeds_status.parentWidget().setVisible(False)
         # Shown while an image of a batch is open (tab 6): which one, and a quick way to the next.
         self.batch_banner = QFrame()
         self.batch_banner.setObjectName("accentBox")
@@ -1502,35 +1508,144 @@ class PPEDockWidget(QDockWidget):
         self.count_progress.setFormat("Complete")
         if result.get("batch_counts_csv"):
             text = "{} plants in {} images.\n{}".format(result["plants"], result["images"], result["batch_counts_csv"])
-        else:
-            rows = result.get("rows") or {}
-            text = self._count_line(result)
-            auto = result.get("auto_split") or {}
-            if auto.get("note"):
-                text += "\n" + auto["note"][0].upper() + auto["note"][1:] + "."
-            if result.get("split_by_ppe"):
-                text += "\nOn the map, '2/3' next to a point means part 2 of a patch split into 3."
-            rw = result.get("row_weeds") or {}
-            if rw.get("note") and rw.get("flagged") is not None and "not checked" not in rw.get("note", ""):
-                text += "\n" + rw["note"][0].upper() + rw["note"][1:] + "."
-            if result.get("flagged_big"):
-                text += (
-                    "\nOrange 'check' points count as one plant each but may be several touching plants: ✂ Split them"
-                    " below."
-                )
-            if rows and rows.get("rows"):
-                text += "\nCrop rows found {:.0f} cm apart.".format(rows.get("spacing_cm", 0))
-            elif rows:
-                text += "\nNo clear crop rows: nothing was marked as weed."
-            if result.get("no_core_left_out"):
-                text += (
-                    "\n{} spots not counted: no pixel there where every PPE vote says plant (soil let in by the"
-                    " threshold).".format(result["no_core_left_out"])
-                )
-            if result.get("plot_counts_path"):
-                text += "\nPer plot: {}".format(result["plot_counts_path"])
-            text += "\nPoints: {}".format(result.get("points_path", ""))
-        self.count_status.setText(text + "\n" + result.get("note", ""))
+            self.count_status.setTextFormat(Qt.TextFormat.PlainText)
+            self.count_status.setText(text + "\n" + result.get("note", ""))
+            return
+        self.count_status.setTextFormat(Qt.TextFormat.RichText)
+        self.count_status.setText(self.count_summary_html(result))
+
+    @staticmethod
+    def count_summary_html(r):
+        """4.12.1: the count in short sections with bullets: counted, not counted, check first, how PPE
+        measured, files. Every number is the count's own."""
+        from html import escape as esc
+
+        def n(v):
+            return "{:,}".format(int(v or 0))
+
+        def ul(items):
+            items = [i for i in items if i]
+            return (
+                "<ul style='margin-top:2px; margin-bottom:6px; -qt-list-indent:1;'>"
+                + "".join("<li>{}</li>".format(i) for i in items)
+                + "</ul>"
+                if items
+                else ""
+            )
+
+        auto = r.get("auto_split") or {}
+        rw = r.get("row_weeds") or {}
+        rows = r.get("rows") or {}
+        weeds = int(r.get("weeds_not_counted") or 0)
+        in_row = int(r.get("weeds_in_row") or 0)
+        head = "<p style='margin-bottom:4px;'><b style='font-size:14px;'>{} plants counted</b>{}</p>".format(
+            n(r.get("plants")), " · {:.2f} per m²".format(r["plants_per_m2"]) if r.get("plants_per_m2") else ""
+        )
+        counted = ul(
+            [
+                "{} single plants".format(n(r.get("plain_plants", r.get("plants")))),
+                (
+                    "{} from {} touching patches split by PPE".format(n(r["split_by_ppe"]), n(auto.get("groups_split")))
+                    if r.get("split_by_ppe")
+                    else ""
+                ),
+                (
+                    "{} orange <i>check</i> points, one plant each (may be several touching plants: ✂ Split)".format(
+                        n(r["flagged_big"])
+                    )
+                    if r.get("flagged_big")
+                    else ""
+                ),
+                "{} split by you".format(n(r["split_by_user"])) if r.get("split_by_user") else "",
+                "{} added by you".format(n(r["added_by_user"])) if r.get("added_by_user") else "",
+            ]
+        )
+        not_counted = ul(
+            [
+                (
+                    "{} possible weeds: {} between the rows, {} inside the rows (switch any crop back to plant)".format(
+                        n(weeds), n(weeds - in_row), n(in_row)
+                    )
+                    if weeds
+                    else ""
+                ),
+                (
+                    "{} spots with no sure plant pixel (soil let in by the threshold)".format(n(r["no_core_left_out"]))
+                    if r.get("no_core_left_out")
+                    else ""
+                ),
+            ]
+        )
+        patches = sorted(auto.get("patches") or [], key=lambda p: -float(p.get("plants") or 0))
+        long_ones = [p for p in patches if int(p.get("plants") or 0) >= 6]
+        check = ul(
+            [
+                (
+                    "{} long patch{} split into 6 or more plants: {}{}. "
+                    "Long strips can be weeds or canopy that has closed; "
+                    "check them on the map".format(
+                        len(long_ones),
+                        "" if len(long_ones) == 1 else "es",
+                        ", ".join("{:.0f} cm → {}".format(float(p["length_cm"]), p["plants"]) for p in long_ones[:5]),
+                        ", …" if len(long_ones) > 5 else "",
+                    )
+                    if long_ones
+                    else ""
+                ),
+                (
+                    "the other split patches: '2/3' next to a point means part 2 of a patch split into 3"
+                    if patches
+                    else ""
+                ),
+            ]
+        )
+        sp = auto.get("plant_spacing_cm")
+        how = ul(
+            [
+                (
+                    "crop rows {:.0f} cm apart".format(rows.get("spacing_cm", 0))
+                    if rows.get("rows")
+                    else ("no clear crop rows, so nothing was marked as weed" if rows else "")
+                ),
+                (
+                    "plant spacing in the row {:.1f} cm ({})".format(sp, esc(str(auto.get("spacing_from", ""))))
+                    if sp
+                    else ""
+                ),
+                (
+                    "patches longer than {:.1f} cm (1.5 × spacing) are split, one plant per {:.1f} cm".format(
+                        float(r.get("split_longer_than_cm") or auto.get("split_longer_than_cm") or 1.5 * sp), sp
+                    )
+                    if sp
+                    else ""
+                ),
+                (
+                    "weeds inside the rows: closer than {:.1f} cm to a plant and smaller than a typical plant "
+                    "({:.0f} cm²)".format(rw["close_cm"], rw["typical_cm2"])
+                    if rw.get("flagged") is not None and rw.get("close_cm")
+                    else ""
+                ),
+            ]
+        )
+        files = ul(
+            [
+                "points: {}".format(esc(r.get("points_path", ""))),
+                "per plot: {}".format(esc(r["plot_counts_path"])) if r.get("plot_counts_path") else "",
+            ]
+        )
+        parts = [head, "<b>Counted</b>" + counted]
+        if not_counted:
+            parts.append("<b>Not counted</b>" + not_counted)
+        if check:
+            parts.append("<b>⚠ Check first</b>" + check)
+        if how:
+            parts.append("<b>How PPE measured</b>" + how)
+        parts.append("<b>Files</b>" + files)
+        parts.append(
+            "<span style='color:#5b6b63;'>Early season only: plants whose leaves already overlap are counted as "
+            "one.</span>"
+        )
+        return "".join(parts)
 
     # ---- goal: training data ---------------------------------------------------------------
     def _training_tab(self):
@@ -3262,6 +3377,7 @@ class PPEDockWidget(QDockWidget):
             self.curve_dialog = None
         if self._locked():
             self._set_locked(False)
+        self._show_weeds_status("")
         self.result = {}
         self.curve_points = []
         self._update_label_source()
@@ -4201,6 +4317,39 @@ class PPEDockWidget(QDockWidget):
     def _weeds_pending(self):
         return bool(((self.result or {}).get("weeds") or {}).get("pending"))
 
+    def _refresh_weeds_status(self):
+        """The line at the top of Review: looking for weeds (background), what was found, or why not."""
+        w = (self.result or {}).get("weeds")
+        if not w:
+            text = ""
+        elif w.get("pending"):
+            text = (
+                "⏳ Looking for weeds between and inside the crop rows, in the background. You can review and "
+                "finalize meanwhile; What PPE found updates in a few seconds."
+            )
+        elif self._weeds_found():
+            nb, ni = int(w.get("between") or 0), int(w.get("in_row") or 0)
+            text = (
+                "✓ Weeds checked: {} between the rows and {} inside the rows. They are listed under What PPE "
+                "found, where you can review them on the map and leave them out.".format(nb, ni)
+                if nb + ni
+                else "✓ Weeds checked: PPE found no weeds between or inside the crop rows."
+            )
+        else:
+            note = str(w.get("note") or "no clear crop rows")
+            text = (
+                (note[0].upper() + note[1:] + ".")
+                if note.startswith("weeds not")
+                else "Weeds not marked: {}.".format(note)
+            )
+        self._show_weeds_status(text)
+
+    def _show_weeds_status(self, text):
+        holder = self.weeds_status.parentWidget()
+        self.weeds_status.setText(text)
+        self.weeds_status.setVisible(bool(text))
+        holder.setVisible(bool(text))
+
     def set_weeds(self, result):
         """4.11.2: the weeds found in the background after the run join What PPE found."""
         r = self.result or {}
@@ -4215,6 +4364,7 @@ class PPEDockWidget(QDockWidget):
             self._update_pale_card()
             self._update_clip_status()
         w = r["weeds"]
+        self._refresh_weeds_status()
         if hasattr(self, "weed_review_status") and not self._weeds_found():
             self.weed_review_status.setText("No weeds marked: {}.".format(w.get("note", "no clear crop rows")))
 
@@ -4944,6 +5094,7 @@ class PPEDockWidget(QDockWidget):
         for code in self.finding_rows:
             self.set_finding_state(code, None)
         self.result = dict(result)
+        self._refresh_weeds_status()
         self._update_label_source()
         self.curve_points = list(curve_points)
         threshold = float(result.get("threshold", 0.5))

@@ -8,7 +8,9 @@ PPE separates plant pixels from soil in drone orthomosaics, with no training dat
 
 **How it works, in one paragraph.** PPE ranks the vegetation indices the image allows by how well they spread plant from soil. It splits the three best with four automatic thresholds (Otsu, CDF knee, k-means and multi-Otsu), and the twelve results vote. A pixel's vote is the share of those twelve that call it plant. Guards then remove shadows, algae on wet soil and grey objects. You choose the vote threshold with a live slider; for images with a NIR band PPE suggests one.
 
-**New in 4.11.1** (all changes since the last published version):
+**New in 4.12.1:** the plant count summary comes in short sections (counted, not counted, check first, how PPE measured, files); the Review tab says while PPE looks for weeds in the background and what it found; long touching patches split faster.
+
+**New in 4.11.1** (all changes since 4.5.2):
 
 - **Weeds in What PPE found**: after every run PPE lists weeds between and inside the crop rows. Click any plant on the map to mark it weed or crop, then leave the weeds out for a clean plant-only mask ([section 7](#7-what-ppe-found-tassels-leaf-edges-shade-dry-leaves-sparse-spots-weeds)).
 - **Crop-only mask** from the checked plant count ([section 12](#12-goal-plant-counter-count-plants)).

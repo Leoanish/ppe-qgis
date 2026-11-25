@@ -115,7 +115,11 @@ def _plant_groups(mask_path, vote_path, min_px, join_px, hole_px, progress, log,
         soil = None
     progress(40, "Finding plants")
     src = ogr.GetDriverByName("Memory").CreateDataSource("groups")
-    layer = src.CreateLayer("g", None, ogr.wkbPolygon)
+    gsrs = None
+    if wkt:  # same CRS as the mask, so GDAL does not warn while burning the groups back
+        gsrs = osr.SpatialReference()
+        gsrs.ImportFromWkt(wkt)
+    layer = src.CreateLayer("g", gsrs, ogr.wkbPolygon)
     layer.CreateField(ogr.FieldDefn("v", ogr.OFTInteger))
     gdal.Polygonize(jb, jb, layer, 0, ["8CONNECTED=8"])
     n = layer.GetFeatureCount()
@@ -750,7 +754,7 @@ def _dilate(m, r=1):
     out = np.zeros_like(m)
     for dy in range(-r, r + 1):
         for dx in range(-r, r + 1):
-            out |= p[r + dy: r + dy + h, r + dx: r + dx + w]
+            out |= p[r + dy:r + dy + h, r + dx:r + dx + w]
     return out
 
 
@@ -781,14 +785,29 @@ def _group_window(info, x, y, area_cm2=None, ds=None):
     allowed = _dilate(plant, join_px) if join_px else plant.copy()
     py, px = np.nonzero(plant)
     k = int(np.argmin((px - (cx - x0)) ** 2 + (py - (cy - y0)) ** 2))  # plant pixel nearest the point
-    seed = np.zeros_like(plant)
-    seed[py[k], px[k]] = True
-    for _ in range(4 * half):  # flood fill through the joined area
-        grown = _dilate(seed) & allowed
-        if (grown == seed).all():
-            break
-        seed = grown
+    seed = _flood(allowed, py[k], px[k], 4 * half)
     return seed & plant, x0, y0, gt, pixel_cm, info
+
+
+def _flood(allowed, sy, sx, steps):
+    """Flood fill (8 neighbours) from one pixel through 'allowed', at most 'steps' rings, exactly as repeated
+    3 x 3 dilation of the whole window would. 4.12.1: each ring only works on the filled part's box plus one
+    pixel, so a long patch in a big window takes milliseconds instead of seconds."""
+    H, W = allowed.shape
+    seed = np.zeros_like(allowed)
+    seed[sy, sx] = True
+    y0, y1, x0, x1 = sy, sy + 1, sx, sx + 1
+    for _ in range(steps):
+        a0, a1, b0, b1 = max(0, y0 - 1), min(H, y1 + 1), max(0, x0 - 1), min(W, x1 + 1)
+        cur = seed[a0:a1, b0:b1]
+        grown = _dilate(cur) & allowed[a0:a1, b0:b1]
+        if (grown == cur).all():
+            break
+        seed[a0:a1, b0:b1] = grown
+        ys = np.nonzero(grown.any(axis=1))[0]
+        xs = np.nonzero(grown.any(axis=0))[0]
+        y0, y1, x0, x1 = a0 + ys[0], a0 + ys[-1] + 1, b0 + xs[0], b0 + xs[-1] + 1
+    return seed
 
 
 def suggest_split(points_path, x, y, area_cm2):
@@ -825,11 +844,16 @@ def _split_window(g, n):
     sep = math.sqrt(len(px) / n / math.pi)  # a lobe's radius if the n plants were equal
     order = np.argsort(-d)
     seeds = []
-    for i in order:  # deepest pixels first, kept apart
-        if all((px[i] - px[j]) ** 2 + (py[i] - py[j]) ** 2 >= sep**2 for j in seeds):
-            seeds.append(i)
-        if len(seeds) == n:
+    free = np.ones(len(px), bool)  # pixels at least sep from every chosen seed (same test as before, vectorized)
+    rank = np.empty(len(px), np.int64)
+    rank[order] = np.arange(len(px))
+    while len(seeds) < n:  # deepest pixels first, kept apart
+        cand = np.nonzero(free)[0]
+        if not len(cand):
             break
+        i = int(cand[np.argmin(rank[cand])])
+        seeds.append(i)
+        free &= (px - px[i]) ** 2 + (py - py[i]) ** 2 >= sep**2
     while len(seeds) < n:  # not enough separate lobes: farthest point from the chosen ones
         dd = np.min([(px - px[j]) ** 2 + (py - py[j]) ** 2 for j in seeds], axis=0)
         seeds.append(int(np.argmax(dd)))

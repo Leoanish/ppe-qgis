@@ -545,6 +545,14 @@ class PPEPlugin:
         if result.get("weeds") is None:
             return  # overviews only (no weeds were looked for)
         self.dock.set_weeds(result)
+        w = result.get("weeds") or {}
+        if w.get("rows_found") and (w.get("between") or w.get("in_row")):  # 4.12.1: say so even off the Review tab
+            self._message(
+                "Weeds found: {} between and {} inside the crop rows. See What PPE found.".format(
+                    w.get("between", 0), w.get("in_row", 0)
+                ),
+                Qgis.MessageLevel.Info,
+            )
         self._refresh_preview()
         if self.dock.pale_shown():  # What PPE found layers on the map: show them from the new file
             self._pale_layer_toggled(True)
