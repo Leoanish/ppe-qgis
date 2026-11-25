@@ -244,7 +244,7 @@ folder (the pieces, the points and the findings before the weeds).
 
 The plant counter marks possible weeds (weed?, between the rows or crowding a crop plant in the row). Check
 them on the map: switch any that are crop back to plant (Plant ↔ weed), and switch crop points that sit on
-weeds to weed. Then press **Make crop-only mask (leave out the weeds)** in the Count tab. PPE writes
+weeds to weed. Then press **Crop-only mask (no weeds)** in the Count tab. PPE writes
 `<mask>_crop_only.tif` next to the points: the plant mask without every plant piece whose points are all
 weed? or that you removed. A piece that still has a counted point stays whole, so a weed touching a crop
 plant stays in. The count now also saves `ppe_plant_groups.tif` (which pixels belong to which plant piece).

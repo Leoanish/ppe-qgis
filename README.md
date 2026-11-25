@@ -8,6 +8,8 @@ PPE separates plant pixels from soil in drone orthomosaics, with no training dat
 
 **How it works, in one paragraph.** PPE ranks the vegetation indices the image allows by how well they spread plant from soil. It splits the three best with four automatic thresholds (Otsu, CDF knee, k-means and multi-Otsu), and the twelve results vote. A pixel's vote is the share of those twelve that call it plant. Guards then remove shadows, algae on wet soil and grey objects. You choose the vote threshold with a live slider; for images with a NIR band PPE suggests one.
 
+**New in 4.12.2:** the panel fits any width (text wraps, buttons stack, no sideways scrolling); Training data is last in the goal list; the weed search shows above the tabs while it runs.
+
 **New in 4.12.1:** the plant count summary comes in short sections (counted, not counted, check first, how PPE measured, files); the Review tab says while PPE looks for weeds in the background and what it found; long touching patches split faster.
 
 **New in 4.11.1** (all changes since 4.5.2):
@@ -221,7 +223,7 @@ Only one magenta layer is shown at a time. After Finalize the map shows the fina
 1. **Export folder**.
 2. Choose what to write:
    - **Export plant-only bands**: every band with soil set to NoData;
-   - **Export plant-only vegetation indices**: every index the image allows;
+   - **Export plant-only indices**: every index the image allows;
    - **Export bands and all indices**: both.
 
 Each raster is a GeoTIFF on the original pixel grid. Exporting all indices of a large image can take time and disk space; PPE asks first.
@@ -318,7 +320,7 @@ The panel says the same after every change, for example *Counted: 214 plants = 1
 
 Each click is saved in `ppe_plants.gpkg` at once, and the count, plants per m², `ppe_count_summary.csv` and the counts per plot are updated.
 
-**Crop-only mask.** Once the points are checked, **Make crop-only mask (leave out the weeds)** writes `<mask>_crop_only.tif` next to the points and shows it as **PPE · Crop-only plant mask**: the plant mask without every plant piece whose points are all *weed?* or that you removed. A piece that still has a counted point stays whole. Press it again after more fixes to update it.
+**Crop-only mask.** Once the points are checked, **Crop-only mask (no weeds)** writes `<mask>_crop_only.tif` next to the points and shows it as **PPE · Crop-only plant mask**: the plant mask without every plant piece whose points are all *weed?* or that you removed. A piece that still has a counted point stays whole. Press it again after more fixes to update it.
 
 ## 13. Goal Training data: tiles and labels for a model
 

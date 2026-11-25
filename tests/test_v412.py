@@ -145,3 +145,45 @@ class TestV4121(unittest.TestCase):
             "/p/ppe_plants.gpkg",
         ):
             self.assertIn(part, html)
+
+
+class TestV4122(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from qgis.testing import start_app
+
+        start_app()
+
+    def test_goal_order_and_panel_fits(self):
+        from qgis.PyQt.QtWidgets import QScrollArea
+        from qgis.testing.mocked import get_iface
+
+        import ppe_qgis
+
+        plugin = ppe_qgis.classFactory(get_iface())
+        plugin.initGui()
+        plugin.run()
+        d = plugin.dock
+        try:
+            self.assertEqual(
+                [d.goal.itemData(i) for i in range(d.goal.count())], ["mask", "count", "labels", "training"]
+            )
+            host = d.widget()
+            host.setParent(None)
+            host.show()
+            for key in ("mask", "count", "labels", "training"):
+                d.goal.setCurrentIndex(d.goal.findData(key))
+                for i in range(d.tabs.count()):
+                    if not d.tabs.isTabVisible(i):
+                        continue
+                    d.tabs.setCurrentIndex(i)
+                    host.resize(host.minimumSizeHint().width(), 900)
+                    from qgis.PyQt.QtWidgets import QApplication
+
+                    QApplication.processEvents()
+                    sc = d.tabs.widget(i)
+                    sc = sc if isinstance(sc, QScrollArea) else sc.findChild(QScrollArea)
+                    self.assertLessEqual(sc.widget().width(), sc.viewport().width() + 1, (key, d.tabs.tabText(i)))
+            self.assertLess(host.minimumSizeHint().width(), 360)
+        finally:
+            plugin.unload()

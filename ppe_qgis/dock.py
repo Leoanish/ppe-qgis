@@ -6,10 +6,11 @@ import os
 import time
 from statistics import median
 
-from qgis.PyQt.QtCore import QEvent, QObject, QSettings, QStandardPaths, Qt, QTimer, pyqtSignal
+from qgis.PyQt.QtCore import QEvent, QObject, QSettings, QSize, QStandardPaths, Qt, QTimer, pyqtSignal
 from qgis.PyQt.QtCore import QUrl
 from qgis.PyQt.QtGui import QBrush, QColor, QDesktopServices
 from qgis.PyQt.QtWidgets import (
+    QAbstractButton,
     QAbstractItemView,
     QAbstractSpinBox,
     QCheckBox,
@@ -22,6 +23,7 @@ from qgis.PyQt.QtWidgets import (
     QFormLayout,
     QFrame,
     QGridLayout,
+    QBoxLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -33,6 +35,7 @@ from qgis.PyQt.QtWidgets import (
     QSizePolicy,
     QSlider,
     QSpinBox,
+    QStyle,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -86,6 +89,88 @@ class _TextHeightKeeper(QObject):
         needed = rect.height() + margins.top() + margins.bottom() + 2
         if label.minimumHeight() != needed:
             label.setMinimumHeight(needed)
+
+
+class _AdaptiveRow(QWidget):
+    """4.12.2: a row of buttons side by side while they fit the panel, stacked one under the other when the
+    panel is narrower, so the panel never needs a horizontal scroll bar."""
+
+    def __init__(self, spacing=8, parent=None):
+        super().__init__(parent)
+        self.box = QBoxLayout(QBoxLayout.Direction.LeftToRight, self)
+        self.box.setContentsMargins(0, 0, 0, 0)
+        self.box.setSpacing(spacing)
+
+    def _buttons(self):
+        return [self.box.itemAt(k).widget() for k in range(self.box.count()) if self.box.itemAt(k).widget()]
+
+    def _side_by_side_width(self):
+        shown = [w for w in self._buttons() if not w.isHidden()]
+        return sum(w.sizeHint().width() for w in shown) + self.box.spacing() * max(0, len(shown) - 1)
+
+    def minimumSizeHint(self):
+        hint = super().minimumSizeHint()
+        shown = [w for w in self._buttons() if not w.isHidden()]
+        widest = max([w.minimumSizeHint().width() for w in shown] or [0])
+        return QSize(widest, hint.height())
+
+    def resizeEvent(self, event):
+        wide = event.size().width() >= self._side_by_side_width()
+        want = QBoxLayout.Direction.LeftToRight if wide else QBoxLayout.Direction.TopToBottom
+        if self.box.direction() != want:
+            self.box.setDirection(want)
+            self.updateGeometry()
+        super().resizeEvent(event)
+
+
+class _WrapCheck(QWidget):
+    """4.12.2: a check box whose text wraps to the panel width (a QCheckBox's own text never wraps and
+    kept the panel wide). The original check box stays the one the code reads and sets."""
+
+    def attach(self, check, keeper):
+        box = QHBoxLayout(self)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(4)
+        self.check = check
+        self.label = QLabel(check.text())
+        self.label.setWordWrap(True)
+        self.label.setMinimumWidth(1)
+        self.label.setToolTip(check.toolTip())
+        self.label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.label.mousePressEvent = self._clicked
+        self.label.setEnabled(check.isEnabled())
+        box.addWidget(check, 0, Qt.AlignmentFlag.AlignTop)
+        box.addWidget(self.label, 1)
+        keeper(self.label)
+        hidden = check.isHidden()
+        check.setText("")
+        check.setVisible(True)
+        self.setVisible(not hidden)
+        # the code keeps using the check box: its text, tooltip, visibility and enabled state follow here
+        holder, label = self, self.label
+        orig_enabled, orig_tip = check.setEnabled, check.setToolTip
+        check.setText = label.setText
+        check.text = label.text
+        check.setVisible = holder.setVisible
+        check.setHidden = holder.setHidden
+        check.show = holder.show
+        check.hide = holder.hide
+        check.isHidden = holder.isHidden
+
+        def set_enabled(on):
+            orig_enabled(on)
+            label.setEnabled(on)
+
+        def set_tip(tip):
+            orig_tip(tip)
+            label.setToolTip(tip)
+
+        check.setEnabled = set_enabled
+        check.setToolTip = set_tip
+
+    def _clicked(self, event):
+        if self.check.isEnabled() and event.button() == Qt.MouseButton.LeftButton:
+            self.check.click()
 
 
 class HSIWavelengthDialog(QDialog):
@@ -216,6 +301,8 @@ class PPEDockWidget(QDockWidget):
         title.setObjectName("ppeTitle")
         subtitle = QLabel("Separate plant pixels from soil in drone imagery")
         subtitle.setObjectName("ppeSubtitle")
+        subtitle.setWordWrap(True)
+        subtitle.setMinimumWidth(1)
         header_layout.addWidget(title)
         header_layout.addWidget(subtitle)
         goal_row = QHBoxLayout()
@@ -227,15 +314,17 @@ class PPEDockWidget(QDockWidget):
         for text, key in (
             ("Plant mask", "mask"),
             ("Plant counter", "count"),
-            ("Training data for a model", "training"),
             ("Create labels", "labels"),
+            ("Training data for a model", "training"),
         ):
             self.goal.addItem(text, key)
+        self.goal.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.goal.setMinimumContentsLength(8)
         self.goal.setToolTip(
             "Plant mask: plant pixels, plant-only bands and plot statistics.\n"
             "Plant counter: count plants (early season) per image and per plot.\n"
-            "Training data: image tiles with PPE labels to train a fast model, no hand labelling.\n"
             "Create labels: plant and soil label points (and buffers) for your own machine-learning model.\n"
+            "Training data: image tiles with PPE labels to train a fast model, no hand labelling.\n"
             "Every goal starts with the same steps: image, run, review."
         )
         goal_row.addWidget(goal_label)
@@ -252,7 +341,7 @@ class PPEDockWidget(QDockWidget):
 
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
-        self.tabs.setUsesScrollButtons(False)  # five short labels always fit; no hidden tabs
+        self.tabs.setUsesScrollButtons(True)  # 4.12.2: arrows only when the panel is narrower than the tabs
         self.tabs.tabBar().setExpanding(True)
         # Every page is built once; the goal decides which are shown (and their numbers).
         self._pages = {
@@ -266,6 +355,15 @@ class PPEDockWidget(QDockWidget):
             "labels": (self._labels_tab(), "Labels", "Plant and soil label points for a machine-learning model"),
             "batch": (self._batch_tab(), "Batch", "Many images at once: run a folder, review each, finalize all"),
         }
+        # 4.12.2: the background weed search is shown above the tabs, so it is seen on every tab
+        self.weeds_status = QLabel("")
+        self.weeds_status.setObjectName("weedsStatus")
+        weeds_box = self._note(self.weeds_status, "accent")
+        weeds_box.setVisible(False)
+        root.addWidget(weeds_box)
+        self._weeds_timer = QTimer(self)
+        self._weeds_timer.setInterval(1000)
+        self._weeds_timer.timeout.connect(self._weeds_tick)
         root.addWidget(self.tabs, 1)
         self.setWidget(host)
         # The sheet goes on the content widget. Set on the QDockWidget itself it has no effect
@@ -340,18 +438,76 @@ class PPEDockWidget(QDockWidget):
         layout.setSpacing(10)
         return page, layout
 
+    def _fit_width(self, root):
+        """4.12.2: nothing in the panel may keep it wider than the user made it. Long check box texts wrap,
+        rows of buttons stack when the panel is narrow, long labels wrap."""
+        for cb in root.findChildren(QCheckBox):
+            if isinstance(cb.parentWidget(), _WrapCheck) or not cb.text() or cb.sizeHint().width() <= 230:
+                continue
+            lay = cb.parentWidget().layout() if cb.parentWidget() else None
+            holder = _WrapCheck()
+            if lay is None or lay.replaceWidget(cb, holder) is None:
+                holder.deleteLater()
+                continue
+            holder.attach(cb, self._keep_text_height)
+        layouts = []
+
+        def collect(lay):
+            for k in range(lay.count()):
+                sub = lay.itemAt(k).layout()
+                if sub is not None:
+                    layouts.append((lay, k, sub))
+                    collect(sub)
+
+        for w in [root] + root.findChildren(QWidget):
+            if w.layout() is not None and not isinstance(w, _AdaptiveRow):
+                collect(w.layout())
+        for parent, _k, sub in reversed(layouts):  # inner rows first; indexes stay valid from the end
+            if not isinstance(sub, QHBoxLayout) or not isinstance(parent, QBoxLayout):
+                continue
+            items = [sub.itemAt(k) for k in range(sub.count())]
+            widgets = [it.widget() for it in items if it.widget() is not None]
+            if len(widgets) < 2 or any(it.layout() is not None for it in items):
+                continue
+            if not all(isinstance(w, QAbstractButton) and not isinstance(w, QCheckBox) for w in widgets):
+                continue
+            if sum(w.sizeHint().width() for w in widgets) + sub.spacing() * (len(widgets) - 1) <= 230:
+                continue
+            index = parent.indexOf(sub)
+            if index < 0:
+                continue
+            row = _AdaptiveRow(max(0, sub.spacing()))
+            plan = [(it.widget(), sub.stretch(k)) for k, it in enumerate(items)]
+            parent.takeAt(index)
+            for w, stretch in plan:
+                if w is not None:
+                    row.box.addWidget(w, stretch)
+                else:
+                    row.box.addStretch(max(stretch, 0))
+            sub.deleteLater()
+            parent.insertWidget(index, row)
+        for label in root.findChildren(QLabel):
+            if not label.wordWrap() and label.text() and label.sizeHint().width() > 230:
+                label.setWordWrap(True)
+                label.setMinimumWidth(1)
+                self._keep_text_height(label)
+
     def _scroll_tab(self, content):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         content.setMinimumWidth(0)
+        self._fit_width(content)
         # Long combo entries and labels must never force the page wider than the dock.
         for combo in content.findChildren(QComboBox):
             combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
             combo.setMinimumContentsLength(10)
         scroll.setWidget(content)
         scroll.viewport().setObjectName("ppeViewport")
+        # 4.12.2: the panel can be made as narrow as its narrowest tab still fits, never narrower (no clipping)
+        bar = scroll.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent)
+        scroll.setMinimumWidth(content.minimumSizeHint().width() + bar + 2)
         return scroll
 
     def _collapsible(self, title, body, expanded=False):
@@ -652,12 +808,6 @@ class PPEDockWidget(QDockWidget):
         help_text.setObjectName("ppeHint")
         layout.addWidget(title)
         layout.addWidget(help_text)
-        # 4.12.1: the weeds are found in the background after a run; this line says so, and what was found
-        self.weeds_status = QLabel("")
-        self.weeds_status.setWordWrap(True)
-        self.weeds_status.setVisible(False)
-        layout.addWidget(self._note(self.weeds_status, "accent"))
-        self.weeds_status.parentWidget().setVisible(False)
         # Shown while an image of a batch is open (tab 6): which one, and a quick way to the next.
         self.batch_banner = QFrame()
         self.batch_banner.setObjectName("accentBox")
@@ -725,9 +875,11 @@ class PPEDockWidget(QDockWidget):
         for text in ("0.15 · more plant", "less plant · 0.95"):
             label = QLabel(text)
             label.setObjectName("ppeHint")
-            range_row.addWidget(label)
-            if text.startswith("0.15"):
-                range_row.addStretch()
+            label.setWordWrap(True)  # 4.12.2: the two ends wrap instead of keeping a narrow panel wide
+            label.setMinimumWidth(1)
+            if not text.startswith("0.15"):
+                label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            range_row.addWidget(label, 1)
         layout.addLayout(range_row)
 
         # Suggested starting threshold (from the image itself; see suggest_threshold in native_engine).
@@ -784,7 +936,7 @@ class PPEDockWidget(QDockWidget):
         )
         self.export_bands_button.setProperty("secondary", True)
         self.export_bands_button.setEnabled(False)
-        self.export_vis_button = QPushButton("Export plant-only vegetation indices")
+        self.export_vis_button = QPushButton("Export plant-only indices")
         self.export_vis_button.setProperty("secondary", True)
         self.export_vis_button.setEnabled(False)
         self.export_all_button = QPushButton("Export bands and all indices")
@@ -1269,7 +1421,7 @@ class PPEDockWidget(QDockWidget):
         self.plant_edit_status.setWordWrap(True)
         fb.addWidget(self.plant_edit_status)
         # 4.9.0: a plant mask without the weeds, as the points are after your review
-        self.crop_mask_button = QPushButton("Make crop-only mask (leave out the weeds)")
+        self.crop_mask_button = QPushButton("Crop-only mask (no weeds)")
         self.crop_mask_button.setProperty("secondary", True)
         self.crop_mask_button.setEnabled(False)
         self.crop_mask_button.setToolTip(
@@ -2610,9 +2762,11 @@ class PPEDockWidget(QDockWidget):
         for text in ("0.15 · more plant", "less plant · 0.95"):
             label = QLabel(text)
             label.setObjectName("ppeHint")
-            ends.addWidget(label)
-            if text.startswith("0.15"):
-                ends.addStretch()
+            label.setWordWrap(True)  # 4.12.2: the two ends wrap instead of keeping a narrow panel wide
+            label.setMinimumWidth(1)
+            if not text.startswith("0.15"):
+                label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            ends.addWidget(label, 1)
         rb.addLayout(ends)
         row2 = QHBoxLayout()
         row2.setSpacing(6)
@@ -4323,17 +4477,14 @@ class PPEDockWidget(QDockWidget):
         if not w:
             text = ""
         elif w.get("pending"):
-            text = (
-                "⏳ Looking for weeds between and inside the crop rows, in the background. You can review and "
-                "finalize meanwhile; What PPE found updates in a few seconds."
-            )
+            text = "PENDING"
         elif self._weeds_found():
             nb, ni = int(w.get("between") or 0), int(w.get("in_row") or 0)
             text = (
-                "✓ Weeds checked: {} between the rows and {} inside the rows. They are listed under What PPE "
-                "found, where you can review them on the map and leave them out.".format(nb, ni)
+                "✓ Weeds found: {} between and {} inside the crop rows. Review them under What PPE found "
+                "(tab 3 Review) and leave them out of the mask.".format(nb, ni)
                 if nb + ni
-                else "✓ Weeds checked: PPE found no weeds between or inside the crop rows."
+                else "✓ Weeds checked: none found between or inside the crop rows."
             )
         else:
             note = str(w.get("note") or "no clear crop rows")
@@ -4346,9 +4497,23 @@ class PPEDockWidget(QDockWidget):
 
     def _show_weeds_status(self, text):
         holder = self.weeds_status.parentWidget()
-        self.weeds_status.setText(text)
+        if text == "PENDING":
+            self._weeds_started = time.monotonic()
+            self._weeds_tick()
+            self._weeds_timer.start()
+        else:
+            self._weeds_timer.stop()
+            self.weeds_status.setText(text)
         self.weeds_status.setVisible(bool(text))
         holder.setVisible(bool(text))
+
+    def _weeds_tick(self):
+        """While the background weed search runs: the line moves, so it is clearly still working."""
+        seconds = int(time.monotonic() - getattr(self, "_weeds_started", time.monotonic()))
+        self.weeds_status.setText(
+            "⏳ Looking for weeds between and inside the crop rows… {} s. You can keep working; the result "
+            "shows here and under What PPE found.".format(seconds)
+        )
 
     def set_weeds(self, result):
         """4.11.2: the weeds found in the background after the run join What PPE found."""
