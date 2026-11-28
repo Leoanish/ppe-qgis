@@ -22,7 +22,13 @@ import os
 import time
 
 import numpy as np
+
 from osgeo import gdal, ogr, osr
+
+try:  # 4.12.4: SciPy, when the QGIS install has it, makes counting faster; without it GDAL gives the same plants
+    from scipy import ndimage as _ndi
+except Exception:  # pragma: no cover - depends on the QGIS install
+    _ndi = None
 
 from .native_engine import _pixel_area_m2, _plot_geometry, _plot_transform, open_plot_file, safe_gdal_open
 
@@ -43,6 +49,32 @@ EARLY_NOTE = (
     "canopies overlap are counted as one. Groups flagged 'check' may be several touching plants; they count as one "
     "unless you split them."
 )
+
+
+def _trace_groups(jb, new, wkt):
+    """Groups without SciPy: GDAL traces the 8-connected pieces as polygons and burns them back."""
+    src = ogr.GetDriverByName("Memory").CreateDataSource("groups")
+    gsrs = None
+    if wkt:  # same CRS as the mask, so GDAL does not warn while burning the groups back
+        gsrs = osr.SpatialReference()
+        gsrs.ImportFromWkt(wkt)
+    layer = src.CreateLayer("g", gsrs, ogr.wkbPolygon)
+    layer.CreateField(ogr.FieldDefn("v", ogr.OFTInteger))
+    gdal.Polygonize(jb, jb, layer, 0, ["8CONNECTED=8"])
+    n = layer.GetFeatureCount()
+    layer.CreateField(ogr.FieldDefn("gid", ogr.OFTInteger))
+    layer.ResetReading()
+    k = 0
+    for f in layer:
+        k += 1
+        f.SetField("gid", k)
+        layer.SetFeature(f)
+    ids = new(gdal.GDT_Int32)
+    ib = ids.GetRasterBand(1)
+    gdal.RasterizeLayer(ids, [1], layer, options=["ATTRIBUTE=gid"])
+    layer = None
+    src = None
+    return ids, ib, n
 
 
 def _plant_groups(mask_path, vote_path, min_px, join_px, hole_px, progress, log, ids_path=None, keep=None):
@@ -86,7 +118,17 @@ def _plant_groups(mask_path, vote_path, min_px, join_px, hole_px, progress, log,
     # 2) join pieces: everything within join_px / 2 of a plant pixel.
     joined = new()
     jb = joined.GetRasterBand(1)
-    if join_px >= 1:
+    fast = _ndi is not None and not os.environ.get("PPE_NO_SCIPY")
+    if join_px >= 1 and fast:
+        # 4.12.4: the same pixels as GDAL's proximity <= r below, done as one dilation: several times faster.
+        # GDAL keeps the distance in whole pixels (rounded), so a pixel joins when its rounded distance to a
+        # plant pixel is at most floor(r), i.e. dx^2 + dy^2 <= F^2 + F with F = floor(r) (checked on 300 masks).
+        r = join_px / 2.0
+        k = int(math.floor(r))
+        yy, xx = np.mgrid[-k - 1: k + 2, -k - 1: k + 2]
+        disc = (xx * xx + yy * yy) <= k * k + k
+        jb.WriteArray(_ndi.binary_dilation(pb.ReadAsArray() == 1, structure=disc).astype(np.uint8))
+    elif join_px >= 1:
         r = join_px / 2.0
         prox = new()
         xb = prox.GetRasterBand(1)
@@ -114,29 +156,16 @@ def _plant_groups(mask_path, vote_path, min_px, join_px, hole_px, progress, log,
             jb.WriteArray(jb.ReadAsArray(0, y, W, h) | (1 - ob.ReadAsArray(0, y, W, h)).astype(np.uint8), 0, y)
         soil = None
     progress(40, "Finding plants")
-    src = ogr.GetDriverByName("Memory").CreateDataSource("groups")
-    gsrs = None
-    if wkt:  # same CRS as the mask, so GDAL does not warn while burning the groups back
-        gsrs = osr.SpatialReference()
-        gsrs.ImportFromWkt(wkt)
-    layer = src.CreateLayer("g", gsrs, ogr.wkbPolygon)
-    layer.CreateField(ogr.FieldDefn("v", ogr.OFTInteger))
-    gdal.Polygonize(jb, jb, layer, 0, ["8CONNECTED=8"])
-    n = layer.GetFeatureCount()
-    layer.CreateField(ogr.FieldDefn("gid", ogr.OFTInteger))
-    layer.ResetReading()
-    k = 0
-    for f in layer:
-        k += 1
-        f.SetField("gid", k)
-        layer.SetFeature(f)
+    if fast:  # 4.12.4: the groups are the 8-connected pieces of the joined mask, labelled in one pass
+        lab, n = _ndi.label(jb.ReadAsArray(), structure=np.ones((3, 3), bool))
+        ids = new(gdal.GDT_Int32)
+        ib = ids.GetRasterBand(1)
+        ib.WriteArray(lab.astype(np.int32, copy=False))
+        del lab
+    else:
+        ids, ib, n = _trace_groups(jb, new, wkt)
     jb = None
     joined = None
-    ids = new(gdal.GDT_Int32)
-    ib = ids.GetRasterBand(1)
-    gdal.RasterizeLayer(ids, [1], layer, options=["ATTRIBUTE=gid"])
-    layer = None
-    src = None
     progress(60, "Measuring plants")
     vote = safe_gdal_open(vote_path) if vote_path else None
     if vote is not None and (vote.RasterXSize, vote.RasterYSize) != (W, H):
@@ -171,7 +200,9 @@ def _plant_groups(mask_path, vote_path, min_px, join_px, hole_px, progress, log,
     cy = sy[1:][sel] / a
     if ids_path:
         gdal.GetDriverByName("GTiff").CreateCopy(
-            ids_path, ids, options=["TILED=YES", "COMPRESS=DEFLATE", "BIGTIFF=IF_SAFER"]
+            ids_path,
+            ids,
+            options=["TILED=YES", "COMPRESS=DEFLATE", "ZLEVEL=1", "NUM_THREADS=ALL_CPUS", "BIGTIFF=IF_SAFER"],
         )
         if keep is not None:
             keep["gid"] = np.nonzero(sel)[0] + 1
@@ -754,7 +785,7 @@ def _dilate(m, r=1):
     out = np.zeros_like(m)
     for dy in range(-r, r + 1):
         for dx in range(-r, r + 1):
-            out |= p[r + dy:r + dy + h, r + dx:r + dx + w]
+            out |= p[r + dy: r + dy + h, r + dx: r + dx + w]
     return out
 
 
@@ -796,6 +827,9 @@ def _flood(allowed, sy, sx, steps):
     H, W = allowed.shape
     seed = np.zeros_like(allowed)
     seed[sy, sx] = True
+    if _ndi is not None and not os.environ.get("PPE_NO_SCIPY") and steps > 0:
+        # 4.12.4: the same repeated 3 x 3 dilation inside 'allowed', run by SciPy
+        return _ndi.binary_dilation(seed, structure=np.ones((3, 3), bool), iterations=steps, mask=allowed) & allowed
     y0, y1, x0, x1 = sy, sy + 1, sx, sx + 1
     for _ in range(steps):
         a0, a1, b0, b1 = max(0, y0 - 1), min(H, y1 + 1), max(0, x0 - 1), min(W, x1 + 1)
@@ -805,6 +839,8 @@ def _flood(allowed, sy, sx, steps):
             break
         seed[a0:a1, b0:b1] = grown
         ys = np.nonzero(grown.any(axis=1))[0]
+        if not len(ys):  # the seed was not in 'allowed': nothing to fill (as before)
+            break
         xs = np.nonzero(grown.any(axis=0))[0]
         y0, y1, x0, x1 = a0 + ys[0], a0 + ys[-1] + 1, b0 + xs[0], b0 + xs[-1] + 1
     return seed
@@ -958,13 +994,28 @@ def _read_features(path):
     ds = ogr.Open(path)
     lay = ds.GetLayer()
     out = []
-    names = [lay.GetLayerDefn().GetFieldDefn(i).GetName() for i in range(lay.GetLayerDefn().GetFieldCount())]
-    idx = list(enumerate(names))
-    for f in lay:  # fields read by position: GDAL looks a name up field by field
+    defn = lay.GetLayerDefn()
+    # fields read by position and by type (4.12.4: the typed getters skip GetField's lookups; same values)
+    typed = {
+        ogr.OFTInteger: "GetFieldAsInteger",
+        ogr.OFTInteger64: "GetFieldAsInteger64",
+        ogr.OFTReal: "GetFieldAsDouble",
+        ogr.OFTString: "GetFieldAsString",
+    }
+    plan = []
+    for i in range(defn.GetFieldCount()):
+        fd = defn.GetFieldDefn(i)
+        plan.append((i, fd.GetName(), typed.get(fd.GetType()) if fd.GetSubType() == ogr.OFSTNone else None))
+    for f in lay:
         g = f.GetGeometryRef()
         if g is None:
             continue
-        r = {k: f.GetField(i) for i, k in idx}
+        r = {}
+        for i, k, m in plan:
+            if not f.IsFieldSetAndNotNull(i):
+                r[k] = None
+            else:
+                r[k] = getattr(f, m)(i) if m else f.GetField(i)
         r["fid"] = f.GetFID()
         r["x"] = g.GetX()
         r["y"] = g.GetY()
@@ -1220,7 +1271,7 @@ def flag_row_weeds(points_path, log=None, smaller_than_neighbour=True, close=ROW
     flagged = []
     # Only neighbours closer than `limit` along the row can make a weed, so each plant looks only at the
     # plants in a window of +-limit along the row (sorted once): the same neighbour as a search of all
-    # plants (nearest along the row, the first one on a tie), in about n log n instead of n squared.
+    # plants (nearest along the row), in about n log n instead of n squared.
     by_u = np.argsort(u, kind="stable")
     us = u[by_u]
     pad = limit * 1.001 + 1e-9
@@ -1232,7 +1283,11 @@ def flag_row_weeds(points_path, log=None, smaller_than_neighbour=True, close=ROW
         cand = cand[(np.abs(d[cand] - d[i]) < 0.5 * row_cm) & (cand != i)]
         if not len(cand):
             continue
-        j = cand[np.argmin(np.abs(u[cand] - u[i]))]
+        gaps = np.abs(u[cand] - u[i])
+        near = cand[gaps == gaps.min()]
+        # 4.12.4: two neighbours equally close: compare with the bigger one (then the one earlier along the
+        # row), so the result never depends on the order the plants were numbered in
+        j = near[np.lexsort((d[near], u[near], -a[near]))[0]] if len(near) > 1 else near[0]
         gap = abs(u[j] - u[i])
         if gap >= limit:
             continue
@@ -1357,7 +1412,7 @@ def mark_weeds(vote_path, findings_path, threshold, work_dir, log=None, progress
             gdal.GetDriverByName("GTiff").CreateCopy(
                 os.path.join(tmp, "findings_before_weeds.tif"),
                 safe_gdal_open(findings_path),
-                options=["TILED=YES", "COMPRESS=DEFLATE", "BIGTIFF=IF_SAFER"],
+                options=["TILED=YES", "COMPRESS=DEFLATE", "ZLEVEL=1", "NUM_THREADS=ALL_CPUS", "BIGTIFF=IF_SAFER"],
             )
             res.update(
                 groups_path=os.path.join(tmp, "groups.tif"),

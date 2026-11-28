@@ -3,7 +3,7 @@ name=Plant Pixel Extractor
 qgisMinimumVersion=3.28
 qgisMaximumVersion=4.99
 description=Plant and soil segmentation for RGB, multispectral and hyperspectral drone imagery.
-version=4.12.3
+version=4.12.4
 author=Anish Bhattarai
 email=leoanish9@gmail.com
 about=Plant Pixel Extractor (PPE) separates plant pixels from soil in drone orthomosaics without training data. It ranks the vegetation indices the image allows by how well they spread plant from soil, splits the three best with four automatic thresholds (Otsu, CDF knee, k-means, multi-Otsu) and lets the twelve results vote. Guards remove shadows, algae on wet soil and grey objects. Works with RGB cameras, multispectral sensors (MicaSense, Sequoia, DJI and others, as one file, a folder or separate band files) and hyperspectral cubes; thermal bands are ignored. The image appears on the map as soon as it is chosen, a live slider previews the mask, and results export as rasters, per-band and per-index layers, and plot statistics for an AOI. A Batch tab runs a whole folder of images and lets you review each mask. Two more goals use the same mask: a plant counter (early season) that proposes one point per plant, finds the crop rows itself and marks plants between rows as possible weeds, which you then check and correct on the map with add, remove and plant or weed tools; after a run, weeds between and inside the crop rows are listed in What PPE found, you review them on the map with one click per plant, and leave them out for a clean crop-only mask; training data for a fast plant and soil model, image tiles with PPE labels and no hand labelling (the included tools/ppe_train.py trains, checks and updates the model outside QGIS and needs PyTorch); and create labels for your own machine-learning model: plant, soil and (optionally) weed points from clear pixels only, weeds never labelled as plant, spread over the whole range of the image by conditioned Latin hypercube sampling, optionally inside an area you draw, which you check on the map and grow into buffers that never cross into the other class. No extra installation: it uses the GDAL and NumPy that ship with QGIS. Works on QGIS 3.28 to 4.x; tested on QGIS 3.34 (Linux); feedback from Windows and macOS users is welcome.
@@ -16,7 +16,10 @@ tags=drone,raster,plant,canopy,multispectral,vegetation,segmentation,plant count
 repository=https://github.com/Leoanish/ppe-qgis
 tracker=https://github.com/Leoanish/ppe-qgis/issues
 homepage=https://github.com/Leoanish/ppe-qgis
-changelog=4.12.3 (all changes since 4.11.1):
+changelog=4.12.4:
+    - Faster plant counter and weed search (about 25 to 30 percent) when SciPy is available in QGIS; without SciPy it works as before. The plants, splits and weeds found are the same either way (checked on four fields); only the plant numbers can differ.
+    - Weeds inside the rows: when two neighbours are equally close, a plant is compared with the bigger one, so the result never depends on plant numbering.
+    4.12.3 (all changes since 4.11.1):
     - Finalize locks the threshold, so the plant counter, labels, training data and exports all use the finalized mask; Change threshold unlocks it.
     - Faster runs: weeds are found in the background after a run; the mask, the card and the slider are ready without waiting, and a line above the tabs shows the search (with its seconds) and what it found.
     - Easier to use: Run PPE now from the Image tab, a plain-language Run tab, a help button that opens the guide at your step, time left on every progress bar, and plain error messages that say what to do next.

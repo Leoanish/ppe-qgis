@@ -8,6 +8,8 @@ PPE separates plant pixels from soil in drone orthomosaics, with no training dat
 
 **How it works, in one paragraph.** PPE ranks the vegetation indices the image allows by how well they spread plant from soil. It splits the three best with four automatic thresholds (Otsu, CDF knee, k-means and multi-Otsu), and the twelve results vote. A pixel's vote is the share of those twelve that call it plant. Guards then remove shadows, algae on wet soil and grey objects. You choose the vote threshold with a live slider; for images with a NIR band PPE suggests one.
 
+**New in 4.12.4:** the plant counter and the weed search are about 25 to 30 percent faster when SciPy is available in QGIS (same plants either way).
+
 **New in 4.12.3:** in Create labels, fixing a weed point that sits on a crop plant (Weed ↔ plant) makes the whole plant crop, with every other point on it and its buffer, so wrong weed labels do not stay behind.
 
 **New in 4.12.2:** the panel fits any width (text wraps, buttons stack, no sideways scrolling); Training data is last in the goal list; the weed search shows above the tabs while it runs.

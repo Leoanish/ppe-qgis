@@ -223,3 +223,52 @@ class TestV4123(unittest.TestCase):
             self.assertIsNone(switch_piece({"weeds": None}, 0, 0, "plant")[0])  # labels without weed info
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+class TestV4124(unittest.TestCase):
+    def test_scipy_and_gdal_count_the_same_plants(self):
+        from osgeo import ogr
+
+        from ppe_qgis import plant_count as pc
+
+        if pc._ndi is None:
+            self.skipTest("SciPy not installed")
+        tmp = tempfile.mkdtemp()
+        try:
+            m, _ = rows_field(touching=4, row_weeds=((224, 45), (284, 135)))
+            mask = tif(os.path.join(tmp, "m.tif"), m, gdal.GDT_Byte)
+            vote = tif(os.path.join(tmp, "v.tif"), m.astype(np.float32), gdal.GDT_Float32)
+            out = {}
+            before = os.environ.pop("PPE_NO_SCIPY", None)
+            self.addCleanup(lambda: os.environ.__setitem__("PPE_NO_SCIPY", before) if before else None)
+            for way in ("gdal", "scipy"):
+                if way == "gdal":
+                    os.environ["PPE_NO_SCIPY"] = "1"
+                try:
+                    r = pc.count_plants(
+                        {
+                            "mask_path": mask,
+                            "vote_path": vote,
+                            "output_dir": os.path.join(tmp, way),
+                            "find_rows": True,
+                            "min_plant_cm2": 0.05,
+                            "join_cm": 5,
+                        }
+                    )
+                finally:
+                    os.environ.pop("PPE_NO_SCIPY", None)
+                ds = ogr.Open(r["points_path"])
+                pts = sorted(
+                    (
+                        round(f.GetGeometryRef().GetX(), 6),
+                        round(f.GetGeometryRef().GetY(), 6),
+                        f["status"],
+                        f["area_cm2"],
+                    )
+                    for f in ds.GetLayer()
+                )
+                ds = None
+                out[way] = (r["plants"], r.get("split_by_ppe"), r.get("weeds_not_counted"), pts)
+            self.assertEqual(out["gdal"], out["scipy"])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
